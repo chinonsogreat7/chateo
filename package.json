@@ -17,9 +17,11 @@
     "format": "npm run format --workspaces --if-present",
     "format:check": "npm run format:check --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
+    "prisma:seed": "npm run prisma:seed --workspace @chateo/api",
     "start:api": "npm run start:prod --workspace @chateo/api",
     "test": "npm run test --workspaces --if-present",
     "test:e2e": "npm run test:e2e --workspace @chateo/api",
+    "test:integration": "npm run test:integration --workspace @chateo/api",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "overrides": {

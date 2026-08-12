@@ -9,18 +9,20 @@
   },
   "scripts": {
     "build": "prisma generate && nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"*.{js,json,md}\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"*.{js,json,md}\"",
-    "lint": "eslint src test --max-warnings=0",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\" \"*.{ts,js,json,md}\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\" \"*.{ts,js,json,md}\"",
+    "lint": "eslint src test prisma prisma.config.ts --max-warnings=0",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:seed": "prisma db seed",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
     "test": "jest --config jest.config.js --runInBand",
     "test:coverage": "jest --config jest.config.js --coverage --runInBand",
     "test:e2e": "jest --config test/jest-e2e.config.js --runInBand",
+    "test:integration": "jest --config test/jest-integration.config.js --runInBand",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
