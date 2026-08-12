@@ -5,6 +5,7 @@ import type {
   CreateDirectConversationResult,
 } from '../../src/conversations/conversations.types';
 import type { SendTextMessageInput } from '../../src/messages/messages.repository';
+import { messagePreview } from '../../src/messages/message-preview';
 import type {
   ListMessagesResult,
   MarkConversationReadResult,
@@ -227,6 +228,7 @@ export class InMemoryMessagingRepository {
     const conversationId = input.conversationId.toLowerCase();
     const senderId = input.senderId.toLowerCase();
     const clientMessageId = input.clientMessageId.toLowerCase();
+    const replyToMessageId = input.replyToMessageId?.toLowerCase() ?? null;
     const conversation = this.conversations.get(conversationId);
     if (!conversation?.memberIds.includes(senderId)) {
       return { status: 'conversation-not-found' };
@@ -241,11 +243,22 @@ export class InMemoryMessagingRepository {
       if (
         existing.conversationId !== conversationId ||
         existing.kind !== 'TEXT' ||
-        existing.text !== input.text
+        existing.text !== input.text ||
+        existing.replyToMessageId !== replyToMessageId
       ) {
         return { status: 'idempotency-conflict' };
       }
       return { status: 'existing', message: this.copyMessage(existing) };
+    }
+
+    const replyTarget = replyToMessageId
+      ? this.messages.get(replyToMessageId)
+      : null;
+    if (
+      replyToMessageId &&
+      (!replyTarget || replyTarget.conversationId !== conversationId)
+    ) {
+      return { status: 'reply-message-not-found' };
     }
 
     const message: MessageRecord = {
@@ -253,6 +266,15 @@ export class InMemoryMessagingRepository {
       conversationId,
       senderId,
       clientMessageId,
+      replyToMessageId,
+      replyTo: replyTarget
+        ? {
+            id: replyTarget.id,
+            senderId: replyTarget.senderId,
+            kind: 'TEXT',
+            preview: messagePreview(replyTarget.text),
+          }
+        : null,
       kind: 'TEXT',
       text: input.text,
       createdAt: copyDate(input.now),
@@ -598,10 +620,21 @@ export class InMemoryMessagingRepository {
   }
 
   private copyMessage(message: MessageRecord): MessageRecord {
+    const replyTarget = message.replyToMessageId
+      ? this.messages.get(message.replyToMessageId)
+      : null;
     return {
       ...message,
       createdAt: copyDate(message.createdAt),
       participantIds: [...message.participantIds],
+      replyTo: replyTarget
+        ? {
+            id: replyTarget.id,
+            senderId: replyTarget.senderId,
+            kind: 'TEXT',
+            preview: messagePreview(replyTarget.text),
+          }
+        : null,
     };
   }
 }

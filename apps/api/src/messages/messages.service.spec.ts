@@ -10,6 +10,7 @@ const USER_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_USER_ID = '22222222-2222-4222-8222-222222222222';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
+const REPLY_MESSAGE_ID = '44444444-4444-4444-8444-444444444445';
 const CLIENT_MESSAGE_ID = '55555555-5555-4555-8555-555555555555';
 const NOW = new Date('2026-08-12T16:00:00.000Z');
 
@@ -19,6 +20,8 @@ function message(overrides: Partial<MessageRecord> = {}): MessageRecord {
     conversationId: CONVERSATION_ID,
     clientMessageId: CLIENT_MESSAGE_ID,
     senderId: USER_ID,
+    replyToMessageId: null,
+    replyTo: null,
     kind: 'TEXT',
     text: 'Hello!',
     createdAt: NOW,
@@ -79,6 +82,8 @@ describe('MessagesService', () => {
       conversationId: CONVERSATION_ID,
       clientMessageId: CLIENT_MESSAGE_ID,
       senderId: USER_ID,
+      replyToMessageId: null,
+      replyTo: null,
       kind: 'text',
       text: 'Hello!',
       createdAt: NOW.toISOString(),
@@ -87,10 +92,47 @@ describe('MessagesService', () => {
       conversationId: CONVERSATION_ID,
       senderId: USER_ID,
       clientMessageId: CLIENT_MESSAGE_ID,
+      replyToMessageId: null,
       text: 'Hello!',
       now: NOW,
     });
     expect(eventsPublisher.publishCreated).toHaveBeenCalledWith(message());
+  });
+
+  it('normalizes a reply target and returns its shallow projection', async () => {
+    const { repository, service } = createService();
+    const uppercaseReplyId = REPLY_MESSAGE_ID.toUpperCase();
+    repository.sendText.mockResolvedValue({
+      status: 'created',
+      message: message({
+        replyToMessageId: REPLY_MESSAGE_ID,
+        replyTo: {
+          id: REPLY_MESSAGE_ID,
+          senderId: OTHER_USER_ID,
+          kind: 'TEXT',
+          preview: 'Earlier message',
+        },
+      }),
+    });
+
+    await expect(
+      service.send(USER_ID, CONVERSATION_ID, {
+        clientMessageId: CLIENT_MESSAGE_ID,
+        replyToMessageId: uppercaseReplyId,
+        text: 'Reply',
+      }),
+    ).resolves.toMatchObject({
+      replyToMessageId: REPLY_MESSAGE_ID,
+      replyTo: {
+        id: REPLY_MESSAGE_ID,
+        senderId: OTHER_USER_ID,
+        kind: 'text',
+        preview: 'Earlier message',
+      },
+    });
+    expect(repository.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ replyToMessageId: REPLY_MESSAGE_ID }),
+    );
   });
 
   it('returns an idempotent replay without publishing a duplicate event', async () => {
@@ -146,6 +188,24 @@ describe('MessagesService', () => {
       }),
       HttpStatus.CONFLICT,
       'MESSAGE_IDEMPOTENCY_CONFLICT',
+    );
+    expect(eventsPublisher.publishCreated).not.toHaveBeenCalled();
+  });
+
+  it('uses a privacy-safe not-found error for an invalid reply target', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.sendText.mockResolvedValue({
+      status: 'reply-message-not-found',
+    });
+
+    await expectApiError(
+      service.send(USER_ID, CONVERSATION_ID, {
+        clientMessageId: CLIENT_MESSAGE_ID,
+        replyToMessageId: REPLY_MESSAGE_ID,
+        text: 'Reply',
+      }),
+      HttpStatus.NOT_FOUND,
+      'MESSAGE_NOT_FOUND',
     );
     expect(eventsPublisher.publishCreated).not.toHaveBeenCalled();
   });

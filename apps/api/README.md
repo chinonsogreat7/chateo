@@ -202,10 +202,22 @@ Content-Type: application/json
 }
 ```
 
+To reply to an existing message, include its server-generated ID:
+
+```json
+{
+  "clientMessageId": "7d444840-9dc0-41d1-b245-5ffdce74fad3",
+  "text": "Yes, I am free now.",
+  "replyToMessageId": "9b2a35a6-6542-48b1-8232-0ac6476db74b"
+}
+```
+
 The endpoint always returns `200 OK` for a new message or an identical retry.
-Reusing the same `clientMessageId` with different text or a different
-conversation returns `409 MESSAGE_IDEMPOTENCY_CONFLICT`. Text is trimmed and
-must contain 1-4000 characters after trimming.
+Reusing the same `clientMessageId` with different text, a different reply
+target, or a different conversation returns
+`409 MESSAGE_IDEMPOTENCY_CONFLICT`. Text is trimmed and must contain 1-4000
+characters after trimming. A reply target must exist in the same conversation;
+otherwise the API returns the privacy-safe `404 MESSAGE_NOT_FOUND` response.
 
 ```json
 {
@@ -215,9 +227,18 @@ must contain 1-4000 characters after trimming.
   "senderId": "00000000-0000-4000-8000-000000000101",
   "kind": "text",
   "text": "Hello! Are you free to chat?",
+  "replyToMessageId": null,
+  "replyTo": null,
   "createdAt": "2026-08-12T16:00:00.000Z"
 }
 ```
+
+For a reply, `replyToMessageId` contains the target ID and `replyTo` contains a
+shallow public projection with the target message's `id`, `senderId`, `kind`,
+and safe 120-code-point `preview`. The preview is derived from the target's
+current text whenever the message is loaded, so future edits or tombstones can
+be reflected without copying reply text. Message history and the
+`message.created` socket event use the same reply shape.
 
 Fetch history with:
 
@@ -464,7 +485,7 @@ Discovery, conversation, message, and receipt codes include
 `CONTACTS_INVALID_PHONE_NUMBER`, `DISCOVERY_INVALID_CURSOR`,
 `CONVERSATION_SELF_NOT_ALLOWED`, `CONVERSATION_CURSOR_INVALID`,
 `CONVERSATION_NOT_FOUND`, `USER_NOT_FOUND`, `MESSAGE_CURSOR_INVALID`, and
-`MESSAGE_IDEMPOTENCY_CONFLICT`.
+`MESSAGE_IDEMPOTENCY_CONFLICT`, plus `MESSAGE_NOT_FOUND`.
 
 ## Security behavior
 

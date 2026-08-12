@@ -21,6 +21,8 @@ function message(overrides: Partial<MessageRecord> = {}): MessageRecord {
     senderId: USER_ONE_ID,
     kind: 'TEXT',
     text: 'Hello from another device',
+    replyToMessageId: null,
+    replyTo: null,
     createdAt: NOW,
     participantIds: [USER_ONE_ID, USER_TWO_ID],
     ...overrides,
@@ -80,6 +82,8 @@ describe('RealtimeMessageEventsPublisher', () => {
       senderId: USER_ONE_ID,
       kind: 'text',
       text: 'Hello from another device',
+      replyToMessageId: null,
+      replyTo: null,
       createdAt: NOW.toISOString(),
     };
     expect(first.emit).toHaveBeenCalledWith(
@@ -91,6 +95,44 @@ describe('RealtimeMessageEventsPublisher', () => {
       expectedPayload,
     );
     expect(expectedPayload).not.toHaveProperty('participantIds');
+  });
+
+  it('projects a shallow reply preview without exposing the original text', async () => {
+    const socket = target({
+      userId: USER_TWO_ID,
+      sessionId: 'session-two',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { isSessionActive, publisher } = createPublisher([socket]);
+    isSessionActive.mockResolvedValue(true);
+    const replyToMessageId = '66666666-6666-4666-8666-666666666666';
+
+    await publisher.publishCreated(
+      message({
+        replyToMessageId,
+        replyTo: {
+          id: replyToMessageId,
+          senderId: USER_TWO_ID,
+          kind: 'TEXT',
+          preview: 'The earlier message preview',
+        },
+      }),
+    );
+
+    expect(socket.emit).toHaveBeenCalledWith(
+      MESSAGE_CREATED_EVENT,
+      expect.objectContaining({
+        replyToMessageId,
+        replyTo: {
+          id: replyToMessageId,
+          senderId: USER_TWO_ID,
+          kind: 'text',
+          preview: 'The earlier message preview',
+        },
+      }),
+    );
+    const emittedPayload = (socket.emit as jest.Mock).mock.calls[0]?.[1];
+    expect(emittedPayload.replyTo).not.toHaveProperty('text');
   });
 
   it('always includes the sender room for multi-device synchronization', async () => {

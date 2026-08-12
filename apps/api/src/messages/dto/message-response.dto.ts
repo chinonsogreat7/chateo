@@ -1,5 +1,22 @@
 import { ApiProperty } from '@nestjs/swagger';
 
+export class MessageReplyResponseDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({ format: 'uuid' })
+  senderId!: string;
+
+  @ApiProperty({ enum: ['text'], example: 'text' })
+  kind!: 'text';
+
+  @ApiProperty({
+    example: 'The message being replied to',
+    maxLength: 120,
+  })
+  preview!: string;
+}
+
 export class MessageResponseDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
@@ -12,6 +29,12 @@ export class MessageResponseDto {
 
   @ApiProperty({ format: 'uuid' })
   senderId!: string;
+
+  @ApiProperty({ format: 'uuid', type: String, nullable: true })
+  replyToMessageId!: string | null;
+
+  @ApiProperty({ type: MessageReplyResponseDto, nullable: true })
+  replyTo!: MessageReplyResponseDto | null;
 
   @ApiProperty({ enum: ['text'], example: 'text' })
   kind!: 'text';

@@ -46,17 +46,28 @@ export class MessagesController {
     type: SendMessageDto,
     examples: {
       default: {
-        summary: 'Send a text message',
+        summary: 'Send a new text message',
         value: {
           clientMessageId: '7d444840-9dc0-41d1-b245-5ffdce74fad2',
           text: 'Hello! Are you free to chat?',
+        },
+      },
+      reply: {
+        summary: 'Reply to an existing message',
+        description:
+          'Copy replyToMessageId from a message returned by send or history.',
+        value: {
+          clientMessageId: '7d444840-9dc0-41d1-b245-5ffdce74fad3',
+          replyToMessageId: '55555555-5555-4555-8555-555555555555',
+          text: 'Yes, I am free now.',
         },
       },
     },
   })
   @ApiOkResponse({ type: MessageResponseDto })
   @ApiNotFoundResponse({
-    description: 'The conversation is missing or the user is not a member.',
+    description:
+      'The conversation is inaccessible or the reply target was not found in it.',
   })
   @ApiConflictResponse({
     description: 'The client message ID was reused with different data.',

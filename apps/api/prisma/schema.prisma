@@ -89,20 +89,24 @@ model ConversationMember {
 }
 
 model Message {
-  id              String           @id @default(uuid()) @db.Uuid
-  conversationId  String           @map("conversation_id") @db.Uuid
-  senderId        String           @map("sender_id") @db.Uuid
-  clientMessageId String           @map("client_message_id") @db.Uuid
-  kind            MessageKind      @default(TEXT)
-  text            String           @db.VarChar(4000)
-  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender          User             @relation(fields: [senderId], references: [id], onDelete: Cascade)
-  receipts        MessageReceipt[]
+  id               String           @id @default(uuid()) @db.Uuid
+  conversationId   String           @map("conversation_id") @db.Uuid
+  senderId         String           @map("sender_id") @db.Uuid
+  clientMessageId  String           @map("client_message_id") @db.Uuid
+  replyToMessageId String?          @map("reply_to_message_id") @db.Uuid
+  kind             MessageKind      @default(TEXT)
+  text             String           @db.VarChar(4000)
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  conversation     Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender           User             @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo          Message?         @relation("MessageReplies", fields: [replyToMessageId, conversationId], references: [id, conversationId], onDelete: NoAction, onUpdate: NoAction)
+  replies          Message[]        @relation("MessageReplies")
+  receipts         MessageReceipt[]
 
   @@unique([senderId, clientMessageId])
   @@unique([id, conversationId])
   @@index([conversationId, createdAt, id])
+  @@index([replyToMessageId, conversationId])
   @@map("messages")
 }
 

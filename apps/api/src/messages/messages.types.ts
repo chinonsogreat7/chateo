@@ -1,8 +1,17 @@
+export interface MessageReplyRecord {
+  id: string;
+  senderId: string;
+  kind: 'TEXT';
+  preview: string;
+}
+
 export interface MessageRecord {
   id: string;
   conversationId: string;
   clientMessageId: string;
   senderId: string;
+  replyToMessageId: string | null;
+  replyTo: MessageReplyRecord | null;
   kind: 'TEXT';
   text: string;
   createdAt: Date;
@@ -24,6 +33,7 @@ export interface MessageReadStateRecord {
 export type SendTextMessageResult =
   | { status: 'created' | 'existing'; message: MessageRecord }
   | { status: 'conversation-not-found' }
+  | { status: 'reply-message-not-found' }
   | { status: 'idempotency-conflict' };
 
 export type ListMessagesResult =

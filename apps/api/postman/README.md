@@ -99,7 +99,24 @@ Open **Events**, add each server event below, and select **Listen** for all six:
   "senderId": "956d3268-0f92-4bc1-a2bb-9c4768ee11ee",
   "kind": "text",
   "text": "Hello from Postman",
+  "replyToMessageId": null,
+  "replyTo": null,
   "createdAt": "2026-08-12T16:30:00.000Z"
+}
+```
+
+For a reply, both fields are populated. The event contains a shallow preview,
+not the target message's full internal record:
+
+```json
+{
+  "replyToMessageId": "a47d0ec7-fba4-4bdf-9aa4-7639f6ec0f70",
+  "replyTo": {
+    "id": "a47d0ec7-fba4-4bdf-9aa4-7639f6ec0f70",
+    "senderId": "956d3268-0f92-4bc1-a2bb-9c4768ee11ee",
+    "kind": "text",
+    "preview": "Hello from Postman"
+  }
 }
 ```
 
@@ -296,14 +313,29 @@ Possible codes are `AUTH_ACCESS_TOKEN_INVALID`, `REALTIME_PAYLOAD_INVALID`,
    receive one `message.created` event. Copy the returned server message `id`
    into `throughMessageId`.
 
-6. As B, call
+6. As B, test a reply with a second fresh client UUID and A's returned message
+   `id`. Both tabs receive one `message.created` event containing the same
+   `replyToMessageId` and shallow `replyTo` projection:
+
+   ```json
+   {
+     "clientMessageId": "7d444840-9dc0-41d1-b245-5ffdce74fad3",
+     "text": "Replying from Postman",
+     "replyToMessageId": "<A's returned server message id>"
+   }
+   ```
+
+   Reusing that client UUID with the reply target omitted or changed returns
+   `409 MESSAGE_IDEMPOTENCY_CONFLICT`.
+
+7. As B, call
    `PUT {{apiBaseUrl}}/conversations/{{conversationId}}/receipts/delivered`
    with `Authorization: Bearer {{accessTokenB}}` and
    `{ "throughMessageId": "{{throughMessageId}}" }`. The selected message must
    be incoming for B, not one B sent. Both tabs receive `receipt.delivered`.
-7. Repeat with `/receipts/read` using B's token. Both tabs receive
+8. Repeat with `/receipts/read` using B's token. Both tabs receive
    `receipt.read`.
-8. Disconnect every active B socket, including other Postman tabs or mobile
+9. Disconnect every active B socket, including other Postman tabs or mobile
    sessions. After the ten-second reconnection grace period, A receives
    `presence.changed` with `status: "offline"`.
 

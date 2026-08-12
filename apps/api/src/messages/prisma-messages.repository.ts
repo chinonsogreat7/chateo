@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { MessageKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { messagePreview } from './message-preview';
 import {
   MessagesRepository,
   type SendTextMessageInput,
@@ -18,14 +19,30 @@ const messageSelect = {
   conversationId: true,
   senderId: true,
   clientMessageId: true,
+  replyToMessageId: true,
   kind: true,
   text: true,
   createdAt: true,
+  replyTo: {
+    select: {
+      id: true,
+      senderId: true,
+      kind: true,
+      text: true,
+    },
+  },
 } satisfies Prisma.MessageSelect;
 
 type SelectedMessage = Prisma.MessageGetPayload<{
   select: typeof messageSelect;
 }>;
+
+type NormalizedSendTextMessageInput = Omit<
+  SendTextMessageInput,
+  'replyToMessageId'
+> & {
+  replyToMessageId: string | null;
+};
 
 @Injectable()
 export class PrismaMessagesRepository extends MessagesRepository {
@@ -34,11 +51,12 @@ export class PrismaMessagesRepository extends MessagesRepository {
   }
 
   async sendText(input: SendTextMessageInput): Promise<SendTextMessageResult> {
-    const normalizedInput: SendTextMessageInput = {
+    const normalizedInput: NormalizedSendTextMessageInput = {
       ...input,
       conversationId: input.conversationId.toLowerCase(),
       senderId: input.senderId.toLowerCase(),
       clientMessageId: input.clientMessageId.toLowerCase(),
+      replyToMessageId: input.replyToMessageId?.toLowerCase() ?? null,
     };
     const maxAttempts = 3;
     let lastError: unknown;
@@ -187,7 +205,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
 
   private async sendInTransaction(
     transaction: Prisma.TransactionClient,
-    input: SendTextMessageInput,
+    input: NormalizedSendTextMessageInput,
   ): Promise<SendTextMessageResult> {
     const members = await transaction.conversationMember.findMany({
       where: { conversationId: input.conversationId },
@@ -211,11 +229,23 @@ export class PrismaMessagesRepository extends MessagesRepository {
       return this.resolveExisting(existing, input, participantIds);
     }
 
+    if (input.replyToMessageId) {
+      const replyTarget = await transaction.message.findFirst({
+        where: {
+          id: input.replyToMessageId,
+          conversationId: input.conversationId,
+        },
+        select: { id: true },
+      });
+      if (!replyTarget) return { status: 'reply-message-not-found' };
+    }
+
     const message = await transaction.message.create({
       data: {
         conversationId: input.conversationId,
         senderId: input.senderId,
         clientMessageId: input.clientMessageId,
+        replyToMessageId: input.replyToMessageId,
         kind: MessageKind.TEXT,
         text: input.text,
         createdAt: input.now,
@@ -244,7 +274,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
   }
 
   private async readConcurrentWinner(
-    input: SendTextMessageInput,
+    input: NormalizedSendTextMessageInput,
   ): Promise<SendTextMessageResult | null> {
     const members = await this.prisma.conversationMember.findMany({
       where: { conversationId: input.conversationId },
@@ -270,13 +300,14 @@ export class PrismaMessagesRepository extends MessagesRepository {
 
   private resolveExisting(
     message: SelectedMessage,
-    input: SendTextMessageInput,
+    input: NormalizedSendTextMessageInput,
     participantIds: string[],
   ): SendTextMessageResult {
     if (
       message.conversationId !== input.conversationId ||
       message.kind !== MessageKind.TEXT ||
-      message.text !== input.text
+      message.text !== input.text ||
+      message.replyToMessageId !== input.replyToMessageId
     ) {
       return { status: 'idempotency-conflict' };
     }
@@ -295,6 +326,15 @@ export class PrismaMessagesRepository extends MessagesRepository {
       conversationId: message.conversationId,
       clientMessageId: message.clientMessageId,
       senderId: message.senderId,
+      replyToMessageId: message.replyToMessageId,
+      replyTo: message.replyTo
+        ? {
+            id: message.replyTo.id,
+            senderId: message.replyTo.senderId,
+            kind: 'TEXT',
+            preview: messagePreview(message.replyTo.text),
+          }
+        : null,
       kind: 'TEXT',
       text: message.text,
       createdAt: message.createdAt,
