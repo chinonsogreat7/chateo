@@ -13,6 +13,8 @@ import { DiscoveryController } from './discovery/discovery.controller';
 import { DiscoveryService } from './discovery/discovery.service';
 import { MessagesController } from './messages/messages.controller';
 import { MessagesService } from './messages/messages.service';
+import { ReceiptsController } from './receipts/receipts.controller';
+import { ReceiptsService } from './receipts/receipts.service';
 import { UsersController } from './users/users.controller';
 import { UsersService } from './users/users.service';
 
@@ -21,9 +23,10 @@ const REFRESH_TOKEN =
   '550e8400-e29b-41d4-a716-446655440000.3fQ8xZ7uV2nK5mP9rT4wY6aB1cD0eF8gH2jL7sN5qRk';
 const PARTICIPANT_ID = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
 const CLIENT_MESSAGE_ID = '7d444840-9dc0-41d1-b245-5ffdce74fad2';
+const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
 
 interface RequestExampleCase {
-  method: 'patch' | 'post';
+  method: 'patch' | 'post' | 'put';
   path: string;
   payload: Record<string, unknown>;
   schemaName: string;
@@ -41,6 +44,7 @@ describe('OpenAPI request examples', () => {
         DiscoveryController,
         ConversationsController,
         MessagesController,
+        ReceiptsController,
       ],
       providers: [
         { provide: AuthService, useValue: {} },
@@ -48,6 +52,7 @@ describe('OpenAPI request examples', () => {
         { provide: DiscoveryService, useValue: {} },
         { provide: ConversationsService, useValue: {} },
         { provide: MessagesService, useValue: {} },
+        { provide: ReceiptsService, useValue: {} },
       ],
     }).compile();
 
@@ -138,6 +143,18 @@ describe('OpenAPI request examples', () => {
         text: 'Hello! Are you free to chat?',
       },
     },
+    {
+      method: 'put',
+      path: `/v1/conversations/{conversationId}/receipts/delivered`,
+      schemaName: 'UpdateReceiptDto',
+      payload: { throughMessageId: MESSAGE_ID },
+    },
+    {
+      method: 'put',
+      path: `/v1/conversations/{conversationId}/receipts/read`,
+      schemaName: 'UpdateReceiptDto',
+      payload: { throughMessageId: MESSAGE_ID },
+    },
   ];
 
   it.each(cases)(
@@ -176,6 +193,19 @@ describe('OpenAPI request examples', () => {
     });
   });
 
+  it('documents the durable receipt boundary as a required UUID', () => {
+    expect(document.components?.schemas?.UpdateReceiptDto).toMatchObject({
+      required: ['throughMessageId'],
+      properties: {
+        throughMessageId: {
+          type: 'string',
+          format: 'uuid',
+          example: MESSAGE_ID,
+        },
+      },
+    });
+  });
+
   it.each(['PublicDiscoveryUserDto', 'ConversationParticipantDto'])(
     '%s exposes public profile fields without a phone number',
     (schemaName) => {
@@ -203,6 +233,9 @@ describe('OpenAPI request examples', () => {
     ['/v1/conversations/{conversationId}/messages', 'post'],
     ['/v1/conversations/{conversationId}/messages', 'get'],
     ['/v1/conversations/{conversationId}/read', 'post'],
+    ['/v1/conversations/{conversationId}/receipts/delivered', 'put'],
+    ['/v1/conversations/{conversationId}/receipts/read', 'put'],
+    ['/v1/conversations/{conversationId}/receipts', 'get'],
   ] as const)('%s requires bearer authentication', (path, method) => {
     expect(document.paths[path]?.[method]?.security).toEqual([{ bearer: [] }]);
   });
@@ -220,4 +253,23 @@ describe('OpenAPI request examples', () => {
       schema: { format: 'uuid', type: 'string' },
     });
   });
+
+  it.each([
+    ['/v1/conversations/{conversationId}/receipts/delivered', 'put'],
+    ['/v1/conversations/{conversationId}/receipts/read', 'put'],
+    ['/v1/conversations/{conversationId}/receipts', 'get'],
+  ] as const)(
+    '%s documents the receipt conversation path parameter',
+    (path, method) => {
+      const parameter = document.paths[path]?.[method]?.parameters?.find(
+        (candidate) =>
+          !('$ref' in candidate) && candidate.name === 'conversationId',
+      );
+      expect(parameter).toMatchObject({
+        in: 'path',
+        required: true,
+        schema: { format: 'uuid', type: 'string' },
+      });
+    },
+  );
 });

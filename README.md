@@ -17,8 +17,8 @@ and the project rubric in this workspace.
 - Registered-user search by display name without exposing phone numbers
 - Idempotent direct-conversation creation with membership-protected list/detail APIs
 - Persistent, idempotent text-message sending and cursor-paginated history
-- Per-user unread counts, read markers, and latest-message chat-list previews
-- Authenticated Socket.IO `message.created` delivery on the `/chat` namespace
+- Per-user unread counts, durable delivery/read receipts, and latest-message chat-list previews
+- Authenticated Socket.IO message, receipt, presence, and typing events on the `/chat` namespace
 - Short-lived JWT access tokens
 - Opaque, hashed, rotating refresh tokens with replay-family revocation
 - Persistent sessions and immediate server-side logout

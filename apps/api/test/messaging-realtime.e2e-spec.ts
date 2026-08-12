@@ -24,15 +24,42 @@ import { MessageEventsPublisher } from '../src/messages/message-events.publisher
 import { MessagesController } from '../src/messages/messages.controller';
 import { MessagesRepository } from '../src/messages/messages.repository';
 import { MessagesService } from '../src/messages/messages.service';
+import { ReceiptEventsPublisher } from '../src/receipts/receipt-events.publisher';
+import { ReceiptsController } from '../src/receipts/receipts.controller';
+import { ReceiptsRepository } from '../src/receipts/receipts.repository';
+import { ReceiptsService } from '../src/receipts/receipts.service';
+import { ChatStateService } from '../src/realtime/chat-state.service';
 import { ChatGateway } from '../src/realtime/chat.gateway';
 import { RealtimeAuthenticator } from '../src/realtime/realtime-authenticator';
+import { RealtimeConversationsRepository } from '../src/realtime/realtime-conversations.repository';
 import { RealtimeIoAdapter } from '../src/realtime/realtime-io.adapter';
 import { RealtimeMessageEventsPublisher } from '../src/realtime/realtime-message-events.publisher';
+import { RealtimeReceiptEventsPublisher } from '../src/realtime/realtime-receipt-events.publisher';
 import {
   MESSAGE_CREATED_EVENT,
+  PRESENCE_CHANGED_EVENT,
+  PRESENCE_SUBSCRIBE_COMMAND,
   REALTIME_AUTH_ERROR_CODE,
   REALTIME_AUTH_ERROR_MESSAGE,
+  REALTIME_CONVERSATION_ERROR_CODE,
+  REALTIME_CONVERSATION_ERROR_MESSAGE,
+  REALTIME_PAYLOAD_ERROR_CODE,
+  REALTIME_PAYLOAD_ERROR_MESSAGE,
+  RECEIPT_DELIVERED_EVENT,
+  RECEIPT_READ_EVENT,
+  TYPING_START_COMMAND,
+  TYPING_STARTED_EVENT,
+  TYPING_STOP_COMMAND,
+  TYPING_STOPPED_EVENT,
   type MessageCreatedEventPayload,
+  type PresenceChangedEventPayload,
+  type PresenceSubscriptionData,
+  type RealtimeAck,
+  type ReceiptUpdatedEventPayload,
+  type TypingStartedData,
+  type TypingStartedEventPayload,
+  type TypingStoppedData,
+  type TypingStoppedEventPayload,
 } from '../src/realtime/realtime.types';
 import {
   InMemoryAuthRepository,
@@ -56,6 +83,28 @@ interface MessageHistoryBody {
   };
 }
 
+interface ReceiptUpdateBody {
+  conversationId: string;
+  status: 'delivered' | 'read';
+  throughMessageId: string;
+  at: string;
+  changed: boolean;
+  version: number;
+  unreadCount: number;
+  delivered: { messageId: string; at: string };
+  read: { messageId: string; at: string } | null;
+}
+
+interface ReceiptFrontiersBody {
+  conversationId: string;
+  items: Array<{
+    userId: string;
+    version: number;
+    delivered: { messageId: string; at: string } | null;
+    read: { messageId: string; at: string } | null;
+  }>;
+}
+
 interface SocketErrorWithData extends Error {
   data?: unknown;
 }
@@ -68,6 +117,7 @@ const BOB_PHONE = '+12025550102';
 const CAROL_PHONE = '+12025550103';
 const CONVERSATION_ID = '00000000-0000-4000-8000-000000000301';
 const SECOND_CONVERSATION_ID = '00000000-0000-4000-8000-000000000302';
+const MISSING_CONVERSATION_ID = '00000000-0000-4000-8000-000000000399';
 const ALICE_SESSION_ID = '00000000-0000-4000-8000-000000000201';
 const ALICE_SECOND_SESSION_ID = '00000000-0000-4000-8000-000000000204';
 const BOB_SESSION_ID = '00000000-0000-4000-8000-000000000202';
@@ -169,6 +219,41 @@ function waitForConnectionError(socket: Socket): Promise<SocketErrorWithData> {
   });
 }
 
+function emitWithAck<T>(
+  socket: Socket,
+  event: string,
+  payload: unknown,
+): Promise<RealtimeAck<T>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Socket acknowledgement for ${event} timed out.`)),
+      2_000,
+    );
+    socket.emit(event, payload, (response: RealtimeAck<T>) => {
+      clearTimeout(timer);
+      resolve(response);
+    });
+  });
+}
+
+function shortenServerTimer(
+  duration: number,
+  replacement: number,
+): jest.SpyInstance {
+  const nativeSetTimeout = global.setTimeout;
+  const implementation = (
+    ...args: Parameters<typeof setTimeout>
+  ): ReturnType<typeof setTimeout> => {
+    const [callback, milliseconds, ...callbackArguments] = args;
+    return nativeSetTimeout(
+      callback,
+      milliseconds === duration ? replacement : milliseconds,
+      ...callbackArguments,
+    );
+  };
+  return jest.spyOn(global, 'setTimeout').mockImplementation(implementation);
+}
+
 describe('Messaging REST and realtime API (e2e, in memory)', () => {
   let app: INestApplication;
   let serverUrl: string;
@@ -252,22 +337,38 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
           }),
         }),
       ],
-      controllers: [MessagesController, ConversationsController],
+      controllers: [
+        MessagesController,
+        ConversationsController,
+        ReceiptsController,
+      ],
       providers: [
         MessagesService,
         ConversationsService,
+        ReceiptsService,
         AccessTokenService,
         NoStoreInterceptor,
         ChatGateway,
+        ChatStateService,
         RealtimeAuthenticator,
         RealtimeMessageEventsPublisher,
+        RealtimeReceiptEventsPublisher,
         {
           provide: MessageEventsPublisher,
           useExisting: RealtimeMessageEventsPublisher,
         },
+        {
+          provide: ReceiptEventsPublisher,
+          useExisting: RealtimeReceiptEventsPublisher,
+        },
         { provide: AuthRepository, useValue: authRepository },
         { provide: MessagesRepository, useValue: messagingRepository },
         { provide: ConversationsRepository, useValue: messagingRepository },
+        { provide: ReceiptsRepository, useValue: messagingRepository },
+        {
+          provide: RealtimeConversationsRepository,
+          useValue: messagingRepository,
+        },
         { provide: Clock, useValue: clock },
         { provide: APP_GUARD, useClass: JwtAuthGuard },
       ],
@@ -301,6 +402,7 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     for (const socket of sockets) {
       socket.removeAllListeners();
       socket.disconnect();
@@ -361,6 +463,17 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       .expect(HttpStatus.UNAUTHORIZED);
     await request(app.getHttpServer())
       .post(`/v1/conversations/${CONVERSATION_ID}/read`)
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/receipts/delivered`)
+      .send({ throughMessageId: CLIENT_MESSAGE_ID })
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/receipts/read`)
+      .send({ throughMessageId: CLIENT_MESSAGE_ID })
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/receipts`)
       .expect(HttpStatus.UNAUTHORIZED);
   });
 
@@ -625,6 +738,621 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
     expect(bobEvents).toEqual([created]);
     expect(JSON.stringify(bobEvents)).not.toContain('phoneNumber');
     expect(messagingRepository.messageCount).toBe(1);
+  });
+
+  it('persists a monotonic delivery frontier and emits exactly once to every participant device', async () => {
+    const first = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'Delivery one',
+    );
+    clock.advanceSeconds(1);
+    const second = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      SECOND_CLIENT_MESSAGE_ID,
+      'Delivery two',
+    );
+    clock.advanceSeconds(1);
+
+    const aliceFirstSocket = await connectSocket(aliceToken);
+    const aliceSecondSocket = await connectSocket(aliceSecondToken);
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 3);
+    const eventLists = [aliceFirstSocket, aliceSecondSocket, bobSocket].map(
+      (socket) => {
+        const events: ReceiptUpdatedEventPayload[] = [];
+        socket.on(RECEIPT_DELIVERED_EVENT, (payload) =>
+          events.push(payload as ReceiptUpdatedEventPayload),
+        );
+        return events;
+      },
+    );
+
+    const updatedResponse = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/receipts/delivered`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ throughMessageId: second.id })
+      .expect(HttpStatus.OK)
+      .expect('Cache-Control', 'no-store');
+    const updated = updatedResponse.body as ReceiptUpdateBody;
+    await waitUntil(
+      () => eventLists.every((events) => events.length === 1),
+      'Expected receipt.delivered on every participant socket.',
+    );
+
+    expect(updated).toEqual({
+      conversationId: CONVERSATION_ID,
+      status: 'delivered',
+      throughMessageId: second.id,
+      at: clock.now().toISOString(),
+      changed: true,
+      version: 1,
+      unreadCount: 2,
+      delivered: { messageId: second.id, at: clock.now().toISOString() },
+      read: null,
+    });
+    const expectedEvent: ReceiptUpdatedEventPayload = {
+      conversationId: CONVERSATION_ID,
+      userId: BOB_ID,
+      throughMessageId: second.id,
+      at: clock.now().toISOString(),
+      version: 1,
+      delivered: { messageId: second.id, at: clock.now().toISOString() },
+      read: null,
+    };
+    for (const events of eventLists) expect(events).toEqual([expectedEvent]);
+
+    clock.advanceSeconds(1);
+    const third = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      THIRD_CLIENT_MESSAGE_ID,
+      'Delivery three',
+    );
+    clock.advanceSeconds(1);
+    const advancedResponse = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/receipts/delivered`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ throughMessageId: third.id })
+      .expect(HttpStatus.OK);
+    const advanced = advancedResponse.body as ReceiptUpdateBody;
+    await waitUntil(
+      () => eventLists.every((events) => events.length === 2),
+      'Expected the advanced receipt.delivered event.',
+    );
+    expect(advanced).toMatchObject({
+      throughMessageId: third.id,
+      changed: true,
+      version: 2,
+      delivered: { messageId: third.id, at: advanced.at },
+      read: null,
+      unreadCount: 3,
+    });
+    const advancedEvent: ReceiptUpdatedEventPayload = {
+      conversationId: CONVERSATION_ID,
+      userId: BOB_ID,
+      throughMessageId: third.id,
+      at: advanced.at,
+      version: 2,
+      delivered: { messageId: third.id, at: advanced.at },
+      read: null,
+    };
+    for (const events of eventLists) {
+      expect(events).toEqual([expectedEvent, advancedEvent]);
+    }
+
+    const replay = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/receipts/delivered`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ throughMessageId: third.id })
+      .expect(HttpStatus.OK);
+    const older = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/receipts/delivered`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ throughMessageId: first.id })
+      .expect(HttpStatus.OK);
+    await delay(50);
+    for (const response of [replay, older]) {
+      expect(response.body as ReceiptUpdateBody).toMatchObject({
+        status: 'delivered',
+        throughMessageId: third.id,
+        at: advanced.at,
+        changed: false,
+        version: 2,
+        unreadCount: 3,
+      });
+    }
+    for (const events of eventLists) {
+      expect(events).toEqual([expectedEvent, advancedEvent]);
+    }
+
+    const reconciliationResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/receipts`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    const reconciliation = reconciliationResponse.body as ReceiptFrontiersBody;
+    expect(reconciliation).toEqual({
+      conversationId: CONVERSATION_ID,
+      items: [
+        { userId: ALICE_ID, version: 0, delivered: null, read: null },
+        {
+          userId: BOB_ID,
+          version: 2,
+          delivered: { messageId: third.id, at: advanced.at },
+          read: null,
+        },
+      ],
+    });
+    expect(JSON.stringify(reconciliation)).not.toContain('phoneNumber');
+  });
+
+  it('makes a direct read imply delivery, clears unread state, and emits the read frontier once', async () => {
+    await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'Read one',
+    );
+    clock.advanceSeconds(1);
+    const second = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      SECOND_CLIENT_MESSAGE_ID,
+      'Read two',
+    );
+    clock.advanceSeconds(1);
+
+    const aliceFirstSocket = await connectSocket(aliceToken);
+    const aliceSecondSocket = await connectSocket(aliceSecondToken);
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 3);
+    const eventLists = [aliceFirstSocket, aliceSecondSocket, bobSocket].map(
+      (socket) => {
+        const events: ReceiptUpdatedEventPayload[] = [];
+        socket.on(RECEIPT_READ_EVENT, (payload) =>
+          events.push(payload as ReceiptUpdatedEventPayload),
+        );
+        return events;
+      },
+    );
+
+    const readResponse = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/receipts/read`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ throughMessageId: second.id })
+      .expect(HttpStatus.OK);
+    const read = readResponse.body as ReceiptUpdateBody;
+    await waitUntil(
+      () => eventLists.every((events) => events.length === 1),
+      'Expected receipt.read on every participant socket.',
+    );
+    expect(read).toEqual({
+      conversationId: CONVERSATION_ID,
+      status: 'read',
+      throughMessageId: second.id,
+      at: clock.now().toISOString(),
+      changed: true,
+      version: 1,
+      unreadCount: 0,
+      delivered: { messageId: second.id, at: clock.now().toISOString() },
+      read: { messageId: second.id, at: clock.now().toISOString() },
+    });
+
+    const expectedEvent: ReceiptUpdatedEventPayload = {
+      conversationId: CONVERSATION_ID,
+      userId: BOB_ID,
+      throughMessageId: second.id,
+      at: read.at,
+      version: 1,
+      delivered: { messageId: second.id, at: read.at },
+      read: { messageId: second.id, at: read.at },
+    };
+    for (const events of eventLists) expect(events).toEqual([expectedEvent]);
+
+    const replay = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/receipts/read`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ throughMessageId: second.id })
+      .expect(HttpStatus.OK);
+    expect(replay.body as ReceiptUpdateBody).toMatchObject({
+      throughMessageId: second.id,
+      at: read.at,
+      changed: false,
+      version: 1,
+      unreadCount: 0,
+    });
+    await delay(50);
+    for (const events of eventLists) expect(events).toEqual([expectedEvent]);
+
+    const reconciliationResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/receipts`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    const reconciliation = reconciliationResponse.body as ReceiptFrontiersBody;
+    expect(reconciliation.items).toContainEqual({
+      userId: BOB_ID,
+      version: 1,
+      delivered: { messageId: second.id, at: read.at },
+      read: { messageId: second.id, at: read.at },
+    });
+
+    const conversations = await request(app.getHttpServer())
+      .get('/v1/conversations')
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    expect(conversations.body).toMatchObject({
+      items: [{ id: CONVERSATION_ID, unreadCount: 0 }],
+    });
+  });
+
+  it('conceals outsider, wrong-conversation, and sender-owned receipt boundaries behind the same 404', async () => {
+    const incoming = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'Incoming for Bob',
+    );
+    const senderOwned = await sendMessage(
+      bobToken,
+      CONVERSATION_ID,
+      SECOND_CLIENT_MESSAGE_ID,
+      'Bob cannot receipt this',
+    );
+    const wrongConversation = await sendMessage(
+      aliceToken,
+      SECOND_CONVERSATION_ID,
+      THIRD_CLIENT_MESSAGE_ID,
+      'Different conversation',
+    );
+
+    const responses = await Promise.all([
+      request(app.getHttpServer())
+        .put(`/v1/conversations/${CONVERSATION_ID}/receipts/delivered`)
+        .set('Authorization', `Bearer ${carolToken}`)
+        .send({ throughMessageId: incoming.id })
+        .expect(HttpStatus.NOT_FOUND),
+      request(app.getHttpServer())
+        .put(`/v1/conversations/${CONVERSATION_ID}/receipts/read`)
+        .set('Authorization', `Bearer ${bobToken}`)
+        .send({ throughMessageId: wrongConversation.id })
+        .expect(HttpStatus.NOT_FOUND),
+      request(app.getHttpServer())
+        .put(`/v1/conversations/${CONVERSATION_ID}/receipts/delivered`)
+        .set('Authorization', `Bearer ${bobToken}`)
+        .send({ throughMessageId: senderOwned.id })
+        .expect(HttpStatus.NOT_FOUND),
+      request(app.getHttpServer())
+        .get(`/v1/conversations/${CONVERSATION_ID}/receipts`)
+        .set('Authorization', `Bearer ${carolToken}`)
+        .expect(HttpStatus.NOT_FOUND),
+    ]);
+
+    for (const response of responses) {
+      expect(response.body as ApiErrorBody).toEqual({
+        statusCode: HttpStatus.NOT_FOUND,
+        code: 'CONVERSATION_NOT_FOUND',
+        message: 'The conversation was not found.',
+        timestamp: expect.any(String) as string,
+        path: expect.any(String) as string,
+      });
+    }
+  });
+
+  it('returns an authorized conversation presence and active-typing snapshot', async () => {
+    const aliceSocket = await connectSocket(aliceToken);
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 2);
+
+    const typingAck = await emitWithAck<TypingStartedData>(
+      aliceSocket,
+      TYPING_START_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    expect(typingAck).toMatchObject({
+      ok: true,
+      data: {
+        conversationId: CONVERSATION_ID,
+        expiresAt: expect.any(String) as string,
+      },
+    });
+
+    const presenceAck = await emitWithAck<PresenceSubscriptionData>(
+      bobSocket,
+      PRESENCE_SUBSCRIBE_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    expect(presenceAck).toEqual({
+      ok: true,
+      data: {
+        conversationId: CONVERSATION_ID,
+        participants: [
+          { userId: ALICE_ID, status: 'online' },
+          { userId: BOB_ID, status: 'online' },
+        ],
+        typing: [
+          {
+            userId: ALICE_ID,
+            expiresAt:
+              typingAck.ok && typingAck.data ? typingAck.data.expiresAt : '',
+          },
+        ],
+      },
+    });
+  });
+
+  it('returns the same conversation error to an outsider and for a missing conversation', async () => {
+    const aliceSocket = await connectSocket(aliceToken);
+    const carolSocket = await connectSocket(carolToken);
+
+    const outsiderAck = await emitWithAck<PresenceSubscriptionData>(
+      carolSocket,
+      PRESENCE_SUBSCRIBE_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    const missingAck = await emitWithAck<PresenceSubscriptionData>(
+      aliceSocket,
+      PRESENCE_SUBSCRIBE_COMMAND,
+      { conversationId: MISSING_CONVERSATION_ID },
+    );
+
+    const expectedError = {
+      ok: false,
+      error: {
+        code: REALTIME_CONVERSATION_ERROR_CODE,
+        message: REALTIME_CONVERSATION_ERROR_MESSAGE,
+      },
+    };
+    expect(outsiderAck).toEqual(expectedError);
+    expect(missingAck).toEqual(expectedError);
+  });
+
+  it('tracks presence across devices and delays the final offline transition', async () => {
+    const aliceFirstSocket = await connectSocket(aliceToken);
+    const aliceSecondSocket = await connectSocket(aliceSecondToken);
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 3);
+    await emitWithAck<PresenceSubscriptionData>(
+      bobSocket,
+      PRESENCE_SUBSCRIBE_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+
+    const presenceEvents: PresenceChangedEventPayload[] = [];
+    bobSocket.on(PRESENCE_CHANGED_EVENT, (payload) =>
+      presenceEvents.push(payload as PresenceChangedEventPayload),
+    );
+
+    aliceFirstSocket.disconnect();
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 2);
+    await delay(25);
+    expect(presenceEvents).toEqual([]);
+
+    const timerSpy = shortenServerTimer(10_000, 100);
+    aliceSecondSocket.disconnect();
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 1);
+    await delay(25);
+    expect(presenceEvents).toEqual([]);
+    await waitUntil(
+      () => presenceEvents.length === 1,
+      'Expected the delayed offline presence event.',
+    );
+    timerSpy.mockRestore();
+
+    expect(presenceEvents).toEqual([
+      {
+        conversationId: CONVERSATION_ID,
+        userId: ALICE_ID,
+        status: 'offline',
+        occurredAt: clock.now().toISOString(),
+      },
+    ]);
+
+    await connectSocket(aliceToken);
+    await waitUntil(
+      () => presenceEvents.length === 2,
+      'Expected the online presence event after reconnecting.',
+    );
+    expect(presenceEvents[1]).toEqual({
+      conversationId: CONVERSATION_ID,
+      userId: ALICE_ID,
+      status: 'online',
+      occurredAt: clock.now().toISOString(),
+    });
+  });
+
+  it('broadcasts typing refresh and stop only to subscribed peers', async () => {
+    const aliceFirstSocket = await connectSocket(aliceToken);
+    const aliceSecondSocket = await connectSocket(aliceSecondToken);
+    const bobSocket = await connectSocket(bobToken);
+    for (const socket of [aliceFirstSocket, aliceSecondSocket, bobSocket]) {
+      await emitWithAck<PresenceSubscriptionData>(
+        socket,
+        PRESENCE_SUBSCRIBE_COMMAND,
+        { conversationId: CONVERSATION_ID },
+      );
+    }
+
+    const aliceFirstEvents: Array<
+      TypingStartedEventPayload | TypingStoppedEventPayload
+    > = [];
+    const aliceSecondEvents: Array<
+      TypingStartedEventPayload | TypingStoppedEventPayload
+    > = [];
+    const bobStarts: TypingStartedEventPayload[] = [];
+    const bobStops: TypingStoppedEventPayload[] = [];
+    for (const [socket, events] of [
+      [aliceFirstSocket, aliceFirstEvents],
+      [aliceSecondSocket, aliceSecondEvents],
+    ] as const) {
+      socket.on(TYPING_STARTED_EVENT, (payload) =>
+        events.push(payload as TypingStartedEventPayload),
+      );
+      socket.on(TYPING_STOPPED_EVENT, (payload) =>
+        events.push(payload as TypingStoppedEventPayload),
+      );
+    }
+    bobSocket.on(TYPING_STARTED_EVENT, (payload) =>
+      bobStarts.push(payload as TypingStartedEventPayload),
+    );
+    bobSocket.on(TYPING_STOPPED_EVENT, (payload) =>
+      bobStops.push(payload as TypingStoppedEventPayload),
+    );
+
+    const firstAck = await emitWithAck<TypingStartedData>(
+      aliceFirstSocket,
+      TYPING_START_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    await waitUntil(
+      () => bobStarts.length === 1,
+      'Expected the first typing.started event.',
+    );
+    clock.advanceSeconds(1);
+    const refreshedAck = await emitWithAck<TypingStartedData>(
+      aliceFirstSocket,
+      TYPING_START_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    await waitUntil(
+      () => bobStarts.length === 2,
+      'Expected the refreshed typing.started event.',
+    );
+    const stoppedAck = await emitWithAck<TypingStoppedData>(
+      aliceFirstSocket,
+      TYPING_STOP_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    await waitUntil(
+      () => bobStops.length === 1,
+      'Expected the explicit typing.stopped event.',
+    );
+
+    expect(firstAck).toMatchObject({ ok: true });
+    expect(refreshedAck).toMatchObject({ ok: true });
+    expect(stoppedAck).toEqual({
+      ok: true,
+      data: { conversationId: CONVERSATION_ID },
+    });
+    expect(
+      refreshedAck.ok && firstAck.ok
+        ? Date.parse(refreshedAck.data.expiresAt) -
+            Date.parse(firstAck.data.expiresAt)
+        : 0,
+    ).toBe(1_000);
+    expect(bobStarts).toEqual([
+      {
+        conversationId: CONVERSATION_ID,
+        userId: ALICE_ID,
+        expiresAt: firstAck.ok ? firstAck.data.expiresAt : '',
+      },
+      {
+        conversationId: CONVERSATION_ID,
+        userId: ALICE_ID,
+        expiresAt: refreshedAck.ok ? refreshedAck.data.expiresAt : '',
+      },
+    ]);
+    expect(bobStops).toEqual([
+      {
+        conversationId: CONVERSATION_ID,
+        userId: ALICE_ID,
+        occurredAt: clock.now().toISOString(),
+      },
+    ]);
+    expect(aliceFirstEvents).toEqual([]);
+    expect(aliceSecondEvents).toEqual([]);
+  });
+
+  it('automatically expires typing without waiting for the production TTL', async () => {
+    const aliceSocket = await connectSocket(aliceToken);
+    const bobSocket = await connectSocket(bobToken);
+    await emitWithAck<PresenceSubscriptionData>(
+      bobSocket,
+      PRESENCE_SUBSCRIBE_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    const stoppedEvents: TypingStoppedEventPayload[] = [];
+    bobSocket.on(TYPING_STOPPED_EVENT, (payload) =>
+      stoppedEvents.push(payload as TypingStoppedEventPayload),
+    );
+
+    const timerSpy = shortenServerTimer(5_000, 100);
+    const startedAck = await emitWithAck<TypingStartedData>(
+      aliceSocket,
+      TYPING_START_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    expect(startedAck).toMatchObject({ ok: true });
+    await delay(25);
+    expect(stoppedEvents).toEqual([]);
+    await waitUntil(
+      () => stoppedEvents.length === 1,
+      'Expected typing to expire automatically.',
+    );
+    timerSpy.mockRestore();
+
+    expect(stoppedEvents).toEqual([
+      {
+        conversationId: CONVERSATION_ID,
+        userId: ALICE_ID,
+        occurredAt: clock.now().toISOString(),
+      },
+    ]);
+  });
+
+  it.each([
+    ['missing payload', undefined],
+    ['invalid UUID', { conversationId: 'not-a-uuid' }],
+    [
+      'extra payload property',
+      { conversationId: CONVERSATION_ID, targetUserId: BOB_ID },
+    ],
+  ])('rejects a realtime command with %s', async (_label, payload) => {
+    const aliceSocket = await connectSocket(aliceToken);
+
+    const ack = await emitWithAck<PresenceSubscriptionData>(
+      aliceSocket,
+      PRESENCE_SUBSCRIBE_COMMAND,
+      payload,
+    );
+
+    expect(ack).toEqual({
+      ok: false,
+      error: {
+        code: REALTIME_PAYLOAD_ERROR_CODE,
+        message: REALTIME_PAYLOAD_ERROR_MESSAGE,
+      },
+    });
+  });
+
+  it('disconnects a revoked presence subscriber before a typing event is delivered', async () => {
+    const aliceSocket = await connectSocket(aliceToken);
+    const bobSocket = await connectSocket(bobToken);
+    await emitWithAck<PresenceSubscriptionData>(
+      bobSocket,
+      PRESENCE_SUBSCRIBE_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    const bobEvents: TypingStartedEventPayload[] = [];
+    bobSocket.on(TYPING_STARTED_EVENT, (payload) =>
+      bobEvents.push(payload as TypingStartedEventPayload),
+    );
+    const disconnected = new Promise<void>((resolve) => {
+      bobSocket.once('disconnect', () => resolve());
+    });
+
+    await authRepository.revokeSession(BOB_SESSION_ID, clock.now(), 'LOGOUT');
+    const ack = await emitWithAck<TypingStartedData>(
+      aliceSocket,
+      TYPING_START_COMMAND,
+      { conversationId: CONVERSATION_ID },
+    );
+    await disconnected;
+
+    expect(ack).toMatchObject({ ok: true });
+    expect(bobEvents).toEqual([]);
+    expect(bobSocket.connected).toBe(false);
   });
 
   it.each([

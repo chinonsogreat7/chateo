@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Namespace, Socket } from 'socket.io';
 import { Clock } from '../auth/providers/clock';
 import { ChatGateway, userRoom } from './chat.gateway';
+import { ChatStateService } from './chat-state.service';
 import {
   RealtimeAuthenticationError,
   RealtimeAuthenticator,
@@ -14,6 +15,10 @@ function createGateway(maximumConnectionsPerUser = 5) {
   const gateway = new ChatGateway(
     { authenticate } as unknown as RealtimeAuthenticator,
     { now: jest.fn().mockReturnValue(NOW) } as Clock,
+    {
+      register: jest.fn(),
+      disconnect: jest.fn().mockResolvedValue(undefined),
+    } as unknown as ChatStateService,
     new ConfigService({
       REALTIME_MAX_CONNECTIONS_PER_USER: maximumConnectionsPerUser,
     }),
@@ -65,6 +70,7 @@ describe('ChatGateway', () => {
       },
       join: jest.fn().mockResolvedValue(undefined),
       disconnect: jest.fn(),
+      connected: true,
       once: jest.fn().mockImplementation((_event, listener) => {
         disconnectListener = listener;
       }),
@@ -76,6 +82,8 @@ describe('ChatGateway', () => {
       userRoom('11111111-1111-4111-8111-111111111111'),
     );
     jest.advanceTimersByTime(1_000);
+    await Promise.resolve();
+    await Promise.resolve();
     expect(client.disconnect).toHaveBeenCalledWith(true);
     expect(disconnectListener).toBeDefined();
   });
@@ -110,6 +118,7 @@ describe('ChatGateway', () => {
       },
       join: jest.fn().mockResolvedValue(undefined),
       disconnect: jest.fn(),
+      connected: true,
       once: jest.fn().mockImplementation((_event, listener) => {
         firstDisconnectListener = listener;
       }),
@@ -118,6 +127,7 @@ describe('ChatGateway', () => {
       data: { ...first.data, sessionId: 'session-two' },
       join: jest.fn().mockResolvedValue(undefined),
       disconnect: jest.fn(),
+      connected: true,
       once: jest.fn(),
     };
 

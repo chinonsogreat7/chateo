@@ -12,6 +12,13 @@ import type {
   MessageRecord,
   SendTextMessageResult,
 } from '../../src/messages/messages.types';
+import type { RealtimeConversationAccess } from '../../src/realtime/realtime-conversations.repository';
+import type { MarkReceiptThroughInput } from '../../src/receipts/receipts.repository';
+import type {
+  ListReceiptFrontiersResult,
+  MarkReceiptResult,
+  ReceiptFrontierRecord,
+} from '../../src/receipts/receipts.types';
 
 interface SeedMessagingUser {
   id: string;
@@ -30,6 +37,15 @@ interface StoredConversation {
 interface StoredMemberState {
   unreadCount: number;
   lastReadAt: Date | null;
+  receiptVersion: number;
+}
+
+interface StoredReceipt {
+  messageId: string;
+  conversationId: string;
+  userId: string;
+  deliveredAt: Date;
+  readAt: Date | null;
 }
 
 function copyDate(value: Date): Date {
@@ -44,6 +60,10 @@ function idempotencyKey(senderId: string, clientMessageId: string): string {
   return `${senderId}:${clientMessageId}`;
 }
 
+function receiptKey(messageId: string, userId: string): string {
+  return `${messageId}:${userId}`;
+}
+
 /**
  * A shared in-memory implementation of the messaging and conversation
  * repository contracts. It keeps the HTTP and Socket.IO E2E suite focused on
@@ -55,6 +75,7 @@ export class InMemoryMessagingRepository {
   private readonly messages = new Map<string, MessageRecord>();
   private readonly messageIdsByIdempotencyKey = new Map<string, string>();
   private readonly memberStates = new Map<string, StoredMemberState>();
+  private readonly receipts = new Map<string, StoredReceipt>();
 
   get messageCount(): number {
     return this.messages.size;
@@ -101,6 +122,7 @@ export class InMemoryMessagingRepository {
       this.memberStates.set(memberKey(normalizedId, memberId), {
         unreadCount: 0,
         lastReadAt: null,
+        receiptVersion: 0,
       });
     }
   }
@@ -186,6 +208,21 @@ export class InMemoryMessagingRepository {
       : null;
   }
 
+  async findAccessibleConversation(
+    conversationId: string,
+    userId: string,
+  ): Promise<RealtimeConversationAccess | null> {
+    const normalizedConversationId = conversationId.toLowerCase();
+    const normalizedUserId = userId.toLowerCase();
+    const conversation = this.conversations.get(normalizedConversationId);
+    if (!conversation?.memberIds.includes(normalizedUserId)) return null;
+
+    return {
+      conversationId: conversation.id,
+      participantIds: [...conversation.memberIds].sort(),
+    };
+  }
+
   async sendText(input: SendTextMessageInput): Promise<SendTextMessageResult> {
     const conversationId = input.conversationId.toLowerCase();
     const senderId = input.senderId.toLowerCase();
@@ -239,14 +276,28 @@ export class InMemoryMessagingRepository {
   async listForMember(
     conversationId: string,
     userId: string,
+  ): Promise<ListReceiptFrontiersResult>;
+  async listForMember(
+    conversationId: string,
+    userId: string,
     cursor: MessagePageCursor | null,
     take: number,
-  ): Promise<ListMessagesResult> {
+  ): Promise<ListMessagesResult>;
+  async listForMember(
+    conversationId: string,
+    userId: string,
+    cursor?: MessagePageCursor | null,
+    take?: number,
+  ): Promise<ListMessagesResult | ListReceiptFrontiersResult> {
     const normalizedConversationId = conversationId.toLowerCase();
     const normalizedUserId = userId.toLowerCase();
     const conversation = this.conversations.get(normalizedConversationId);
     if (!conversation?.memberIds.includes(normalizedUserId)) {
       return { status: 'conversation-not-found' };
+    }
+
+    if (take === undefined) {
+      return this.listReceiptFrontiers(conversation);
     }
 
     const messages = [...this.messages.values()]
@@ -267,6 +318,117 @@ export class InMemoryMessagingRepository {
       .slice(0, take)
       .map((message) => this.copyMessage(message));
     return { status: 'found', messages };
+  }
+
+  async markThrough(
+    input: MarkReceiptThroughInput,
+  ): Promise<MarkReceiptResult> {
+    const conversationId = input.conversationId.toLowerCase();
+    const userId = input.userId.toLowerCase();
+    const throughMessageId = input.throughMessageId.toLowerCase();
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation?.memberIds.includes(userId)) {
+      return { status: 'conversation-not-found' };
+    }
+
+    const boundary = this.messages.get(throughMessageId);
+    if (
+      !boundary ||
+      boundary.conversationId !== conversationId ||
+      boundary.senderId === userId
+    ) {
+      return { status: 'conversation-not-found' };
+    }
+
+    const eligibleMessages = [...this.messages.values()]
+      .filter(
+        (message) =>
+          message.conversationId === conversationId &&
+          message.senderId !== userId &&
+          (message.createdAt.getTime() < boundary.createdAt.getTime() ||
+            (message.createdAt.getTime() === boundary.createdAt.getTime() &&
+              message.id <= boundary.id)),
+      )
+      .sort(
+        (left, right) =>
+          left.createdAt.getTime() - right.createdAt.getTime() ||
+          left.id.localeCompare(right.id),
+      );
+
+    const previous = this.latestReceipt(
+      conversationId,
+      userId,
+      input.status === 'READ',
+    );
+    for (const message of eligibleMessages) {
+      const key = receiptKey(message.id, userId);
+      const existing = this.receipts.get(key);
+      if (!existing) {
+        this.receipts.set(key, {
+          messageId: message.id,
+          conversationId,
+          userId,
+          deliveredAt: copyDate(input.now),
+          readAt: input.status === 'READ' ? copyDate(input.now) : null,
+        });
+      } else if (input.status === 'READ' && !existing.readAt) {
+        existing.readAt = copyDate(input.now);
+      }
+    }
+
+    const effective = this.latestReceipt(
+      conversationId,
+      userId,
+      input.status === 'READ',
+    );
+    if (!effective) {
+      throw new Error('Receipt write completed without an effective boundary.');
+    }
+    const changed = this.receiptFrontierAdvanced(previous, effective);
+
+    const state = this.requiredMemberState(conversationId, userId);
+    if (changed) state.receiptVersion += 1;
+    if (input.status === 'READ') {
+      state.unreadCount = [...this.messages.values()].filter(
+        (message) =>
+          message.conversationId === conversationId &&
+          message.senderId !== userId &&
+          !this.receipts.get(receiptKey(message.id, userId))?.readAt,
+      ).length;
+      const readAt = effective.readAt;
+      if (!readAt) throw new Error('Read receipt is missing its timestamp.');
+      if (!state.lastReadAt || readAt > state.lastReadAt) {
+        state.lastReadAt = copyDate(readAt);
+      }
+    }
+
+    const at =
+      input.status === 'READ' ? effective.readAt : effective.deliveredAt;
+    if (!at) throw new Error('Receipt is missing its effective timestamp.');
+    const delivered = this.latestReceipt(conversationId, userId, false);
+    const read = this.latestReceipt(conversationId, userId, true);
+    if (!delivered) throw new Error('Delivery receipt is missing.');
+    return {
+      status: 'updated',
+      changed,
+      receipt: {
+        conversationId,
+        userId,
+        status: input.status,
+        throughMessageId: effective.messageId,
+        at: copyDate(at),
+        version: state.receiptVersion,
+        delivered: {
+          messageId: delivered.messageId,
+          at: copyDate(delivered.deliveredAt),
+        },
+        read: read?.readAt
+          ? { messageId: read.messageId, at: copyDate(read.readAt) }
+          : null,
+        unreadCount: state.unreadCount,
+        participantIds: [...conversation.memberIds],
+      },
+    };
   }
 
   async markRead(
@@ -321,6 +483,85 @@ export class InMemoryMessagingRepository {
             right.createdAt.getTime() - left.createdAt.getTime() ||
             right.id.localeCompare(left.id),
         )[0] ?? null
+    );
+  }
+
+  private latestReceipt(
+    conversationId: string,
+    userId: string,
+    requireRead: boolean,
+  ): StoredReceipt | null {
+    return (
+      [...this.receipts.values()]
+        .filter(
+          (receipt) =>
+            receipt.conversationId === conversationId &&
+            receipt.userId === userId &&
+            (!requireRead || receipt.readAt !== null),
+        )
+        .sort((left, right) => {
+          const leftMessage = this.messages.get(left.messageId);
+          const rightMessage = this.messages.get(right.messageId);
+          if (!leftMessage || !rightMessage) {
+            throw new Error('Receipt points to a missing message.');
+          }
+          return (
+            rightMessage.createdAt.getTime() -
+              leftMessage.createdAt.getTime() ||
+            right.messageId.localeCompare(left.messageId)
+          );
+        })[0] ?? null
+    );
+  }
+
+  private listReceiptFrontiers(
+    conversation: StoredConversation,
+  ): ListReceiptFrontiersResult {
+    const frontiers: ReceiptFrontierRecord[] = conversation.memberIds
+      .slice()
+      .sort()
+      .map((userId) => {
+        const memberState = this.requiredMemberState(conversation.id, userId);
+        const delivered = this.latestReceipt(conversation.id, userId, false);
+        const read = this.latestReceipt(conversation.id, userId, true);
+        return {
+          userId,
+          version: memberState.receiptVersion,
+          delivered: delivered
+            ? {
+                messageId: delivered.messageId,
+                at: copyDate(delivered.deliveredAt),
+              }
+            : null,
+          read: read?.readAt
+            ? { messageId: read.messageId, at: copyDate(read.readAt) }
+            : null,
+        };
+      });
+
+    return {
+      status: 'found',
+      conversationId: conversation.id,
+      frontiers,
+    };
+  }
+
+  private receiptFrontierAdvanced(
+    previous: StoredReceipt | null,
+    effective: StoredReceipt,
+  ): boolean {
+    if (!previous) return true;
+    const previousMessage = this.messages.get(previous.messageId);
+    const effectiveMessage = this.messages.get(effective.messageId);
+    if (!previousMessage || !effectiveMessage) {
+      throw new Error('Receipt points to a missing message.');
+    }
+    const timeDifference =
+      effectiveMessage.createdAt.getTime() -
+      previousMessage.createdAt.getTime();
+    return (
+      timeDifference > 0 ||
+      (timeDifference === 0 && effective.messageId > previous.messageId)
     );
   }
 

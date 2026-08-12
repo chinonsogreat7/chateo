@@ -50,6 +50,9 @@ describe('AppModule wiring (e2e smoke)', () => {
     await request(app.getHttpServer())
       .get('/v1/conversations/550e8400-e29b-41d4-a716-446655440000/messages')
       .expect(401);
+    await request(app.getHttpServer())
+      .get('/v1/conversations/550e8400-e29b-41d4-a716-446655440000/receipts')
+      .expect(401);
   });
 
   it('boots the production realtime module and adapter with stable socket authentication', async () => {

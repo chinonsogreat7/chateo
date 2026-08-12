@@ -1,6 +1,10 @@
 import {
+  Ack,
   WebSocketGateway,
   WebSocketServer,
+  SubscribeMessage,
+  ConnectedSocket,
+  MessageBody,
   type OnGatewayConnection,
   type OnGatewayInit,
 } from '@nestjs/websockets';
@@ -13,9 +17,20 @@ import {
 } from './realtime-authenticator';
 import {
   CHAT_NAMESPACE,
+  PRESENCE_SUBSCRIBE_COMMAND,
+  PRESENCE_UNSUBSCRIBE_COMMAND,
+  TYPING_START_COMMAND,
+  TYPING_STOP_COMMAND,
   type AuthenticatedChatSocket,
+  type ConversationCommandPayload,
+  type PresenceSubscriptionData,
+  type PresenceUnsubscriptionData,
+  type RealtimeAckCallback,
   type RealtimeSocketTarget,
+  type TypingStartedData,
+  type TypingStoppedData,
 } from './realtime.types';
+import { ChatStateService } from './chat-state.service';
 
 type ConnectionMiddlewareNext = (error?: Error) => void;
 
@@ -40,6 +55,7 @@ export class ChatGateway
   constructor(
     private readonly authenticator: RealtimeAuthenticator,
     private readonly clock: Clock,
+    private readonly state: ChatStateService,
     config: ConfigService,
   ) {
     this.maximumConnectionsPerUser = config.get<number>(
@@ -72,18 +88,61 @@ export class ChatGateway
     });
 
     const expiryTimer = setTimeout(() => {
-      client.disconnect(true);
+      void this.state.disconnect(client, false).finally(() => {
+        client.disconnect(true);
+      });
     }, expiresInMilliseconds);
     expiryTimer.unref();
     this.expiryTimers.set(client, expiryTimer);
 
     try {
       await client.join(userRoom(client.data.userId));
+      // A disconnect can race the asynchronous room join. The disconnect
+      // handler has already released the connection in that case, so never
+      // re-register a ghost socket as online.
+      if (!client.connected) return;
+      this.state.register(client);
     } catch {
       this.releaseConnection(client);
       client.disconnect(true);
       return;
     }
+  }
+
+  @SubscribeMessage(PRESENCE_SUBSCRIBE_COMMAND)
+  async subscribeToPresence(
+    @ConnectedSocket() client: AuthenticatedChatSocket,
+    @MessageBody() payload: ConversationCommandPayload,
+    @Ack() ack: RealtimeAckCallback<PresenceSubscriptionData>,
+  ): Promise<void> {
+    await this.state.subscribe(client, payload, ack);
+  }
+
+  @SubscribeMessage(PRESENCE_UNSUBSCRIBE_COMMAND)
+  async unsubscribeFromPresence(
+    @ConnectedSocket() client: AuthenticatedChatSocket,
+    @MessageBody() payload: ConversationCommandPayload,
+    @Ack() ack: RealtimeAckCallback<PresenceUnsubscriptionData>,
+  ): Promise<void> {
+    await this.state.unsubscribe(client, payload, ack);
+  }
+
+  @SubscribeMessage(TYPING_START_COMMAND)
+  async startTyping(
+    @ConnectedSocket() client: AuthenticatedChatSocket,
+    @MessageBody() payload: ConversationCommandPayload,
+    @Ack() ack: RealtimeAckCallback<TypingStartedData>,
+  ): Promise<void> {
+    await this.state.startTyping(client, payload, ack);
+  }
+
+  @SubscribeMessage(TYPING_STOP_COMMAND)
+  async stopTyping(
+    @ConnectedSocket() client: AuthenticatedChatSocket,
+    @MessageBody() payload: ConversationCommandPayload,
+    @Ack() ack: RealtimeAckCallback<TypingStoppedData>,
+  ): Promise<void> {
+    await this.state.stopTyping(client, payload, ack);
   }
 
   async findSocketsForUsers(
@@ -121,6 +180,7 @@ export class ChatGateway
     if (connections.size === 0) {
       this.connectionsByUser.delete(client.data.userId);
     }
+    void this.state.disconnect(client).catch(() => undefined);
   }
 
   private async authenticateConnection(

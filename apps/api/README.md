@@ -20,27 +20,30 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 
 ## Endpoints
 
-| Method  | Path                                         | Auth   | Purpose                                      |
-| ------- | -------------------------------------------- | ------ | -------------------------------------------- |
-| `GET`   | `/v1/health`                                 | Public | Liveness check                               |
-| `POST`  | `/v1/auth/otp/request`                       | Public | Request a verification code                  |
-| `POST`  | `/v1/auth/otp/resend`                        | Public | Resend after the cooldown                    |
-| `POST`  | `/v1/auth/otp/verify`                        | Public | Verify and receive a token pair              |
-| `POST`  | `/v1/auth/refresh`                           | Public | Rotate a refresh token                       |
-| `POST`  | `/v1/auth/logout`                            | Public | Revoke a refresh session; always idempotent  |
-| `GET`   | `/v1/me`                                     | Bearer | Read the signed-in profile                   |
-| `PATCH` | `/v1/me`                                     | Bearer | Set the name and optional avatar URL         |
-| `POST`  | `/v1/contacts/match`                         | Bearer | Match phone numbers already known to caller  |
-| `GET`   | `/v1/users/search`                           | Bearer | Search completed profiles by display name    |
-| `POST`  | `/v1/conversations/direct`                   | Bearer | Create or return a direct conversation       |
-| `GET`   | `/v1/conversations`                          | Bearer | List the signed-in user's conversations      |
-| `GET`   | `/v1/conversations/:conversationId`          | Bearer | Open a conversation as a member              |
-| `POST`  | `/v1/conversations/:conversationId/messages` | Bearer | Persist or replay an idempotent text message |
-| `GET`   | `/v1/conversations/:conversationId/messages` | Bearer | Read newest-first message history            |
-| `POST`  | `/v1/conversations/:conversationId/read`     | Bearer | Mark currently persisted messages as read    |
+| Method  | Path                                                   | Auth   | Purpose                                           |
+| ------- | ------------------------------------------------------ | ------ | ------------------------------------------------- |
+| `GET`   | `/v1/health`                                           | Public | Liveness check                                    |
+| `POST`  | `/v1/auth/otp/request`                                 | Public | Request a verification code                       |
+| `POST`  | `/v1/auth/otp/resend`                                  | Public | Resend after the cooldown                         |
+| `POST`  | `/v1/auth/otp/verify`                                  | Public | Verify and receive a token pair                   |
+| `POST`  | `/v1/auth/refresh`                                     | Public | Rotate a refresh token                            |
+| `POST`  | `/v1/auth/logout`                                      | Public | Revoke a refresh session; always idempotent       |
+| `GET`   | `/v1/me`                                               | Bearer | Read the signed-in profile                        |
+| `PATCH` | `/v1/me`                                               | Bearer | Set the name and optional avatar URL              |
+| `POST`  | `/v1/contacts/match`                                   | Bearer | Match phone numbers already known to caller       |
+| `GET`   | `/v1/users/search`                                     | Bearer | Search completed profiles by display name         |
+| `POST`  | `/v1/conversations/direct`                             | Bearer | Create or return a direct conversation            |
+| `GET`   | `/v1/conversations`                                    | Bearer | List the signed-in user's conversations           |
+| `GET`   | `/v1/conversations/:conversationId`                    | Bearer | Open a conversation as a member                   |
+| `POST`  | `/v1/conversations/:conversationId/messages`           | Bearer | Persist or replay an idempotent text message      |
+| `GET`   | `/v1/conversations/:conversationId/messages`           | Bearer | Read newest-first message history                 |
+| `PUT`   | `/v1/conversations/:conversationId/receipts/delivered` | Bearer | Advance the caller's durable delivery boundary    |
+| `PUT`   | `/v1/conversations/:conversationId/receipts/read`      | Bearer | Advance the caller's durable read boundary        |
+| `GET`   | `/v1/conversations/:conversationId/receipts`           | Bearer | Reconcile every participant's receipt frontiers   |
+| `POST`  | `/v1/conversations/:conversationId/read`               | Bearer | Legacy local read marker; use receipt route above |
 
-Authentication, profile, discovery, conversation, and message responses include
-`Cache-Control: no-store`.
+Authentication, profile, discovery, conversation, message, and receipt
+responses include `Cache-Control: no-store`.
 
 ### Request an OTP
 
@@ -227,19 +230,62 @@ Items are ordered newest first. Pass `pageInfo.nextCursor` unchanged on the
 same conversation route to load older messages; clients must not inspect or
 construct it.
 
-Once the user has rendered all currently returned messages, mark the
-conversation read:
+`POST /v1/conversations/:conversationId/read` remains available for older
+clients. It marks all messages currently persisted on the server as read for
+the caller, but it does not create participant receipt frontiers or publish a
+receipt socket event. It is deprecated for new clients; use the explicit
+receipt boundary API below.
+
+## Delivery and read receipts
+
+Receipt writes are REST-authoritative and persisted in PostgreSQL. After an
+incoming message has been accepted into the device's durable local state,
+advance delivery through its server message ID:
 
 ```http
-POST /v1/conversations/:conversationId/read
+PUT /v1/conversations/550e8400-e29b-41d4-a716-446655440000/receipts/delivered
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "throughMessageId": "44444444-4444-4444-8444-444444444444"
+}
+```
+
+After that incoming message is actually visible to the user, advance the read
+boundary with the same body:
+
+```http
+PUT /v1/conversations/550e8400-e29b-41d4-a716-446655440000/receipts/read
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "throughMessageId": "44444444-4444-4444-8444-444444444444"
+}
+```
+
+The boundary must identify an incoming message in that conversation. A read
+receipt also records delivery, and both operations apply to all incoming
+messages through the boundary. Updates never move backwards and retries are
+idempotent: the response has `changed: false` if the requested state was already
+persisted. The first delivery/read timestamp for each message is preserved.
+Read updates reconcile the caller's unread count in the same serializable
+database transaction.
+
+Use this endpoint on startup or reconnect to recover anything missed while the
+socket was unavailable:
+
+```http
+GET /v1/conversations/550e8400-e29b-41d4-a716-446655440000/receipts
 Authorization: Bearer <access-token>
 ```
 
-This atomically resets that member's unread count and records a read boundary
-that never moves backwards. Sending, unread increments, chat-list activity, and
-message persistence happen in one database transaction.
+The response contains each participant's latest durable delivery and read
+frontier. Missing conversations, non-membership, and inaccessible receipt
+boundaries all use the privacy-safe `CONVERSATION_NOT_FOUND` response.
 
-## Realtime delivery
+## Realtime chat
 
 Socket.IO uses the API origin with the `/chat` namespace, not the REST `/v1`
 prefix. Authenticate with the current access token in the handshake:
@@ -262,17 +308,133 @@ contains `code: "AUTH_ACCESS_TOKEN_INVALID"`. A connected socket is closed when
 its access token expires; after refreshing, reconnect it with the new access
 token.
 
-There is intentionally no client-to-server socket event for sending messages.
-REST is the authoritative write path, while `message.created` is a low-latency
-notification delivered to all active devices belonging to both participants.
-On initial connection or reconnection, always reconcile through the REST
-history endpoint because socket delivery is best-effort. Do not treat socket
-arrival order as message order; render the persisted `createdAt`/`id` order
-returned by history and deduplicate by the server message `id`.
+There is intentionally no client-to-server socket event for sending messages or
+writing receipts. REST stays authoritative; socket events are low-latency hints.
+`message.created` is delivered to all active devices belonging to both
+participants. The durable receipt events are:
 
-The current Socket.IO adapter is suitable for the single Render instance used
-by the classroom project. Before horizontally scaling, add a shared Socket.IO
-adapter (for example Redis) so user rooms and events span every API instance.
+```ts
+socket.on(
+  'receipt.delivered',
+  ({
+    conversationId,
+    userId,
+    throughMessageId,
+    at,
+    version,
+    delivered,
+    read,
+  }) => {},
+);
+
+socket.on(
+  'receipt.read',
+  ({
+    conversationId,
+    userId,
+    throughMessageId,
+    at,
+    version,
+    delivered,
+    read,
+  }) => {},
+);
+```
+
+The event name conveys the receipt status. Receipt events are published only
+when the durable frontier changes and are sent to active devices of every
+conversation participant, including the updating user's other devices.
+Every event carries the participant's complete `delivered` and `read` frontier
+snapshot. `version` increases monotonically for that participant; clients
+should apply the full snapshot, then ignore an event whose version is older
+than the latest version they have already applied. The REST receipt response
+and reconciliation items include the same fields.
+
+### Presence subscriptions
+
+Presence and typing events are scoped to a conversation. Subscribe when its
+chat screen opens and retain the acknowledgement as the initial snapshot:
+
+```ts
+socket.emit('presence.subscribe', { conversationId }, (ack) => {
+  if (ack.ok) {
+    // ack.data = {
+    //   conversationId,
+    //   participants: [{ userId, status: 'online' | 'offline' }],
+    //   typing: [{ userId, expiresAt }],
+    // }
+  }
+});
+
+socket.on(
+  'presence.changed',
+  ({ conversationId, userId, status, occurredAt }) => {},
+);
+```
+
+When the screen closes, send `presence.unsubscribe` with
+`{ conversationId }`. Its success acknowledgement is
+`{ ok: true, data: { conversationId } }`. Each socket may hold at most 20
+active conversation subscriptions. Presence is aggregated across a user's
+devices: the user becomes offline only after the last socket disconnects and a
+10-second reconnection grace period passes.
+
+### Typing indicators
+
+Send `typing.start` with `{ conversationId }` when text entry begins. Its
+success acknowledgement contains `{ conversationId, expiresAt }`, and other
+subscribed participants receive:
+
+```ts
+socket.on('typing.started', ({ conversationId, userId, expiresAt }) => {});
+socket.on('typing.stopped', ({ conversationId, userId, occurredAt }) => {});
+```
+
+Typing expires automatically after five seconds. While the user continues
+typing, refresh `typing.start` about every three seconds; every refresh supplies
+a new `expiresAt`. Send `typing.stop` on send, blur, or chat close. Its success
+acknowledgement is `{ ok: true, data: { conversationId } }`. Unsubscribe and
+disconnect also clear typing. A user's own devices do not receive that user's
+typing events, and multiple devices are aggregated so one device stopping does
+not clear another device's active typing state.
+
+All four client commands require an acknowledgement callback. Failures use:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "REALTIME_CONVERSATION_NOT_FOUND",
+    "message": "Conversation was not found."
+  }
+}
+```
+
+The possible codes are `AUTH_ACCESS_TOKEN_INVALID`,
+`REALTIME_PAYLOAD_INVALID`, `REALTIME_CONVERSATION_NOT_FOUND`,
+`REALTIME_RATE_LIMITED`, and `REALTIME_INTERNAL_ERROR`. Payloads are strict:
+they must contain exactly one `conversationId` UUID field. Missing and
+unauthorized conversations deliberately return the same conversation error.
+The server currently permits 30 commands per 10-second window on each socket;
+an active `typing.stop` remains allowed so the indicator cannot get stuck.
+
+### Reconnection and ordering
+
+On initial connection or reconnection:
+
+1. Fetch REST message history and deduplicate by server message `id`.
+2. Fetch `GET .../receipts` to reconcile durable receipt frontiers.
+3. Send `presence.subscribe` for the open chat and apply its presence/typing
+   snapshot before processing later events.
+
+Socket delivery is best-effort. Do not treat socket arrival order as message
+order; render the persisted `createdAt`/`id` order returned by history.
+
+The current Socket.IO adapter and the process-local presence/typing state are
+intended for the classroom project's single Render instance. Before
+horizontally scaling, add both a shared Socket.IO adapter (for example Redis)
+and a shared presence/typing state coordinator. A Socket.IO adapter alone does
+not make the in-memory snapshots or expiry timers consistent across instances.
 
 ## Error shape
 
@@ -293,7 +455,7 @@ Errors use a stable machine-readable code:
 
 Important auth codes include `AUTH_INVALID_PHONE_NUMBER`, `AUTH_OTP_COOLDOWN`, `AUTH_INVALID_OTP`, `AUTH_OTP_EXPIRED`, `AUTH_OTP_ATTEMPTS_EXCEEDED`, `AUTH_REFRESH_TOKEN_INVALID`, `AUTH_REFRESH_TOKEN_REUSED`, and `AUTH_ACCESS_TOKEN_INVALID`.
 
-Discovery, conversation, and message codes include
+Discovery, conversation, message, and receipt codes include
 `CONTACTS_INVALID_PHONE_NUMBER`, `DISCOVERY_INVALID_CURSOR`,
 `CONVERSATION_SELF_NOT_ALLOWED`, `CONVERSATION_CURSOR_INVALID`,
 `CONVERSATION_NOT_FOUND`, `USER_NOT_FOUND`, `MESSAGE_CURSOR_INVALID`, and
@@ -316,6 +478,7 @@ Discovery, conversation, and message codes include
 - Discovery and conversation responses use a public user shape that omits phone numbers.
 - Direct-conversation participant pairs are stored in canonical UUID order under a database unique constraint.
 - Message send retries are deduplicated by `(senderId, clientMessageId)` before unread counters change.
+- Receipt boundaries accept only incoming messages, advance monotonically, and persist before their socket events are published.
 - Socket handshakes validate both the JWT and its server-side session; private events are revalidated before delivery.
 
 ## Environment
