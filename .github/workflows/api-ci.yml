@@ -39,6 +39,10 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - name: Generate Prisma Client
+        run: npm run prisma:generate --workspace @chateo/api
+
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck

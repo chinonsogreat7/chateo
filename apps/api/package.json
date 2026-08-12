@@ -9,8 +9,8 @@
   },
   "scripts": {
     "build": "prisma generate && nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\" \"*.{ts,js,json,md}\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\" \"*.{ts,js,json,md}\"",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\" \"postman/**/*.{json,md}\" \"*.{ts,js,json,md}\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\" \"postman/**/*.{json,md}\" \"*.{ts,js,json,md}\"",
     "lint": "eslint src test prisma prisma.config.ts --max-warnings=0",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:generate": "prisma generate",

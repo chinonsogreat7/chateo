@@ -290,6 +290,11 @@ boundaries all use the privacy-safe `CONVERSATION_NOT_FOUND` response.
 Socket.IO uses the API origin with the `/chat` namespace, not the REST `/v1`
 prefix. Authenticate with the current access token in the handshake:
 
+Students can test every realtime command and event in Postman using the
+[Socket.IO Postman guide](./postman/README.md) and its importable environment
+template. A printable [student testing guide](../../output/pdf/ChatMe-Socket.IO-Postman-Student-Guide.pdf)
+is included for classroom use.
+
 ```ts
 import { io } from 'socket.io-client';
 
