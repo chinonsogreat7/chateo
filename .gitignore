@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Prisma and test artifacts
+*.db
+*.db-journal
+.jest-cache/
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+
+# Codex working artifacts
+.codex_tmp/
+
+# Local course and visual-reference material
+/audit/
+/Mobile_Chat_App_Project_Guideline*.docx

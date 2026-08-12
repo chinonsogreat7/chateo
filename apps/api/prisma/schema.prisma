@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OtpPurpose {
+  SIGN_IN
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+  WEB
+  UNKNOWN
+}
+
+enum SessionRevocationReason {
+  ROTATED
+  LOGOUT
+  REUSE_DETECTED
+  ADMIN
+}
+
+model User {
+  id                 String        @id @default(uuid()) @db.Uuid
+  phoneNumber        String        @unique @map("phone_number") @db.VarChar(16)
+  phoneVerifiedAt    DateTime      @map("phone_verified_at") @db.Timestamptz(3)
+  displayName        String?       @map("display_name") @db.VarChar(80)
+  avatarUrl          String?       @map("avatar_url") @db.Text
+  profileCompletedAt DateTime?     @map("profile_completed_at") @db.Timestamptz(3)
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  sessions           AuthSession[]
+
+  @@map("users")
+}
+
+model OtpChallenge {
+  id                String      @id @default(uuid()) @db.Uuid
+  phoneNumber       String      @map("phone_number") @db.VarChar(16)
+  purpose           OtpPurpose  @default(SIGN_IN)
+  codeDigest        String      @map("code_digest") @db.Char(64)
+  expiresAt         DateTime    @map("expires_at") @db.Timestamptz(3)
+  resendAvailableAt DateTime    @map("resend_available_at") @db.Timestamptz(3)
+  attemptsRemaining Int         @default(5) @map("attempts_remaining")
+  lastSentAt        DateTime    @map("last_sent_at") @db.Timestamptz(3)
+  consumedAt        DateTime?   @map("consumed_at") @db.Timestamptz(3)
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([phoneNumber, createdAt])
+  @@index([expiresAt])
+  @@map("otp_challenges")
+}
+
+model OtpAttemptBudget {
+  phoneNumber    String    @id @map("phone_number") @db.VarChar(16)
+  failedAttempts Int       @default(0) @map("failed_attempts")
+  lockedUntil    DateTime? @map("locked_until") @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([lockedUntil])
+  @@map("otp_attempt_budgets")
+}
+
+model AuthSession {
+  id             String                   @id @default(uuid()) @db.Uuid
+  familyId       String                   @map("family_id") @db.Uuid
+  userId         String                   @map("user_id") @db.Uuid
+  tokenDigest    String                   @unique @map("token_digest") @db.Char(64)
+  deviceName     String?                  @map("device_name") @db.VarChar(120)
+  platform       DevicePlatform           @default(UNKNOWN)
+  ipAddress      String?                  @map("ip_address") @db.VarChar(64)
+  userAgent      String?                  @map("user_agent") @db.VarChar(512)
+  expiresAt      DateTime                 @map("expires_at") @db.Timestamptz(3)
+  lastUsedAt     DateTime                 @map("last_used_at") @db.Timestamptz(3)
+  revokedAt      DateTime?                @map("revoked_at") @db.Timestamptz(3)
+  revokedReason  SessionRevocationReason? @map("revoked_reason")
+  replacedById   String?                  @unique @map("replaced_by_id") @db.Uuid
+  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy     AuthSession?             @relation("SessionRotation", fields: [replacedById], references: [id], onDelete: SetNull)
+  replaces       AuthSession?             @relation("SessionRotation")
+
+  @@index([userId, revokedAt])
+  @@index([familyId, revokedAt])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
