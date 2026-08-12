@@ -124,6 +124,13 @@ export interface MessageCreatedEventPayload {
   senderId: string;
   kind: 'text';
   text: string;
+  replyToMessageId: string | null;
+  replyTo: {
+    id: string;
+    senderId: string;
+    kind: 'text';
+    preview: string;
+  } | null;
   createdAt: string;
 }
 

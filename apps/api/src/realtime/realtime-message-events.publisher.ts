@@ -82,6 +82,15 @@ function toMessageCreatedPayload(
     senderId: message.senderId,
     kind: 'text',
     text: message.text,
+    replyToMessageId: message.replyToMessageId,
+    replyTo: message.replyTo
+      ? {
+          id: message.replyTo.id,
+          senderId: message.replyTo.senderId,
+          kind: 'text',
+          preview: message.replyTo.preview,
+        }
+      : null,
     createdAt: message.createdAt.toISOString(),
   };
 }

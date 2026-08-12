@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsUUID, MinLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
 import { IsPostgresText } from '../validators/is-postgres-text.decorator';
 
 export class SendMessageDto {
@@ -12,6 +12,19 @@ export class SendMessageDto {
   })
   @IsUUID()
   clientMessageId!: string;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    example: '55555555-5555-4555-8555-555555555555',
+    description:
+      'The message being replied to. It must belong to the same conversation.',
+  })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.toLowerCase() : value,
+  )
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsUUID()
+  replyToMessageId?: string;
 
   @ApiProperty({
     minLength: 1,

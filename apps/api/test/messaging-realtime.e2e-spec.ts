@@ -125,6 +125,7 @@ const CAROL_SESSION_ID = '00000000-0000-4000-8000-000000000203';
 const CLIENT_MESSAGE_ID = '10000000-0000-4000-8000-000000000001';
 const SECOND_CLIENT_MESSAGE_ID = '10000000-0000-4000-8000-000000000002';
 const THIRD_CLIENT_MESSAGE_ID = '10000000-0000-4000-8000-000000000003';
+const MISSING_MESSAGE_ID = '10000000-0000-4000-8000-000000000099';
 
 jest.setTimeout(15_000);
 
@@ -444,11 +445,16 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
     conversationId: string,
     clientMessageId: string,
     text: string,
+    replyToMessageId?: string,
   ): Promise<MessageBody> {
     const response = await request(app.getHttpServer())
       .post(`/v1/conversations/${conversationId}/messages`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ clientMessageId, text })
+      .send({
+        clientMessageId,
+        text,
+        ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
+      })
       .expect(HttpStatus.OK);
     return response.body as MessageBody;
   }
@@ -493,12 +499,108 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       senderId: ALICE_ID,
       kind: 'text',
       text: 'Hello Bob!',
+      replyToMessageId: null,
+      replyTo: null,
       createdAt: expect.any(String) as string,
     });
     expect(response.body).not.toHaveProperty('participantIds');
     expect(JSON.stringify(response.body)).not.toContain('phoneNumber');
     expect(JSON.stringify(response.body)).not.toContain(ALICE_PHONE);
     expect(JSON.stringify(response.body)).not.toContain(BOB_PHONE);
+    expect(messagingRepository.messageCount).toBe(1);
+  });
+
+  it('returns the same shallow reply projection from send and history', async () => {
+    const original = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'Original message',
+    );
+    clock.advanceSeconds(1);
+
+    const reply = await sendMessage(
+      bobToken,
+      CONVERSATION_ID,
+      SECOND_CLIENT_MESSAGE_ID,
+      'Reply message',
+      original.id,
+    );
+
+    expect(reply).toMatchObject({
+      replyToMessageId: original.id,
+      replyTo: {
+        id: original.id,
+        senderId: ALICE_ID,
+        kind: 'text',
+        preview: 'Original message',
+      },
+    });
+    expect(reply.replyTo).toEqual({
+      id: original.id,
+      senderId: ALICE_ID,
+      kind: 'text',
+      preview: 'Original message',
+    });
+    expect(reply.replyTo).not.toHaveProperty('text');
+
+    const replay = await sendMessage(
+      bobToken,
+      CONVERSATION_ID,
+      SECOND_CLIENT_MESSAGE_ID,
+      'Reply message',
+      original.id,
+    );
+    expect(replay.id).toBe(reply.id);
+
+    const conflict = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({
+        clientMessageId: SECOND_CLIENT_MESSAGE_ID,
+        text: 'Reply message',
+      })
+      .expect(HttpStatus.CONFLICT);
+    expect(conflict.body as ApiErrorBody).toMatchObject({
+      code: 'MESSAGE_IDEMPOTENCY_CONFLICT',
+    });
+
+    const history = await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    const historyReply = (history.body as MessageHistoryBody).items[0];
+    expect(historyReply).toEqual(reply);
+    expect(historyReply?.replyTo).not.toHaveProperty('text');
+  });
+
+  it('conceals missing and cross-conversation reply targets', async () => {
+    const otherConversationMessage = await sendMessage(
+      aliceToken,
+      SECOND_CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'A different conversation',
+    );
+
+    const targets = [MISSING_MESSAGE_ID, otherConversationMessage.id];
+    for (const [index, replyToMessageId] of targets.entries()) {
+      const response = await request(app.getHttpServer())
+        .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+        .set('Authorization', `Bearer ${bobToken}`)
+        .send({
+          clientMessageId:
+            index === 0 ? SECOND_CLIENT_MESSAGE_ID : THIRD_CLIENT_MESSAGE_ID,
+          text: 'Hidden reply target',
+          replyToMessageId,
+        })
+        .expect(HttpStatus.NOT_FOUND);
+
+      expect(response.body as ApiErrorBody).toMatchObject({
+        statusCode: HttpStatus.NOT_FOUND,
+        code: 'MESSAGE_NOT_FOUND',
+        message: 'The message was not found.',
+      });
+    }
     expect(messagingRepository.messageCount).toBe(1);
   });
 
@@ -510,6 +612,42 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
       .set('Authorization', `Bearer ${aliceToken}`)
       .send({ clientMessageId: CLIENT_MESSAGE_ID, text })
+      .expect(HttpStatus.BAD_REQUEST);
+
+    expect(response.body as ApiErrorBody).toMatchObject({
+      statusCode: HttpStatus.BAD_REQUEST,
+      code: 'VALIDATION_ERROR',
+    });
+    expect(messagingRepository.messageCount).toBe(0);
+  });
+
+  it('rejects a null reply target instead of treating it as an omitted UUID', async () => {
+    const response = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({
+        clientMessageId: CLIENT_MESSAGE_ID,
+        text: 'Invalid nullable reply',
+        replyToMessageId: null,
+      })
+      .expect(HttpStatus.BAD_REQUEST);
+
+    expect(response.body as ApiErrorBody).toMatchObject({
+      statusCode: HttpStatus.BAD_REQUEST,
+      code: 'VALIDATION_ERROR',
+    });
+    expect(messagingRepository.messageCount).toBe(0);
+  });
+
+  it('rejects a malformed reply target before persistence', async () => {
+    const response = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({
+        clientMessageId: CLIENT_MESSAGE_ID,
+        text: 'Invalid reply UUID',
+        replyToMessageId: 'not-a-uuid',
+      })
       .expect(HttpStatus.BAD_REQUEST);
 
     expect(response.body as ApiErrorBody).toMatchObject({
@@ -692,6 +830,13 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
   });
 
   it('delivers exactly one message.created event to both participants and every sender device', async () => {
+    const original = await sendMessage(
+      bobToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'Realtime reply target',
+    );
+    clock.advanceSeconds(1);
     const aliceFirstSocket = await connectSocket(aliceToken);
     const aliceSecondSocket = await connectSocket(aliceSecondToken);
     const bobSocket = await connectSocket(bobToken);
@@ -713,8 +858,9 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
     const created = await sendMessage(
       aliceToken,
       CONVERSATION_ID,
-      CLIENT_MESSAGE_ID,
+      SECOND_CLIENT_MESSAGE_ID,
       'Realtime hello',
+      original.id,
     );
     await waitUntil(
       () =>
@@ -727,8 +873,9 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
     const replay = await sendMessage(
       aliceToken,
       CONVERSATION_ID,
-      CLIENT_MESSAGE_ID,
+      SECOND_CLIENT_MESSAGE_ID,
       'Realtime hello',
+      original.id,
     );
     await delay(50);
 
@@ -736,8 +883,17 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
     expect(aliceFirstEvents).toEqual([created]);
     expect(aliceSecondEvents).toEqual([created]);
     expect(bobEvents).toEqual([created]);
+    expect(created).toMatchObject({
+      replyToMessageId: original.id,
+      replyTo: {
+        id: original.id,
+        senderId: BOB_ID,
+        kind: 'text',
+        preview: 'Realtime reply target',
+      },
+    });
     expect(JSON.stringify(bobEvents)).not.toContain('phoneNumber');
-    expect(messagingRepository.messageCount).toBe(1);
+    expect(messagingRepository.messageCount).toBe(2);
   });
 
   it('persists a monotonic delivery frontier and emits exactly once to every participant device', async () => {

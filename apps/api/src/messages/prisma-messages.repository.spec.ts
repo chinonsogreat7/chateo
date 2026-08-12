@@ -7,6 +7,7 @@ const OTHER_USER_ID = '22222222-2222-4222-8222-222222222222';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
 const OTHER_CONVERSATION_ID = '33333333-3333-4333-8333-333333333334';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
+const REPLY_MESSAGE_ID = '44444444-4444-4444-8444-444444444445';
 const CLIENT_MESSAGE_ID = '55555555-5555-4555-8555-555555555555';
 const NOW = new Date('2026-08-12T16:00:00.000Z');
 
@@ -16,6 +17,7 @@ function rawMessage(overrides: Record<string, unknown> = {}) {
     conversationId: CONVERSATION_ID,
     senderId: USER_ID,
     clientMessageId: CLIENT_MESSAGE_ID,
+    replyToMessageId: null,
     kind: MessageKind.TEXT,
     text: 'Hello!',
     createdAt: NOW,
@@ -28,6 +30,7 @@ function sendInput() {
     conversationId: CONVERSATION_ID,
     senderId: USER_ID,
     clientMessageId: CLIENT_MESSAGE_ID,
+    replyToMessageId: null,
     text: 'Hello!',
     now: NOW,
   };
@@ -64,6 +67,7 @@ function sendTransactionState(existing: unknown = null) {
     .fn()
     .mockResolvedValue([{ userId: USER_ID }, { userId: OTHER_USER_ID }]);
   const messageFindUnique = jest.fn().mockResolvedValue(existing);
+  const messageFindFirst = jest.fn();
   const messageCreate = jest.fn().mockResolvedValue(rawMessage());
   const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
   const memberUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
@@ -72,13 +76,18 @@ function sendTransactionState(existing: unknown = null) {
       findMany: memberFindMany,
       updateMany: memberUpdateMany,
     },
-    message: { findUnique: messageFindUnique, create: messageCreate },
+    message: {
+      findUnique: messageFindUnique,
+      findFirst: messageFindFirst,
+      create: messageCreate,
+    },
     conversation: { updateMany: conversationUpdateMany },
   };
   return {
     client,
     memberFindMany,
     messageFindUnique,
+    messageFindFirst,
     messageCreate,
     conversationUpdateMany,
     memberUpdateMany,
@@ -98,6 +107,7 @@ describe('PrismaMessagesRepository', () => {
       status: 'created',
       message: {
         ...rawMessage(),
+        replyTo: null,
         participantIds: [USER_ID, OTHER_USER_ID],
       },
     });
@@ -109,6 +119,7 @@ describe('PrismaMessagesRepository', () => {
         conversationId: CONVERSATION_ID,
         senderId: USER_ID,
         clientMessageId: CLIENT_MESSAGE_ID,
+        replyToMessageId: null,
         kind: MessageKind.TEXT,
         text: 'Hello!',
         createdAt: NOW,
@@ -131,6 +142,73 @@ describe('PrismaMessagesRepository', () => {
     });
   });
 
+  it('persists a valid reply target from the same conversation', async () => {
+    const { repository, transaction } = createRepository();
+    const state = sendTransactionState();
+    state.messageFindFirst.mockResolvedValue({ id: REPLY_MESSAGE_ID });
+    state.messageCreate.mockResolvedValue(
+      rawMessage({
+        replyToMessageId: REPLY_MESSAGE_ID,
+        replyTo: {
+          id: REPLY_MESSAGE_ID,
+          senderId: OTHER_USER_ID,
+          kind: MessageKind.TEXT,
+          text: 'Earlier message',
+        },
+      }),
+    );
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation(state.client),
+    );
+
+    await expect(
+      repository.sendText({
+        ...sendInput(),
+        replyToMessageId: REPLY_MESSAGE_ID,
+      }),
+    ).resolves.toMatchObject({
+      status: 'created',
+      message: {
+        replyToMessageId: REPLY_MESSAGE_ID,
+        replyTo: {
+          id: REPLY_MESSAGE_ID,
+          preview: 'Earlier message',
+        },
+      },
+    });
+    expect(state.messageFindFirst).toHaveBeenCalledWith({
+      where: {
+        id: REPLY_MESSAGE_ID,
+        conversationId: CONVERSATION_ID,
+      },
+      select: { id: true },
+    });
+    expect(state.messageCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ replyToMessageId: REPLY_MESSAGE_ID }),
+      }),
+    );
+  });
+
+  it('rejects a missing or cross-conversation reply target without creating a message', async () => {
+    const { repository, transaction } = createRepository();
+    const state = sendTransactionState();
+    state.messageFindFirst.mockResolvedValue(null);
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation(state.client),
+    );
+
+    await expect(
+      repository.sendText({
+        ...sendInput(),
+        replyToMessageId: REPLY_MESSAGE_ID,
+      }),
+    ).resolves.toEqual({ status: 'reply-message-not-found' });
+    expect(state.messageCreate).not.toHaveBeenCalled();
+  });
+
   it('returns an existing identical message without changing counters', async () => {
     const { repository, transaction } = createRepository();
     const state = sendTransactionState(rawMessage());
@@ -148,9 +226,28 @@ describe('PrismaMessagesRepository', () => {
     expect(state.memberUpdateMany).not.toHaveBeenCalled();
   });
 
+  it('treats a changed reply target as an idempotency conflict before target validation', async () => {
+    const { repository, transaction } = createRepository();
+    const state = sendTransactionState(rawMessage());
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation(state.client),
+    );
+
+    await expect(
+      repository.sendText({
+        ...sendInput(),
+        replyToMessageId: REPLY_MESSAGE_ID,
+      }),
+    ).resolves.toEqual({ status: 'idempotency-conflict' });
+    expect(state.messageFindFirst).not.toHaveBeenCalled();
+    expect(state.messageCreate).not.toHaveBeenCalled();
+  });
+
   it.each([
     rawMessage({ text: 'Different' }),
     rawMessage({ conversationId: OTHER_CONVERSATION_ID }),
+    rawMessage({ replyToMessageId: REPLY_MESSAGE_ID }),
   ])(
     'rejects an idempotency key reused with different data',
     async (existing) => {
@@ -254,6 +351,42 @@ describe('PrismaMessagesRepository', () => {
       select: expect.any(Object),
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 51,
+    });
+  });
+
+  it('returns the current shallow reply projection in message history', async () => {
+    const { repository, memberFindMany, messageFindMany } = createRepository();
+    memberFindMany.mockResolvedValue([
+      { userId: USER_ID },
+      { userId: OTHER_USER_ID },
+    ]);
+    messageFindMany.mockResolvedValue([
+      rawMessage({
+        replyToMessageId: REPLY_MESSAGE_ID,
+        replyTo: {
+          id: REPLY_MESSAGE_ID,
+          senderId: OTHER_USER_ID,
+          kind: MessageKind.TEXT,
+          text: 'Current reply target text',
+        },
+      }),
+    ]);
+
+    await expect(
+      repository.listForMember(CONVERSATION_ID, USER_ID, null, 51),
+    ).resolves.toMatchObject({
+      status: 'found',
+      messages: [
+        {
+          replyToMessageId: REPLY_MESSAGE_ID,
+          replyTo: {
+            id: REPLY_MESSAGE_ID,
+            senderId: OTHER_USER_ID,
+            kind: 'TEXT',
+            preview: 'Current reply target text',
+          },
+        },
+      ],
     });
   });
 

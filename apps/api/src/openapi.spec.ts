@@ -24,6 +24,7 @@ const REFRESH_TOKEN =
 const PARTICIPANT_ID = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
 const CLIENT_MESSAGE_ID = '7d444840-9dc0-41d1-b245-5ffdce74fad2';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
+const REPLY_TO_MESSAGE_ID = '55555555-5555-4555-8555-555555555555';
 
 interface RequestExampleCase {
   method: 'patch' | 'post' | 'put';
@@ -204,6 +205,68 @@ describe('OpenAPI request examples', () => {
         },
       },
     });
+  });
+
+  it('documents reply targets as optional UUIDs', () => {
+    expect(document.components?.schemas?.SendMessageDto).toMatchObject({
+      required: expect.arrayContaining(['clientMessageId', 'text']),
+      properties: {
+        replyToMessageId: {
+          type: 'string',
+          format: 'uuid',
+          example: REPLY_TO_MESSAGE_ID,
+        },
+      },
+    });
+    expect(
+      (document.components?.schemas?.SendMessageDto as { required?: string[] })
+        .required,
+    ).not.toContain('replyToMessageId');
+
+    const requestBody =
+      document.paths['/v1/conversations/{conversationId}/messages']?.post
+        ?.requestBody;
+    if (!requestBody || '$ref' in requestBody) {
+      throw new Error('Missing inline message request body.');
+    }
+    const replyExample =
+      requestBody.content['application/json']?.examples?.reply;
+    if (!replyExample || '$ref' in replyExample) {
+      throw new Error('Missing inline reply request example.');
+    }
+    expect(replyExample.value).toEqual({
+      clientMessageId: '7d444840-9dc0-41d1-b245-5ffdce74fad3',
+      replyToMessageId: REPLY_TO_MESSAGE_ID,
+      text: 'Yes, I am free now.',
+    });
+
+    expect(document.components?.schemas?.MessageResponseDto).toMatchObject({
+      required: expect.arrayContaining(['replyToMessageId', 'replyTo']),
+      properties: {
+        replyToMessageId: {
+          type: 'string',
+          format: 'uuid',
+          nullable: true,
+        },
+        replyTo: {
+          nullable: true,
+          allOf: [{ $ref: '#/components/schemas/MessageReplyResponseDto' }],
+        },
+      },
+    });
+    const replySchema = document.components?.schemas?.MessageReplyResponseDto;
+    expect(replySchema).toMatchObject({
+      required: ['id', 'senderId', 'kind', 'preview'],
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        senderId: { type: 'string', format: 'uuid' },
+        kind: { type: 'string', enum: ['text'] },
+        preview: { type: 'string', maxLength: 120 },
+      },
+    });
+    expect(
+      (replySchema as { properties?: Record<string, unknown> }).properties,
+    ).not.toHaveProperty('text');
   });
 
   it.each(['PublicDiscoveryUserDto', 'ConversationParticipantDto'])(

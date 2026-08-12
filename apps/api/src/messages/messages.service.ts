@@ -41,12 +41,20 @@ export class MessagesService {
       conversationId: conversationId.toLowerCase(),
       senderId: userId.toLowerCase(),
       clientMessageId: input.clientMessageId.toLowerCase(),
+      replyToMessageId: input.replyToMessageId?.toLowerCase() ?? null,
       text: input.text.trim(),
       now: this.clock.now(),
     });
 
     if (result.status === 'conversation-not-found') {
       throw this.conversationNotFoundException();
+    }
+    if (result.status === 'reply-message-not-found') {
+      throw new ApiException(
+        HttpStatus.NOT_FOUND,
+        'MESSAGE_NOT_FOUND',
+        'The message was not found.',
+      );
     }
     if (result.status === 'idempotency-conflict') {
       throw new ApiException(
@@ -126,6 +134,15 @@ export class MessagesService {
       conversationId: message.conversationId,
       clientMessageId: message.clientMessageId,
       senderId: message.senderId,
+      replyToMessageId: message.replyToMessageId,
+      replyTo: message.replyTo
+        ? {
+            id: message.replyTo.id,
+            senderId: message.replyTo.senderId,
+            kind: 'text',
+            preview: message.replyTo.preview,
+          }
+        : null,
       kind: 'text',
       text: message.text,
       createdAt: message.createdAt.toISOString(),

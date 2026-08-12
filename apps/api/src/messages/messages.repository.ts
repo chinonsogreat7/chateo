@@ -9,6 +9,7 @@ export interface SendTextMessageInput {
   conversationId: string;
   senderId: string;
   clientMessageId: string;
+  replyToMessageId?: string | null;
   text: string;
   now: Date;
 }

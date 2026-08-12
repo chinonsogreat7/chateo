@@ -38,6 +38,7 @@ describe('Prisma messaging persistence', () => {
     new NoopMessageEventsPublisher(),
   );
   let conversationId: string;
+  let otherConversationId: string;
 
   beforeAll(async () => {
     await cleanup();
@@ -76,16 +77,30 @@ describe('Prisma messaging persistence', () => {
       throw new Error('Seeded messaging integration users were not found.');
     }
     conversationId = result.conversation.id;
+
+    const otherResult = await conversationsRepository.createOrGetDirect(
+      SENDER_ID,
+      OUTSIDER_ID,
+      BASE_TIME,
+    );
+    if (otherResult.status === 'participant-not-found') {
+      throw new Error('Seeded secondary conversation users were not found.');
+    }
+    otherConversationId = otherResult.conversation.id;
   });
 
   beforeEach(async () => {
-    await prisma.message.deleteMany({ where: { conversationId } });
+    await prisma.message.deleteMany({
+      where: { conversationId: { in: [conversationId, otherConversationId] } },
+    });
     await prisma.conversationMember.updateMany({
-      where: { conversationId },
+      where: {
+        conversationId: { in: [conversationId, otherConversationId] },
+      },
       data: { unreadCount: 0, lastReadAt: null },
     });
-    await prisma.conversation.update({
-      where: { id: conversationId },
+    await prisma.conversation.updateMany({
+      where: { id: { in: [conversationId, otherConversationId] } },
       data: { lastActivityAt: BASE_TIME, updatedAt: BASE_TIME },
     });
   });
@@ -149,6 +164,109 @@ describe('Prisma messaging persistence', () => {
       prisma.message.count({ where: { conversationId } }),
     ).resolves.toBe(1);
     await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
+  });
+
+  it('persists and replays a same-conversation reply with a shallow history projection', async () => {
+    const original = await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_ONE,
+      'Original message',
+      MESSAGE_TIME_ONE,
+    );
+    const input = {
+      conversationId,
+      senderId: RECIPIENT_ID,
+      clientMessageId: CLIENT_MESSAGE_TWO,
+      replyToMessageId: original.id,
+      text: 'Reply message',
+      now: MESSAGE_TIME_TWO,
+    };
+
+    const created = await messagesRepository.sendText(input);
+    expect(created).toMatchObject({
+      status: 'created',
+      message: {
+        replyToMessageId: original.id,
+        replyTo: {
+          id: original.id,
+          senderId: SENDER_ID,
+          kind: 'TEXT',
+          preview: 'Original message',
+        },
+      },
+    });
+    await expect(messagesRepository.sendText(input)).resolves.toMatchObject({
+      status: 'existing',
+      message: { replyToMessageId: original.id },
+    });
+    await expect(
+      messagesRepository.sendText({ ...input, replyToMessageId: null }),
+    ).resolves.toEqual({ status: 'idempotency-conflict' });
+
+    const history = await messagesService.list(SENDER_ID, conversationId, 20);
+    expect(history.items[0]).toMatchObject({
+      text: 'Reply message',
+      replyToMessageId: original.id,
+      replyTo: {
+        id: original.id,
+        senderId: SENDER_ID,
+        kind: 'text',
+        preview: 'Original message',
+      },
+    });
+    await expect(memberUnreadCount(SENDER_ID)).resolves.toBe(1);
+  });
+
+  it('conceals invalid reply targets and enforces the same-conversation relation in PostgreSQL', async () => {
+    const otherTarget = await messagesRepository.sendText({
+      conversationId: otherConversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_ONE,
+      text: 'Other conversation target',
+      now: MESSAGE_TIME_ONE,
+    });
+    if (otherTarget.status !== 'created') {
+      throw new Error(
+        `Expected target creation, received ${otherTarget.status}.`,
+      );
+    }
+
+    await expect(
+      messagesRepository.sendText({
+        conversationId,
+        senderId: RECIPIENT_ID,
+        clientMessageId: CLIENT_MESSAGE_TWO,
+        replyToMessageId: otherTarget.message.id,
+        text: 'Cross-conversation reply',
+        now: MESSAGE_TIME_TWO,
+      }),
+    ).resolves.toEqual({ status: 'reply-message-not-found' });
+    await expect(
+      messagesRepository.sendText({
+        conversationId,
+        senderId: RECIPIENT_ID,
+        clientMessageId: CLIENT_MESSAGE_THREE,
+        replyToMessageId: '99999999-9999-4999-8999-999999999999',
+        text: 'Missing reply',
+        now: MESSAGE_TIME_THREE,
+      }),
+    ).resolves.toEqual({ status: 'reply-message-not-found' });
+
+    await expect(
+      prisma.message.create({
+        data: {
+          conversationId,
+          senderId: RECIPIENT_ID,
+          clientMessageId: CLIENT_MESSAGE_FOUR,
+          replyToMessageId: otherTarget.message.id,
+          text: 'Raw cross-conversation reply',
+          createdAt: MESSAGE_TIME_FOUR,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'P2003' });
+    await expect(
+      prisma.message.count({ where: { conversationId } }),
+    ).resolves.toBe(0);
   });
 
   it('returns the same not-found result when an outsider sends, reads history, or marks read', async () => {
