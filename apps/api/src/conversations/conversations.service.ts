@@ -19,6 +19,7 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
 const MAX_CURSOR_LENGTH = 512;
+const MAX_MESSAGE_PREVIEW_CODE_POINTS = 120;
 
 @Injectable()
 export class ConversationsService {
@@ -101,12 +102,28 @@ export class ConversationsService {
       id: record.id,
       type: 'direct',
       otherParticipant: record.otherParticipant,
-      latestMessage: null,
-      unreadCount: 0,
+      latestMessage: record.latestMessage
+        ? {
+            id: record.latestMessage.id,
+            senderId: record.latestMessage.senderId,
+            kind: 'text',
+            preview: this.messagePreview(record.latestMessage.text),
+            createdAt: record.latestMessage.createdAt.toISOString(),
+          }
+        : null,
+      unreadCount: record.unreadCount,
       lastActivityAt: record.lastActivityAt.toISOString(),
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),
     };
+  }
+
+  private messagePreview(text: string): string {
+    const codePoints = Array.from(text);
+    if (codePoints.length <= MAX_MESSAGE_PREVIEW_CODE_POINTS) return text;
+    return `${codePoints
+      .slice(0, MAX_MESSAGE_PREVIEW_CODE_POINTS - 1)
+      .join('')}…`;
   }
 
   private encodeCursor(record: ConversationRecord): string {

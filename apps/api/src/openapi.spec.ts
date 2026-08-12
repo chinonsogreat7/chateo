@@ -11,6 +11,8 @@ import { ConversationsController } from './conversations/conversations.controlle
 import { ConversationsService } from './conversations/conversations.service';
 import { DiscoveryController } from './discovery/discovery.controller';
 import { DiscoveryService } from './discovery/discovery.service';
+import { MessagesController } from './messages/messages.controller';
+import { MessagesService } from './messages/messages.service';
 import { UsersController } from './users/users.controller';
 import { UsersService } from './users/users.service';
 
@@ -18,6 +20,7 @@ const CHALLENGE_ID = '550e8400-e29b-41d4-a716-446655440000';
 const REFRESH_TOKEN =
   '550e8400-e29b-41d4-a716-446655440000.3fQ8xZ7uV2nK5mP9rT4wY6aB1cD0eF8gH2jL7sN5qRk';
 const PARTICIPANT_ID = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
+const CLIENT_MESSAGE_ID = '7d444840-9dc0-41d1-b245-5ffdce74fad2';
 
 interface RequestExampleCase {
   method: 'patch' | 'post';
@@ -37,12 +40,14 @@ describe('OpenAPI request examples', () => {
         UsersController,
         DiscoveryController,
         ConversationsController,
+        MessagesController,
       ],
       providers: [
         { provide: AuthService, useValue: {} },
         { provide: UsersService, useValue: {} },
         { provide: DiscoveryService, useValue: {} },
         { provide: ConversationsService, useValue: {} },
+        { provide: MessagesService, useValue: {} },
       ],
     }).compile();
 
@@ -124,6 +129,15 @@ describe('OpenAPI request examples', () => {
       schemaName: 'CreateDirectConversationDto',
       payload: { participantId: PARTICIPANT_ID },
     },
+    {
+      method: 'post',
+      path: `/v1/conversations/{conversationId}/messages`,
+      schemaName: 'SendMessageDto',
+      payload: {
+        clientMessageId: CLIENT_MESSAGE_ID,
+        text: 'Hello! Are you free to chat?',
+      },
+    },
   ];
 
   it.each(cases)(
@@ -186,7 +200,24 @@ describe('OpenAPI request examples', () => {
     ['/v1/conversations/direct', 'post'],
     ['/v1/conversations', 'get'],
     ['/v1/conversations/{conversationId}', 'get'],
+    ['/v1/conversations/{conversationId}/messages', 'post'],
+    ['/v1/conversations/{conversationId}/messages', 'get'],
+    ['/v1/conversations/{conversationId}/read', 'post'],
   ] as const)('%s requires bearer authentication', (path, method) => {
     expect(document.paths[path]?.[method]?.security).toEqual([{ bearer: [] }]);
+  });
+
+  it('documents the message conversation path parameter', () => {
+    const parameter = document.paths[
+      '/v1/conversations/{conversationId}/messages'
+    ]?.post?.parameters?.find(
+      (candidate) =>
+        !('$ref' in candidate) && candidate.name === 'conversationId',
+    );
+    expect(parameter).toMatchObject({
+      in: 'path',
+      required: true,
+      schema: { format: 'uuid', type: 'string' },
+    });
   });
 });

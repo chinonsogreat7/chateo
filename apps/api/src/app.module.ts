@@ -8,6 +8,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { DatabaseModule } from './database/database.module';
 import { DiscoveryModule } from './discovery/discovery.module';
 import { HealthModule } from './health/health.module';
+import { MessagesModule } from './messages/messages.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -25,6 +26,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     DiscoveryModule,
     ConversationsModule,
+    MessagesModule,
     HealthModule,
   ],
   providers: [

@@ -56,6 +56,12 @@ const environmentSchema = Joi.object({
     .min(86400)
     .max(7776000)
     .default(2592000),
+  API_DOCS_ENABLED: Joi.boolean().truthy('true').falsy('false').default(true),
+  REALTIME_MAX_CONNECTIONS_PER_USER: Joi.number()
+    .integer()
+    .min(1)
+    .max(20)
+    .default(5),
   CORS_ORIGINS: Joi.string().allow('').default(''),
   TRUST_PROXY: Joi.string().allow('').default('loopback'),
 }).unknown(true);

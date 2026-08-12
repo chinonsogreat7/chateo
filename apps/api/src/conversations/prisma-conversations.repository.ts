@@ -10,7 +10,9 @@ import type {
 
 const conversationWithMembers = {
   members: {
-    include: {
+    select: {
+      userId: true,
+      unreadCount: true,
       user: {
         select: {
           id: true,
@@ -19,6 +21,17 @@ const conversationWithMembers = {
         },
       },
     },
+  },
+  messages: {
+    select: {
+      id: true,
+      senderId: true,
+      kind: true,
+      text: true,
+      createdAt: true,
+    },
+    orderBy: [{ createdAt: 'desc' as const }, { id: 'desc' as const }],
+    take: 1,
   },
 } satisfies Prisma.ConversationInclude;
 
@@ -130,10 +143,11 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     cursor: ConversationPageCursor | null,
     take: number,
   ): Promise<ConversationRecord[]> {
+    const normalizedUserId = userId.toLowerCase();
     const conversations = await this.prisma.conversation.findMany({
       where: {
         type: ConversationType.DIRECT,
-        members: { some: { userId } },
+        members: { some: { userId: normalizedUserId } },
         ...(cursor
           ? {
               OR: [
@@ -152,7 +166,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     });
 
     return conversations.map((conversation) =>
-      this.mapConversation(conversation, userId),
+      this.mapConversation(conversation, normalizedUserId),
     );
   }
 
@@ -160,15 +174,18 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     conversationId: string,
     userId: string,
   ): Promise<ConversationRecord | null> {
+    const normalizedUserId = userId.toLowerCase();
     const conversation = await this.prisma.conversation.findFirst({
       where: {
         id: conversationId,
         type: ConversationType.DIRECT,
-        members: { some: { userId } },
+        members: { some: { userId: normalizedUserId } },
       },
       include: conversationWithMembers,
     });
-    return conversation ? this.mapConversation(conversation, userId) : null;
+    return conversation
+      ? this.mapConversation(conversation, normalizedUserId)
+      : null;
   }
 
   private findDirectByPair(
@@ -201,12 +218,19 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     conversation: ConversationWithMembers,
     userId: string,
   ): ConversationRecord {
+    const actorMember = conversation.members.find(
+      (member) => member.userId === userId,
+    );
     const otherMember = conversation.members.find(
       (member) => member.userId !== userId,
     );
+    if (!actorMember) {
+      throw new Error('Direct conversation is missing the actor membership.');
+    }
     if (!otherMember) {
       throw new Error('Direct conversation is missing its other participant.');
     }
+    const latestMessage = conversation.messages[0] ?? null;
 
     return {
       id: conversation.id,
@@ -216,6 +240,16 @@ export class PrismaConversationsRepository extends ConversationsRepository {
         displayName: otherMember.user.displayName,
         avatarUrl: otherMember.user.avatarUrl,
       },
+      latestMessage: latestMessage
+        ? {
+            id: latestMessage.id,
+            senderId: latestMessage.senderId,
+            kind: latestMessage.kind,
+            text: latestMessage.text,
+            createdAt: latestMessage.createdAt,
+          }
+        : null,
+      unreadCount: actorMember.unreadCount,
       lastActivityAt: conversation.lastActivityAt,
       createdAt: conversation.createdAt,
       updatedAt: conversation.updatedAt,

@@ -47,7 +47,7 @@ export class ConversationResponseDto {
     type: ConversationLatestMessageDto,
     nullable: true,
     example: null,
-    description: 'Populated after message support is introduced.',
+    description: 'The newest message in the conversation, when present.',
   })
   latestMessage!: ConversationLatestMessageDto | null;
 

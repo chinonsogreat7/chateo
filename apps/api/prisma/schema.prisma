@@ -30,6 +30,10 @@ enum ConversationType {
   GROUP
 }
 
+enum MessageKind {
+  TEXT
+}
+
 model User {
   id                           String               @id @default(uuid()) @db.Uuid
   phoneNumber                  String               @unique @map("phone_number") @db.VarChar(16)
@@ -43,6 +47,7 @@ model User {
   conversationMemberships      ConversationMember[]
   directConversationsAsUserOne Conversation[]       @relation("DirectUserOne")
   directConversationsAsUserTwo Conversation[]       @relation("DirectUserTwo")
+  messagesSent                 Message[]
 
   @@map("users")
 }
@@ -58,6 +63,7 @@ model Conversation {
   directUserOne   User?                @relation("DirectUserOne", fields: [directUserOneId], references: [id], onDelete: Cascade)
   directUserTwo   User?                @relation("DirectUserTwo", fields: [directUserTwoId], references: [id], onDelete: Cascade)
   members         ConversationMember[]
+  messages        Message[]
 
   @@unique([directUserOneId, directUserTwoId])
   @@index([directUserOneId])
@@ -70,12 +76,30 @@ model ConversationMember {
   conversationId String       @map("conversation_id") @db.Uuid
   userId         String       @map("user_id") @db.Uuid
   joinedAt       DateTime     @default(now()) @map("joined_at") @db.Timestamptz(3)
+  unreadCount    Int          @default(0) @map("unread_count")
+  lastReadAt     DateTime?    @map("last_read_at") @db.Timestamptz(3)
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([conversationId, userId])
   @@index([userId, conversationId])
   @@map("conversation_members")
+}
+
+model Message {
+  id              String       @id @default(uuid()) @db.Uuid
+  conversationId  String       @map("conversation_id") @db.Uuid
+  senderId        String       @map("sender_id") @db.Uuid
+  clientMessageId String       @map("client_message_id") @db.Uuid
+  kind            MessageKind  @default(TEXT)
+  text            String       @db.VarChar(4000)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender          User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, clientMessageId])
+  @@index([conversationId, createdAt, id])
+  @@map("messages")
 }
 
 model OtpChallenge {

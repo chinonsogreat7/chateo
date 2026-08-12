@@ -8,6 +8,7 @@ import type { ConversationRecord } from './conversations.types';
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const PARTICIPANT_ID = '22222222-2222-4222-8222-222222222222';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
+const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
 const NOW = new Date('2026-08-12T12:00:00.000Z');
 
 function conversation(
@@ -21,6 +22,8 @@ function conversation(
       displayName: 'Ada Okafor',
       avatarUrl: null,
     },
+    latestMessage: null,
+    unreadCount: 0,
     lastActivityAt: NOW,
     createdAt: NOW,
     updatedAt: NOW,
@@ -141,6 +144,71 @@ describe('ConversationsService', () => {
       updatedAt: NOW.toISOString(),
     });
     expect(result.otherParticipant).not.toHaveProperty('phoneNumber');
+  });
+
+  it('maps the persisted latest message and actor unread count', async () => {
+    const { repository, service } = createService();
+    repository.findForUser.mockResolvedValue(
+      conversation({
+        latestMessage: {
+          id: MESSAGE_ID,
+          senderId: PARTICIPANT_ID,
+          kind: 'TEXT',
+          text: 'Are you joining us?',
+          createdAt: NOW,
+        },
+        unreadCount: 3,
+      }),
+    );
+
+    const result = await service.get(USER_ID, CONVERSATION_ID);
+
+    expect(result.latestMessage).toEqual({
+      id: MESSAGE_ID,
+      senderId: PARTICIPANT_ID,
+      kind: 'text',
+      preview: 'Are you joining us?',
+      createdAt: NOW.toISOString(),
+    });
+    expect(result.unreadCount).toBe(3);
+  });
+
+  it('caps message previews at 120 Unicode code points', async () => {
+    const { repository, service } = createService();
+    const exactlyAtLimit = '👋'.repeat(120);
+    const overLimit = `${exactlyAtLimit}x`;
+    repository.findForUser
+      .mockResolvedValueOnce(
+        conversation({
+          latestMessage: {
+            id: MESSAGE_ID,
+            senderId: PARTICIPANT_ID,
+            kind: 'TEXT',
+            text: exactlyAtLimit,
+            createdAt: NOW,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        conversation({
+          latestMessage: {
+            id: MESSAGE_ID,
+            senderId: PARTICIPANT_ID,
+            kind: 'TEXT',
+            text: overLimit,
+            createdAt: NOW,
+          },
+        }),
+      );
+
+    const exact = await service.get(USER_ID, CONVERSATION_ID);
+    const truncated = await service.get(USER_ID, CONVERSATION_ID);
+
+    expect(exact.latestMessage?.preview).toBe(exactlyAtLimit);
+    expect(truncated.latestMessage?.preview).toBe(`${'👋'.repeat(119)}…`);
+    expect(Array.from(truncated.latestMessage?.preview ?? '')).toHaveLength(
+      120,
+    );
   });
 
   it('returns the same not-found domain error for inaccessible conversations', async () => {

@@ -31,6 +31,8 @@ describe('validateEnvironment', () => {
         OTP_PROVIDER: 'console',
         AUTH_OTP_LENGTH: 4,
         AUTH_FIXED_OTP: '1234',
+        API_DOCS_ENABLED: true,
+        REALTIME_MAX_CONNECTIONS_PER_USER: 5,
       });
     },
   );
@@ -83,6 +85,16 @@ describe('validateEnvironment', () => {
       AUTH_FIXED_OTP: '',
       ...twilioConfig,
     });
+  });
+
+  it('allows deployed API documentation to be disabled explicitly', () => {
+    const environment = validateEnvironment({
+      ...sharedConfig,
+      NODE_ENV: 'test',
+      API_DOCS_ENABLED: 'false',
+    });
+
+    expect(environment.API_DOCS_ENABLED).toBe(false);
   });
 
   it.each([

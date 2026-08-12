@@ -20,23 +20,27 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 
 ## Endpoints
 
-| Method  | Path                                | Auth   | Purpose                                     |
-| ------- | ----------------------------------- | ------ | ------------------------------------------- |
-| `GET`   | `/v1/health`                        | Public | Liveness check                              |
-| `POST`  | `/v1/auth/otp/request`              | Public | Request a verification code                 |
-| `POST`  | `/v1/auth/otp/resend`               | Public | Resend after the cooldown                   |
-| `POST`  | `/v1/auth/otp/verify`               | Public | Verify and receive a token pair             |
-| `POST`  | `/v1/auth/refresh`                  | Public | Rotate a refresh token                      |
-| `POST`  | `/v1/auth/logout`                   | Public | Revoke a refresh session; always idempotent |
-| `GET`   | `/v1/me`                            | Bearer | Read the signed-in profile                  |
-| `PATCH` | `/v1/me`                            | Bearer | Set the name and optional avatar URL        |
-| `POST`  | `/v1/contacts/match`                | Bearer | Match phone numbers already known to caller |
-| `GET`   | `/v1/users/search`                  | Bearer | Search completed profiles by display name   |
-| `POST`  | `/v1/conversations/direct`          | Bearer | Create or return a direct conversation      |
-| `GET`   | `/v1/conversations`                 | Bearer | List the signed-in user's conversations     |
-| `GET`   | `/v1/conversations/:conversationId` | Bearer | Open a conversation as a member             |
+| Method  | Path                                         | Auth   | Purpose                                      |
+| ------- | -------------------------------------------- | ------ | -------------------------------------------- |
+| `GET`   | `/v1/health`                                 | Public | Liveness check                               |
+| `POST`  | `/v1/auth/otp/request`                       | Public | Request a verification code                  |
+| `POST`  | `/v1/auth/otp/resend`                        | Public | Resend after the cooldown                    |
+| `POST`  | `/v1/auth/otp/verify`                        | Public | Verify and receive a token pair              |
+| `POST`  | `/v1/auth/refresh`                           | Public | Rotate a refresh token                       |
+| `POST`  | `/v1/auth/logout`                            | Public | Revoke a refresh session; always idempotent  |
+| `GET`   | `/v1/me`                                     | Bearer | Read the signed-in profile                   |
+| `PATCH` | `/v1/me`                                     | Bearer | Set the name and optional avatar URL         |
+| `POST`  | `/v1/contacts/match`                         | Bearer | Match phone numbers already known to caller  |
+| `GET`   | `/v1/users/search`                           | Bearer | Search completed profiles by display name    |
+| `POST`  | `/v1/conversations/direct`                   | Bearer | Create or return a direct conversation       |
+| `GET`   | `/v1/conversations`                          | Bearer | List the signed-in user's conversations      |
+| `GET`   | `/v1/conversations/:conversationId`          | Bearer | Open a conversation as a member              |
+| `POST`  | `/v1/conversations/:conversationId/messages` | Bearer | Persist or replay an idempotent text message |
+| `GET`   | `/v1/conversations/:conversationId/messages` | Bearer | Read newest-first message history            |
+| `POST`  | `/v1/conversations/:conversationId/read`     | Bearer | Mark currently persisted messages as read    |
 
-All authentication and profile responses include `Cache-Control: no-store`.
+Authentication, profile, discovery, conversation, and message responses include
+`Cache-Control: no-store`.
 
 ### Request an OTP
 
@@ -173,7 +177,102 @@ The operation is idempotent: repeated requests, including a reversed request fro
 }
 ```
 
-`GET /v1/conversations` uses opaque cursor pagination. `GET /v1/conversations/:conversationId` returns `CONVERSATION_NOT_FOUND` for both a missing conversation and a non-member, avoiding existence disclosure. `latestMessage` remains `null` and `unreadCount` remains `0` until the messaging milestone lands, preserving the future chat-list response shape.
+`GET /v1/conversations` uses opaque cursor pagination.
+`GET /v1/conversations/:conversationId` returns `CONVERSATION_NOT_FOUND` for
+both a missing conversation and a non-member, avoiding existence disclosure.
+After messages are sent, `latestMessage` contains a safe 120-code-point preview
+and `unreadCount` is specific to the signed-in user.
+
+## Text messages
+
+Generate one UUID on the device for each composed message and keep it when
+retrying the request:
+
+```http
+POST /v1/conversations/550e8400-e29b-41d4-a716-446655440000/messages
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "clientMessageId": "7d444840-9dc0-41d1-b245-5ffdce74fad2",
+  "text": "Hello! Are you free to chat?"
+}
+```
+
+The endpoint always returns `200 OK` for a new message or an identical retry.
+Reusing the same `clientMessageId` with different text or a different
+conversation returns `409 MESSAGE_IDEMPOTENCY_CONFLICT`. Text is trimmed and
+must contain 1-4000 characters after trimming.
+
+```json
+{
+  "id": "9b2a35a6-6542-48b1-8232-0ac6476db74b",
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  "clientMessageId": "7d444840-9dc0-41d1-b245-5ffdce74fad2",
+  "senderId": "00000000-0000-4000-8000-000000000101",
+  "kind": "text",
+  "text": "Hello! Are you free to chat?",
+  "createdAt": "2026-08-12T16:00:00.000Z"
+}
+```
+
+Fetch history with:
+
+```http
+GET /v1/conversations/:conversationId/messages?limit=50&cursor=<opaque>
+Authorization: Bearer <access-token>
+```
+
+Items are ordered newest first. Pass `pageInfo.nextCursor` unchanged on the
+same conversation route to load older messages; clients must not inspect or
+construct it.
+
+Once the user has rendered all currently returned messages, mark the
+conversation read:
+
+```http
+POST /v1/conversations/:conversationId/read
+Authorization: Bearer <access-token>
+```
+
+This atomically resets that member's unread count and records a read boundary
+that never moves backwards. Sending, unread increments, chat-list activity, and
+message persistence happen in one database transaction.
+
+## Realtime delivery
+
+Socket.IO uses the API origin with the `/chat` namespace, not the REST `/v1`
+prefix. Authenticate with the current access token in the handshake:
+
+```ts
+import { io } from 'socket.io-client';
+
+const socket = io(`${apiOrigin}/chat`, {
+  auth: { token: accessToken },
+});
+
+socket.on('message.created', (message) => {
+  // Same public shape returned by POST .../messages.
+});
+```
+
+An `Authorization: Bearer <access-token>` handshake header is also supported.
+Invalid, expired, or revoked sessions fail with a `connect_error` whose data
+contains `code: "AUTH_ACCESS_TOKEN_INVALID"`. A connected socket is closed when
+its access token expires; after refreshing, reconnect it with the new access
+token.
+
+There is intentionally no client-to-server socket event for sending messages.
+REST is the authoritative write path, while `message.created` is a low-latency
+notification delivered to all active devices belonging to both participants.
+On initial connection or reconnection, always reconcile through the REST
+history endpoint because socket delivery is best-effort. Do not treat socket
+arrival order as message order; render the persisted `createdAt`/`id` order
+returned by history and deduplicate by the server message `id`.
+
+The current Socket.IO adapter is suitable for the single Render instance used
+by the classroom project. Before horizontally scaling, add a shared Socket.IO
+adapter (for example Redis) so user rooms and events span every API instance.
 
 ## Error shape
 
@@ -194,7 +293,11 @@ Errors use a stable machine-readable code:
 
 Important auth codes include `AUTH_INVALID_PHONE_NUMBER`, `AUTH_OTP_COOLDOWN`, `AUTH_INVALID_OTP`, `AUTH_OTP_EXPIRED`, `AUTH_OTP_ATTEMPTS_EXCEEDED`, `AUTH_REFRESH_TOKEN_INVALID`, `AUTH_REFRESH_TOKEN_REUSED`, and `AUTH_ACCESS_TOKEN_INVALID`.
 
-Discovery/conversation codes include `CONTACTS_INVALID_PHONE_NUMBER`, `DISCOVERY_INVALID_CURSOR`, `CONVERSATION_SELF_NOT_ALLOWED`, `CONVERSATION_CURSOR_INVALID`, `CONVERSATION_NOT_FOUND`, and `USER_NOT_FOUND`.
+Discovery, conversation, and message codes include
+`CONTACTS_INVALID_PHONE_NUMBER`, `DISCOVERY_INVALID_CURSOR`,
+`CONVERSATION_SELF_NOT_ALLOWED`, `CONVERSATION_CURSOR_INVALID`,
+`CONVERSATION_NOT_FOUND`, `USER_NOT_FOUND`, `MESSAGE_CURSOR_INVALID`, and
+`MESSAGE_IDEMPOTENCY_CONFLICT`.
 
 ## Security behavior
 
@@ -212,32 +315,37 @@ Discovery/conversation codes include `CONTACTS_INVALID_PHONE_NUMBER`, `DISCOVERY
 - Contact matching is exact-only, accepts at most 100 caller-supplied numbers, is never persisted, and returns no unmatched numbers.
 - Discovery and conversation responses use a public user shape that omits phone numbers.
 - Direct-conversation participant pairs are stored in canonical UUID order under a database unique constraint.
+- Message send retries are deduplicated by `(senderId, clientMessageId)` before unread counters change.
+- Socket handshakes validate both the JWT and its server-side session; private events are revalidated before delivery.
 
 ## Environment
 
 Copy `.env.example` to `.env` and configure:
 
-| Variable                         | Purpose                                                      |
-| -------------------------------- | ------------------------------------------------------------ |
-| `DATABASE_URL`                   | PostgreSQL connection string                                 |
-| `JWT_ACCESS_SECRET`              | Access-token signing secret, at least 32 characters          |
-| `OTP_HASH_SECRET`                | Independent OTP HMAC secret, at least 32 characters          |
-| `OTP_PROVIDER`                   | `console` for development/test; `twilio` for production      |
-| `TWILIO_ACCOUNT_SID`             | Twilio account that owns the sender                          |
-| `TWILIO_API_KEY`                 | Twilio API key used for HTTP Basic authentication            |
-| `TWILIO_API_SECRET`              | Secret paired with the Twilio API key                        |
-| `TWILIO_FROM_NUMBER`             | Twilio sender in E.164 form                                  |
-| `AUTH_FIXED_OTP`                 | Optional local/test code; must be empty in production        |
-| `AUTH_OTP_LENGTH`                | 4–8 digits; production requires at least 6                   |
-| `AUTH_OTP_TTL_SECONDS`           | Code lifetime                                                |
-| `AUTH_OTP_RESEND_SECONDS`        | Server-side resend cooldown                                  |
-| `AUTH_OTP_MAX_ATTEMPTS`          | Cumulative failure limit                                     |
-| `AUTH_OTP_LOCK_SECONDS`          | Lock duration after the failure limit                        |
-| `AUTH_ACCESS_TOKEN_TTL_SECONDS`  | Access-token lifetime                                        |
-| `AUTH_REFRESH_TOKEN_TTL_SECONDS` | Rotating session lifetime                                    |
-| `CORS_ORIGINS`                   | Comma-separated browser origins for production               |
-| `TRUST_PROXY`                    | Express trust-proxy setting used for accurate throttling IPs |
-| `ALLOW_DEMO_SEED`                | Must equal `true` to run the manual classroom seed command   |
+| Variable                            | Purpose                                                      |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `NODE_ENV`                          | `development`, `test`, or `production`                       |
+| `DATABASE_URL`                      | PostgreSQL connection string                                 |
+| `JWT_ACCESS_SECRET`                 | Access-token signing secret, at least 32 characters          |
+| `OTP_HASH_SECRET`                   | Independent OTP HMAC secret, at least 32 characters          |
+| `OTP_PROVIDER`                      | `console` for development/test; `twilio` for production      |
+| `TWILIO_ACCOUNT_SID`                | Twilio account that owns the sender                          |
+| `TWILIO_API_KEY`                    | Twilio API key used for HTTP Basic authentication            |
+| `TWILIO_API_SECRET`                 | Secret paired with the Twilio API key                        |
+| `TWILIO_FROM_NUMBER`                | Twilio sender in E.164 form                                  |
+| `AUTH_FIXED_OTP`                    | Optional local/test code; must be empty in production        |
+| `AUTH_OTP_LENGTH`                   | 4–8 digits; production requires at least 6                   |
+| `AUTH_OTP_TTL_SECONDS`              | Code lifetime                                                |
+| `AUTH_OTP_RESEND_SECONDS`           | Server-side resend cooldown                                  |
+| `AUTH_OTP_MAX_ATTEMPTS`             | Cumulative failure limit                                     |
+| `AUTH_OTP_LOCK_SECONDS`             | Lock duration after the failure limit                        |
+| `AUTH_ACCESS_TOKEN_TTL_SECONDS`     | Access-token lifetime                                        |
+| `AUTH_REFRESH_TOKEN_TTL_SECONDS`    | Rotating session lifetime                                    |
+| `API_DOCS_ENABLED`                  | Expose Swagger UI and OpenAPI JSON; defaults to `true`       |
+| `REALTIME_MAX_CONNECTIONS_PER_USER` | Per-instance authenticated socket cap; defaults to `5`       |
+| `CORS_ORIGINS`                      | Comma-separated browser origins for production               |
+| `TRUST_PROXY`                       | Express trust-proxy setting used for accurate throttling IPs |
+| `ALLOW_DEMO_SEED`                   | Must equal `true` to run the manual classroom seed command   |
 
 ## Database
 
@@ -254,6 +362,19 @@ npm run prisma:migrate --workspace @chateo/api -- --name describe_change
 ```
 
 Do not use `prisma db push` for production schema changes.
+
+For the existing Render web service, keep migrations in the build command so a
+new release never starts against an older schema:
+
+```text
+Build command: npm ci && npm run build && npm run prisma:deploy --workspace @chateo/api
+Start command: npm run start:api
+Health check: /v1/health
+Node version: 22
+```
+
+The new text-message release requires the committed
+`20260812160000_add_text_messages` migration before it accepts traffic.
 
 Run the real-PostgreSQL integration suite against a dedicated database whose
 name ends in `_integration` (or a dedicated schema beginning with

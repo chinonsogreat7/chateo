@@ -212,6 +212,8 @@ export class InMemoryDiscoveryConversationsRepository {
         displayName: otherUser.displayName,
         avatarUrl: otherUser.avatarUrl,
       },
+      latestMessage: null,
+      unreadCount: 0,
       lastActivityAt: copyDate(conversation.lastActivityAt),
       createdAt: copyDate(conversation.createdAt),
       updatedAt: copyDate(conversation.updatedAt),
