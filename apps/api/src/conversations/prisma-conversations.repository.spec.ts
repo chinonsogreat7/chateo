@@ -5,9 +5,15 @@ import { PrismaConversationsRepository } from './prisma-conversations.repository
 const USER_ID = '22222222-2222-4222-8222-222222222222';
 const PARTICIPANT_ID = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
+const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
 const NOW = new Date('2026-08-12T12:00:00.000Z');
 
-function rawConversation() {
+interface RawConversationOptions {
+  actorUnreadCount?: number;
+  includeLatestMessage?: boolean;
+}
+
+function rawConversation(options: RawConversationOptions = {}) {
   return {
     id: CONVERSATION_ID,
     type: 'DIRECT',
@@ -21,12 +27,16 @@ function rawConversation() {
         conversationId: CONVERSATION_ID,
         userId: USER_ID,
         joinedAt: NOW,
+        unreadCount: options.actorUnreadCount ?? 0,
+        lastReadAt: null,
         user: { id: USER_ID, displayName: 'Current User', avatarUrl: null },
       },
       {
         conversationId: CONVERSATION_ID,
         userId: PARTICIPANT_ID,
         joinedAt: NOW,
+        unreadCount: 0,
+        lastReadAt: null,
         user: {
           id: PARTICIPANT_ID,
           displayName: 'Ada Okafor',
@@ -34,6 +44,17 @@ function rawConversation() {
         },
       },
     ],
+    messages: options.includeLatestMessage
+      ? [
+          {
+            id: MESSAGE_ID,
+            senderId: PARTICIPANT_ID,
+            kind: 'TEXT',
+            text: 'Latest persisted message',
+            createdAt: NOW,
+          },
+        ]
+      : [],
   };
 }
 
@@ -91,6 +112,8 @@ describe('PrismaConversationsRepository', () => {
       conversation: {
         id: CONVERSATION_ID,
         otherParticipant: { id: PARTICIPANT_ID },
+        latestMessage: null,
+        unreadCount: 0,
       },
     });
 
@@ -214,7 +237,9 @@ describe('PrismaConversationsRepository', () => {
 
   it('scopes detail reads to a member and selects no phone numbers', async () => {
     const { repository, findFirst } = createRepository();
-    findFirst.mockResolvedValue(rawConversation());
+    findFirst.mockResolvedValue(
+      rawConversation({ actorUnreadCount: 4, includeLatestMessage: true }),
+    );
 
     const result = await repository.findForUser(CONVERSATION_ID, USER_ID);
 
@@ -227,6 +252,39 @@ describe('PrismaConversationsRepository', () => {
       }),
     );
     expect(result?.otherParticipant).not.toHaveProperty('phoneNumber');
+    expect(result).toMatchObject({
+      unreadCount: 4,
+      latestMessage: {
+        id: MESSAGE_ID,
+        senderId: PARTICIPANT_ID,
+        kind: 'TEXT',
+        text: 'Latest persisted message',
+        createdAt: NOW,
+      },
+    });
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          members: {
+            select: expect.objectContaining({
+              userId: true,
+              unreadCount: true,
+            }),
+          },
+          messages: {
+            select: {
+              id: true,
+              senderId: true,
+              kind: true,
+              text: true,
+              createdAt: true,
+            },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: 1,
+          },
+        }),
+      }),
+    );
     expect(JSON.stringify(findFirst.mock.calls[0])).not.toContain(
       'phoneNumber',
     );

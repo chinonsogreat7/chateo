@@ -1,0 +1,57 @@
+name: API CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: chateo_integration
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d chateo_integration"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:e2e
+      - run: npm run build
+
+      - name: Apply migrations to the integration database
+        run: npm run prisma:deploy --workspace @chateo/api
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/chateo_integration?schema=public
+
+      - name: Run real PostgreSQL integration tests
+        run: npm run test:integration
+        env:
+          DATABASE_URL_INTEGRATION: postgresql://postgres:postgres@127.0.0.1:5432/chateo_integration?schema=public

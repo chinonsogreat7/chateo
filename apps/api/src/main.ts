@@ -6,6 +6,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter';
+import { RealtimeIoAdapter } from './realtime/realtime-io.adapter';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -26,6 +27,7 @@ async function bootstrap(): Promise<void> {
     origin: environment === 'production' ? corsOrigins : true,
     credentials: false,
   });
+  app.useWebSocketAdapter(new RealtimeIoAdapter(app, config));
   app.setGlobalPrefix('v1');
   app.useGlobalPipes(
     new ValidationPipe({
@@ -37,7 +39,7 @@ async function bootstrap(): Promise<void> {
   app.useGlobalFilters(new ApiExceptionFilter());
   app.enableShutdownHooks();
 
-  if (environment !== 'production') {
+  if (config.get<boolean>('API_DOCS_ENABLED', true)) {
     const swaggerConfig = new DocumentBuilder()
       .setTitle('ChatMe API')
       .setDescription('Phone authentication and chat backend API')
