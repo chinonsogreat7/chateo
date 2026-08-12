@@ -19,8 +19,10 @@ export class UpdateProfileDto {
   displayName?: string;
 
   @ApiPropertyOptional({
+    type: String,
     nullable: true,
     format: 'uri',
+    example: 'https://example.com/avatars/great.jpg',
     description:
       'A URL returned by the future media-upload service, or null to remove.',
   })

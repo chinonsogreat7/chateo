@@ -27,6 +27,7 @@ export class AuthDeviceDto {
   @ApiPropertyOptional({
     enum: DevicePlatformInput,
     default: DevicePlatformInput.UNKNOWN,
+    example: DevicePlatformInput.IOS,
   })
   @IsOptional()
   @IsEnum(DevicePlatformInput)
@@ -34,12 +35,15 @@ export class AuthDeviceDto {
 }
 
 export class VerifyOtpDto {
-  @ApiProperty({ format: 'uuid' })
+  @ApiProperty({
+    format: 'uuid',
+    example: '550e8400-e29b-41d4-a716-446655440000',
+  })
   @IsUUID()
   challengeId!: string;
 
   @ApiProperty({
-    example: '2468',
+    example: '1234',
     minLength: 4,
     maxLength: 8,
     description: 'Use the codeLength returned by the OTP request endpoint.',
