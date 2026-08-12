@@ -10,6 +10,9 @@ The current vertical slice is the authentication backend, guided by the [ChatMe 
 - OTP request, resend cooldown, verification, expiry, and cumulative attempt lockout
 - New-user creation only after phone ownership is verified
 - Profile name setup and optional avatar URL
+- Privacy-safe matching of phone numbers already present in a user's contacts
+- Registered-user search by display name without exposing phone numbers
+- Idempotent direct-conversation creation with membership-protected list/detail APIs
 - Short-lived JWT access tokens
 - Opaque, hashed, rotating refresh tokens with replay-family revocation
 - Persistent sessions and immediate server-side logout
@@ -62,6 +65,14 @@ npm run dev:api
 
 The API is available at `http://localhost:3000/v1`; interactive documentation is at `http://localhost:3000/v1/docs` outside production.
 
+Optionally seed three fictional classroom accounts after applying migrations:
+
+```bash
+ALLOW_DEMO_SEED=true npm run prisma:seed
+```
+
+The seed is manual and idempotent. It never creates sessions or authentication tokens.
+
 ## Verification
 
 ```bash
@@ -73,5 +84,8 @@ npm run test:e2e
 npm run build
 npm audit --omit=dev
 ```
+
+The real-PostgreSQL concurrency suite is opt-in because it requires an isolated,
+migrated database. See `apps/api/README.md` for the `test:integration` setup.
 
 See [apps/api/README.md](apps/api/README.md) for the endpoint contract, environment settings, security behavior, and Figma-to-API mapping.

@@ -88,6 +88,17 @@ export class InMemoryAuthRepository extends AuthRepository {
     return session ? copySession(session) : null;
   }
 
+  seedUser(user: AuthUserRecord): void {
+    if (this.users.has(user.id)) {
+      throw new Error(`A user with id ${user.id} is already seeded.`);
+    }
+    if (this.userIdsByPhone.has(user.phoneNumber)) {
+      throw new Error('A user with that phone number is already seeded.');
+    }
+    this.users.set(user.id, copyUser(user));
+    this.userIdsByPhone.set(user.phoneNumber, user.id);
+  }
+
   seedSession(session: AuthSessionRecord): void {
     this.sessions.set(session.id, copySession(session));
   }

@@ -25,32 +25,71 @@ enum SessionRevocationReason {
   ADMIN
 }
 
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
 model User {
-  id                 String        @id @default(uuid()) @db.Uuid
-  phoneNumber        String        @unique @map("phone_number") @db.VarChar(16)
-  phoneVerifiedAt    DateTime      @map("phone_verified_at") @db.Timestamptz(3)
-  displayName        String?       @map("display_name") @db.VarChar(80)
-  avatarUrl          String?       @map("avatar_url") @db.Text
-  profileCompletedAt DateTime?     @map("profile_completed_at") @db.Timestamptz(3)
-  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt          DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
-  sessions           AuthSession[]
+  id                           String               @id @default(uuid()) @db.Uuid
+  phoneNumber                  String               @unique @map("phone_number") @db.VarChar(16)
+  phoneVerifiedAt              DateTime             @map("phone_verified_at") @db.Timestamptz(3)
+  displayName                  String?              @map("display_name") @db.VarChar(80)
+  avatarUrl                    String?              @map("avatar_url") @db.Text
+  profileCompletedAt           DateTime?            @map("profile_completed_at") @db.Timestamptz(3)
+  createdAt                    DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                    DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  sessions                     AuthSession[]
+  conversationMemberships      ConversationMember[]
+  directConversationsAsUserOne Conversation[]       @relation("DirectUserOne")
+  directConversationsAsUserTwo Conversation[]       @relation("DirectUserTwo")
 
   @@map("users")
 }
 
+model Conversation {
+  id              String               @id @default(uuid()) @db.Uuid
+  type            ConversationType     @default(DIRECT)
+  directUserOneId String?              @map("direct_user_one_id") @db.Uuid
+  directUserTwoId String?              @map("direct_user_two_id") @db.Uuid
+  lastActivityAt  DateTime             @default(now()) @map("last_activity_at") @db.Timestamptz(3)
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  directUserOne   User?                @relation("DirectUserOne", fields: [directUserOneId], references: [id], onDelete: Cascade)
+  directUserTwo   User?                @relation("DirectUserTwo", fields: [directUserTwoId], references: [id], onDelete: Cascade)
+  members         ConversationMember[]
+
+  @@unique([directUserOneId, directUserTwoId])
+  @@index([directUserOneId])
+  @@index([directUserTwoId])
+  @@index([lastActivityAt, id])
+  @@map("conversations")
+}
+
+model ConversationMember {
+  conversationId String       @map("conversation_id") @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  joinedAt       DateTime     @default(now()) @map("joined_at") @db.Timestamptz(3)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+  @@index([userId, conversationId])
+  @@map("conversation_members")
+}
+
 model OtpChallenge {
-  id                String      @id @default(uuid()) @db.Uuid
-  phoneNumber       String      @map("phone_number") @db.VarChar(16)
-  purpose           OtpPurpose  @default(SIGN_IN)
-  codeDigest        String      @map("code_digest") @db.Char(64)
-  expiresAt         DateTime    @map("expires_at") @db.Timestamptz(3)
-  resendAvailableAt DateTime    @map("resend_available_at") @db.Timestamptz(3)
-  attemptsRemaining Int         @default(5) @map("attempts_remaining")
-  lastSentAt        DateTime    @map("last_sent_at") @db.Timestamptz(3)
-  consumedAt        DateTime?   @map("consumed_at") @db.Timestamptz(3)
-  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt         DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                String     @id @default(uuid()) @db.Uuid
+  phoneNumber       String     @map("phone_number") @db.VarChar(16)
+  purpose           OtpPurpose @default(SIGN_IN)
+  codeDigest        String     @map("code_digest") @db.Char(64)
+  expiresAt         DateTime   @map("expires_at") @db.Timestamptz(3)
+  resendAvailableAt DateTime   @map("resend_available_at") @db.Timestamptz(3)
+  attemptsRemaining Int        @default(5) @map("attempts_remaining")
+  lastSentAt        DateTime   @map("last_sent_at") @db.Timestamptz(3)
+  consumedAt        DateTime?  @map("consumed_at") @db.Timestamptz(3)
+  createdAt         DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@index([phoneNumber, createdAt])
   @@index([expiresAt])
@@ -69,24 +108,24 @@ model OtpAttemptBudget {
 }
 
 model AuthSession {
-  id             String                   @id @default(uuid()) @db.Uuid
-  familyId       String                   @map("family_id") @db.Uuid
-  userId         String                   @map("user_id") @db.Uuid
-  tokenDigest    String                   @unique @map("token_digest") @db.Char(64)
-  deviceName     String?                  @map("device_name") @db.VarChar(120)
-  platform       DevicePlatform           @default(UNKNOWN)
-  ipAddress      String?                  @map("ip_address") @db.VarChar(64)
-  userAgent      String?                  @map("user_agent") @db.VarChar(512)
-  expiresAt      DateTime                 @map("expires_at") @db.Timestamptz(3)
-  lastUsedAt     DateTime                 @map("last_used_at") @db.Timestamptz(3)
-  revokedAt      DateTime?                @map("revoked_at") @db.Timestamptz(3)
-  revokedReason  SessionRevocationReason? @map("revoked_reason")
-  replacedById   String?                  @unique @map("replaced_by_id") @db.Uuid
-  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
-  user           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  replacedBy     AuthSession?             @relation("SessionRotation", fields: [replacedById], references: [id], onDelete: SetNull)
-  replaces       AuthSession?             @relation("SessionRotation")
+  id            String                   @id @default(uuid()) @db.Uuid
+  familyId      String                   @map("family_id") @db.Uuid
+  userId        String                   @map("user_id") @db.Uuid
+  tokenDigest   String                   @unique @map("token_digest") @db.Char(64)
+  deviceName    String?                  @map("device_name") @db.VarChar(120)
+  platform      DevicePlatform           @default(UNKNOWN)
+  ipAddress     String?                  @map("ip_address") @db.VarChar(64)
+  userAgent     String?                  @map("user_agent") @db.VarChar(512)
+  expiresAt     DateTime                 @map("expires_at") @db.Timestamptz(3)
+  lastUsedAt    DateTime                 @map("last_used_at") @db.Timestamptz(3)
+  revokedAt     DateTime?                @map("revoked_at") @db.Timestamptz(3)
+  revokedReason SessionRevocationReason? @map("revoked_reason")
+  replacedById  String?                  @unique @map("replaced_by_id") @db.Uuid
+  createdAt     DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user          User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy    AuthSession?             @relation("SessionRotation", fields: [replacedById], references: [id], onDelete: SetNull)
+  replaces      AuthSession?             @relation("SessionRotation")
 
   @@index([userId, revokedAt])
   @@index([familyId, revokedAt])

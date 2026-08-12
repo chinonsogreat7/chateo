@@ -7,12 +7,17 @@ import {
 } from '@nestjs/swagger';
 import { AuthController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
+import { ConversationsController } from './conversations/conversations.controller';
+import { ConversationsService } from './conversations/conversations.service';
+import { DiscoveryController } from './discovery/discovery.controller';
+import { DiscoveryService } from './discovery/discovery.service';
 import { UsersController } from './users/users.controller';
 import { UsersService } from './users/users.service';
 
 const CHALLENGE_ID = '550e8400-e29b-41d4-a716-446655440000';
 const REFRESH_TOKEN =
   '550e8400-e29b-41d4-a716-446655440000.3fQ8xZ7uV2nK5mP9rT4wY6aB1cD0eF8gH2jL7sN5qRk';
+const PARTICIPANT_ID = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
 
 interface RequestExampleCase {
   method: 'patch' | 'post';
@@ -27,10 +32,17 @@ describe('OpenAPI request examples', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
-      controllers: [AuthController, UsersController],
+      controllers: [
+        AuthController,
+        UsersController,
+        DiscoveryController,
+        ConversationsController,
+      ],
       providers: [
         { provide: AuthService, useValue: {} },
         { provide: UsersService, useValue: {} },
+        { provide: DiscoveryService, useValue: {} },
+        { provide: ConversationsService, useValue: {} },
       ],
     }).compile();
 
@@ -98,6 +110,20 @@ describe('OpenAPI request examples', () => {
         avatarUrl: 'https://example.com/avatars/great.jpg',
       },
     },
+    {
+      method: 'post',
+      path: '/v1/contacts/match',
+      schemaName: 'MatchContactsDto',
+      payload: {
+        phoneNumbers: ['+234 801 234 5678', '+2348098765432'],
+      },
+    },
+    {
+      method: 'post',
+      path: '/v1/conversations/direct',
+      schemaName: 'CreateDirectConversationDto',
+      payload: { participantId: PARTICIPANT_ID },
+    },
   ];
 
   it.each(cases)(
@@ -134,5 +160,33 @@ describe('OpenAPI request examples', () => {
         },
       },
     });
+  });
+
+  it.each(['PublicDiscoveryUserDto', 'ConversationParticipantDto'])(
+    '%s exposes public profile fields without a phone number',
+    (schemaName) => {
+      const schema = document.components?.schemas?.[schemaName];
+      expect(schema).toMatchObject({
+        required: expect.arrayContaining(['id', 'displayName', 'avatarUrl']),
+        properties: {
+          id: expect.any(Object) as object,
+          displayName: expect.any(Object) as object,
+          avatarUrl: expect.any(Object) as object,
+        },
+      });
+      expect(schema).not.toMatchObject({
+        properties: { phoneNumber: expect.anything() },
+      });
+    },
+  );
+
+  it.each([
+    ['/v1/contacts/match', 'post'],
+    ['/v1/users/search', 'get'],
+    ['/v1/conversations/direct', 'post'],
+    ['/v1/conversations', 'get'],
+    ['/v1/conversations/{conversationId}', 'get'],
+  ] as const)('%s requires bearer authentication', (path, method) => {
+    expect(document.paths[path]?.[method]?.security).toEqual([{ bearer: [] }]);
   });
 });

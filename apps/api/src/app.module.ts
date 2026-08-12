@@ -4,7 +4,9 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module';
 import { validateEnvironment } from './config/environment';
+import { ConversationsModule } from './conversations/conversations.module';
 import { DatabaseModule } from './database/database.module';
+import { DiscoveryModule } from './discovery/discovery.module';
 import { HealthModule } from './health/health.module';
 import { UsersModule } from './users/users.module';
 
@@ -21,6 +23,8 @@ import { UsersModule } from './users/users.module';
     DatabaseModule,
     AuthModule,
     UsersModule,
+    DiscoveryModule,
+    ConversationsModule,
     HealthModule,
   ],
   providers: [
