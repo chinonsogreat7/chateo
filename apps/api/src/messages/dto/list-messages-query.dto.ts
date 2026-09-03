@@ -10,12 +10,17 @@ import {
 } from 'class-validator';
 
 export class ListMessagesQueryDto {
-  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 50 })
+  @ApiPropertyOptional({
+    type: 'integer',
+    minimum: 1,
+    maximum: 100,
+    default: 50,
+  })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100)
-  limit = 50;
+  limit: number = 50;
 
   @ApiPropertyOptional({
     description: 'Opaque cursor returned by the previous history page.',

@@ -17,6 +17,7 @@ import { PhoneNumberService } from '../src/auth/providers/phone-number.service';
 import { ApiExceptionFilter } from '../src/common/filters/api-exception.filter';
 import { NoStoreInterceptor } from '../src/common/no-store.interceptor';
 import { ConversationsController } from '../src/conversations/conversations.controller';
+import { ConversationEventsPublisher } from '../src/conversations/conversation-events.publisher';
 import { ConversationsRepository } from '../src/conversations/conversations.repository';
 import { ConversationsService } from '../src/conversations/conversations.service';
 import { validateEnvironment } from '../src/config/environment';
@@ -199,6 +200,13 @@ describe('Discovery and direct conversations API (e2e, in memory)', () => {
         { provide: AuthRepository, useValue: authRepository },
         { provide: DiscoveryRepository, useValue: repository },
         { provide: ConversationsRepository, useValue: repository },
+        {
+          provide: ConversationEventsPublisher,
+          useValue: {
+            publishCreated: jest.fn(),
+            publishSettingsUpdated: jest.fn(),
+          },
+        },
         { provide: Clock, useValue: clock },
         { provide: APP_GUARD, useClass: JwtAuthGuard },
       ],

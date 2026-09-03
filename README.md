@@ -3,7 +3,7 @@
 ChatMe is a WhatsApp-style mobile chat project. This repository is being built as a monorepo so the backend, future mobile client, and shared contracts can evolve together.
 
 The current backend supports the student mobile team from sign-in through live
-one-to-one text chat. It is guided by the
+direct and group text chat. It is guided by the
 [ChatMe Figma design](https://www.figma.com/design/TMSAXEwYtU57KMvtaY1ckh/ChatMe-App?node-id=0-1)
 and the project rubric in this workspace.
 
@@ -16,15 +16,22 @@ and the project rubric in this workspace.
 - Privacy-safe matching of phone numbers already present in a user's contacts
 - Registered-user search by display name without exposing phone numbers
 - Idempotent direct-conversation creation with membership-protected list/detail APIs
+- Per-user archive, mute, and pin settings with pinned-first conversation lists, plus idempotent user blocking
+- Group creation with owner/member roles and group-aware list/detail APIs
 - Persistent, idempotent text-message sending and cursor-paginated history
 - Per-user unread counts, durable delivery/read receipts, and latest-message chat-list previews
-- Authenticated Socket.IO message, receipt, presence, and typing events on the `/chat` namespace
+- Authenticated Socket.IO conversation, message, receipt, presence, and typing events on the `/chat` namespace
 - Short-lived JWT access tokens
 - Opaque, hashed, rotating refresh tokens with replay-family revocation
 - Persistent sessions and immediate server-side logout
-- PostgreSQL schema and committed Prisma migration
+- PostgreSQL schema and versioned Prisma migrations
 - Swagger/OpenAPI documentation in non-production environments
 - Development console OTP delivery and production Twilio SMS delivery
+
+Group scope currently covers creation and shared chat. Adding or removing
+members, changing admins, editing group metadata, and leaving a group remain
+future work. Mute is persisted as a per-user preference, but push notification
+delivery and mute-based notification filtering are not implemented yet.
 
 The SMS integration uses a console adapter in development and a Twilio API-key adapter in production.
 
@@ -56,6 +63,11 @@ cp apps/api/.env.example apps/api/.env
 docker compose -f apps/api/compose.yaml up -d
 npm run prisma:deploy --workspace @chateo/api
 ```
+
+The chat-management migration upgrades any legacy group that has members by
+choosing its earliest member as owner and creator and assigning a stable
+placeholder name. It refuses to migrate an orphan group with no memberships so
+the data can be repaired explicitly before retrying.
 
 Replace the two placeholder secrets in `apps/api/.env`. Generate independent values with:
 

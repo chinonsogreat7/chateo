@@ -17,7 +17,14 @@ import { Clock } from '../src/auth/providers/clock';
 import { ApiExceptionFilter } from '../src/common/filters/api-exception.filter';
 import { NoStoreInterceptor } from '../src/common/no-store.interceptor';
 import { validateEnvironment } from '../src/config/environment';
+import { ConversationSettingsController } from '../src/conversation-settings/conversation-settings.controller';
+import {
+  ConversationSettingsRepository,
+  type UpdateConversationSettingsInput,
+} from '../src/conversation-settings/conversation-settings.repository';
+import { ConversationSettingsService } from '../src/conversation-settings/conversation-settings.service';
 import { ConversationsController } from '../src/conversations/conversations.controller';
+import { ConversationEventsPublisher } from '../src/conversations/conversation-events.publisher';
 import { ConversationsRepository } from '../src/conversations/conversations.repository';
 import { ConversationsService } from '../src/conversations/conversations.service';
 import { MessageEventsPublisher } from '../src/messages/message-events.publisher';
@@ -34,8 +41,11 @@ import { RealtimeAuthenticator } from '../src/realtime/realtime-authenticator';
 import { RealtimeConversationsRepository } from '../src/realtime/realtime-conversations.repository';
 import { RealtimeIoAdapter } from '../src/realtime/realtime-io.adapter';
 import { RealtimeMessageEventsPublisher } from '../src/realtime/realtime-message-events.publisher';
+import { RealtimeConversationEventsPublisher } from '../src/realtime/realtime-conversation-events.publisher';
 import { RealtimeReceiptEventsPublisher } from '../src/realtime/realtime-receipt-events.publisher';
 import {
+  CONVERSATION_CREATED_EVENT,
+  CONVERSATION_SETTINGS_UPDATED_EVENT,
   MESSAGE_CREATED_EVENT,
   PRESENCE_CHANGED_EVENT,
   PRESENCE_SUBSCRIBE_COMMAND,
@@ -51,6 +61,8 @@ import {
   TYPING_STARTED_EVENT,
   TYPING_STOP_COMMAND,
   TYPING_STOPPED_EVENT,
+  type ConversationCreatedEventPayload,
+  type ConversationSettingsUpdatedEventPayload,
   type MessageCreatedEventPayload,
   type PresenceChangedEventPayload,
   type PresenceSubscriptionData,
@@ -340,11 +352,13 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       controllers: [
         MessagesController,
         ConversationsController,
+        ConversationSettingsController,
         ReceiptsController,
       ],
       providers: [
         MessagesService,
         ConversationsService,
+        ConversationSettingsService,
         ReceiptsService,
         AccessTokenService,
         NoStoreInterceptor,
@@ -352,10 +366,15 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
         ChatStateService,
         RealtimeAuthenticator,
         RealtimeMessageEventsPublisher,
+        RealtimeConversationEventsPublisher,
         RealtimeReceiptEventsPublisher,
         {
           provide: MessageEventsPublisher,
           useExisting: RealtimeMessageEventsPublisher,
+        },
+        {
+          provide: ConversationEventsPublisher,
+          useExisting: RealtimeConversationEventsPublisher,
         },
         {
           provide: ReceiptEventsPublisher,
@@ -364,6 +383,25 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
         { provide: AuthRepository, useValue: authRepository },
         { provide: MessagesRepository, useValue: messagingRepository },
         { provide: ConversationsRepository, useValue: messagingRepository },
+        {
+          provide: ConversationSettingsRepository,
+          useValue: {
+            updateForMember: jest
+              .fn()
+              .mockImplementation((input: UpdateConversationSettingsInput) =>
+                Promise.resolve({
+                  status: 'updated',
+                  changed: true,
+                  settings: {
+                    conversationId: input.conversationId,
+                    archivedAt: input.archived ? input.now : null,
+                    mutedAt: input.muted ? input.now : null,
+                    pinnedAt: input.pinned ? input.now : null,
+                  },
+                }),
+              ),
+          },
+        },
         { provide: ReceiptsRepository, useValue: messagingRepository },
         {
           provide: RealtimeConversationsRepository,
@@ -475,6 +513,95 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
     await request(app.getHttpServer())
       .get(`/v1/conversations/${CONVERSATION_ID}/receipts`)
       .expect(HttpStatus.UNAUTHORIZED);
+  });
+
+  it('publishes conversation.created through the socket layer only for a newly created direct chat', async () => {
+    const bobSocket = await connectSocket(bobToken);
+    const carolSocket = await connectSocket(carolToken);
+    await waitForRoutedSocketCount([BOB_ID, CAROL_ID], 2);
+
+    const bobEvents: ConversationCreatedEventPayload[] = [];
+    const carolEvents: ConversationCreatedEventPayload[] = [];
+    bobSocket.on(CONVERSATION_CREATED_EVENT, (payload) =>
+      bobEvents.push(payload as ConversationCreatedEventPayload),
+    );
+    carolSocket.on(CONVERSATION_CREATED_EVENT, (payload) =>
+      carolEvents.push(payload as ConversationCreatedEventPayload),
+    );
+
+    const created = await request(app.getHttpServer())
+      .post('/v1/conversations/direct')
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ participantId: CAROL_ID })
+      .expect(HttpStatus.OK);
+    await waitUntil(
+      () => bobEvents.length === 1 && carolEvents.length === 1,
+      'Expected conversation.created on both participant sockets.',
+    );
+
+    const expectedEvent = {
+      conversationId: created.body.id as string,
+      type: 'direct',
+      occurredAt: clock.now().toISOString(),
+    };
+    expect(bobEvents).toEqual([expectedEvent]);
+    expect(carolEvents).toEqual([expectedEvent]);
+
+    await request(app.getHttpServer())
+      .post('/v1/conversations/direct')
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ participantId: CAROL_ID })
+      .expect(HttpStatus.OK);
+    await delay(50);
+    expect(bobEvents).toHaveLength(1);
+    expect(carolEvents).toHaveLength(1);
+  });
+
+  it('publishes conversation settings changes only to the updating user devices', async () => {
+    const aliceFirstSocket = await connectSocket(aliceToken);
+    const aliceSecondSocket = await connectSocket(aliceSecondToken);
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 3);
+
+    const aliceFirstEvents: ConversationSettingsUpdatedEventPayload[] = [];
+    const aliceSecondEvents: ConversationSettingsUpdatedEventPayload[] = [];
+    const bobEvents: ConversationSettingsUpdatedEventPayload[] = [];
+    aliceFirstSocket.on(CONVERSATION_SETTINGS_UPDATED_EVENT, (payload) =>
+      aliceFirstEvents.push(payload as ConversationSettingsUpdatedEventPayload),
+    );
+    aliceSecondSocket.on(CONVERSATION_SETTINGS_UPDATED_EVENT, (payload) =>
+      aliceSecondEvents.push(
+        payload as ConversationSettingsUpdatedEventPayload,
+      ),
+    );
+    bobSocket.on(CONVERSATION_SETTINGS_UPDATED_EVENT, (payload) =>
+      bobEvents.push(payload as ConversationSettingsUpdatedEventPayload),
+    );
+
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}/settings`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ archived: true, muted: false, pinned: true })
+      .expect(HttpStatus.OK);
+    await waitUntil(
+      () => aliceFirstEvents.length === 1 && aliceSecondEvents.length === 1,
+      'Expected conversation.settings.updated on both user sockets.',
+    );
+
+    const expectedEvent = {
+      conversationId: CONVERSATION_ID,
+      userId: ALICE_ID,
+      archived: true,
+      muted: false,
+      pinned: true,
+      archivedAt: clock.now().toISOString(),
+      mutedAt: null,
+      pinnedAt: clock.now().toISOString(),
+      occurredAt: clock.now().toISOString(),
+    };
+    expect(aliceFirstEvents).toEqual([expectedEvent]);
+    expect(aliceSecondEvents).toEqual([expectedEvent]);
+    expect(bobEvents).toEqual([]);
   });
 
   it('lets a member send trimmed text without exposing internal routing or phone data', async () => {

@@ -20,27 +20,32 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 
 ## Endpoints
 
-| Method  | Path                                                   | Auth   | Purpose                                           |
-| ------- | ------------------------------------------------------ | ------ | ------------------------------------------------- |
-| `GET`   | `/v1/health`                                           | Public | Liveness check                                    |
-| `POST`  | `/v1/auth/otp/request`                                 | Public | Request a verification code                       |
-| `POST`  | `/v1/auth/otp/resend`                                  | Public | Resend after the cooldown                         |
-| `POST`  | `/v1/auth/otp/verify`                                  | Public | Verify and receive a token pair                   |
-| `POST`  | `/v1/auth/refresh`                                     | Public | Rotate a refresh token                            |
-| `POST`  | `/v1/auth/logout`                                      | Public | Revoke a refresh session; always idempotent       |
-| `GET`   | `/v1/me`                                               | Bearer | Read the signed-in profile                        |
-| `PATCH` | `/v1/me`                                               | Bearer | Set the name and optional avatar URL              |
-| `POST`  | `/v1/contacts/match`                                   | Bearer | Match phone numbers already known to caller       |
-| `GET`   | `/v1/users/search`                                     | Bearer | Search completed profiles by display name         |
-| `POST`  | `/v1/conversations/direct`                             | Bearer | Create or return a direct conversation            |
-| `GET`   | `/v1/conversations`                                    | Bearer | List the signed-in user's conversations           |
-| `GET`   | `/v1/conversations/:conversationId`                    | Bearer | Open a conversation as a member                   |
-| `POST`  | `/v1/conversations/:conversationId/messages`           | Bearer | Persist or replay an idempotent text message      |
-| `GET`   | `/v1/conversations/:conversationId/messages`           | Bearer | Read newest-first message history                 |
-| `PUT`   | `/v1/conversations/:conversationId/receipts/delivered` | Bearer | Advance the caller's durable delivery boundary    |
-| `PUT`   | `/v1/conversations/:conversationId/receipts/read`      | Bearer | Advance the caller's durable read boundary        |
-| `GET`   | `/v1/conversations/:conversationId/receipts`           | Bearer | Reconcile every participant's receipt frontiers   |
-| `POST`  | `/v1/conversations/:conversationId/read`               | Bearer | Legacy local read marker; use receipt route above |
+| Method   | Path                                                   | Auth   | Purpose                                           |
+| -------- | ------------------------------------------------------ | ------ | ------------------------------------------------- |
+| `GET`    | `/v1/health`                                           | Public | Liveness check                                    |
+| `POST`   | `/v1/auth/otp/request`                                 | Public | Request a verification code                       |
+| `POST`   | `/v1/auth/otp/resend`                                  | Public | Resend after the cooldown                         |
+| `POST`   | `/v1/auth/otp/verify`                                  | Public | Verify and receive a token pair                   |
+| `POST`   | `/v1/auth/refresh`                                     | Public | Rotate a refresh token                            |
+| `POST`   | `/v1/auth/logout`                                      | Public | Revoke a refresh session; always idempotent       |
+| `GET`    | `/v1/me`                                               | Bearer | Read the signed-in profile                        |
+| `PATCH`  | `/v1/me`                                               | Bearer | Set the name and optional avatar URL              |
+| `GET`    | `/v1/me/blocks`                                        | Bearer | List users blocked by the caller                  |
+| `PUT`    | `/v1/me/blocks/:userId`                                | Bearer | Block a user idempotently                         |
+| `DELETE` | `/v1/me/blocks/:userId`                                | Bearer | Unblock a user idempotently                       |
+| `POST`   | `/v1/contacts/match`                                   | Bearer | Match phone numbers already known to caller       |
+| `GET`    | `/v1/users/search`                                     | Bearer | Search completed profiles by display name         |
+| `POST`   | `/v1/conversations/direct`                             | Bearer | Create or return a direct conversation            |
+| `POST`   | `/v1/conversations/group`                              | Bearer | Create a named group conversation                 |
+| `GET`    | `/v1/conversations`                                    | Bearer | List the signed-in user's conversations           |
+| `GET`    | `/v1/conversations/:conversationId`                    | Bearer | Open a conversation as a member                   |
+| `PATCH`  | `/v1/conversations/:conversationId/settings`           | Bearer | Archive, mute, or pin for the caller              |
+| `POST`   | `/v1/conversations/:conversationId/messages`           | Bearer | Persist or replay an idempotent text message      |
+| `GET`    | `/v1/conversations/:conversationId/messages`           | Bearer | Read newest-first message history                 |
+| `PUT`    | `/v1/conversations/:conversationId/receipts/delivered` | Bearer | Advance the caller's durable delivery boundary    |
+| `PUT`    | `/v1/conversations/:conversationId/receipts/read`      | Bearer | Advance the caller's durable read boundary        |
+| `GET`    | `/v1/conversations/:conversationId/receipts`           | Bearer | Reconcile every participant's receipt frontiers   |
+| `POST`   | `/v1/conversations/:conversationId/read`               | Bearer | Legacy local read marker; use receipt route above |
 
 Authentication, profile, discovery, conversation, message, and receipt
 responses include `Cache-Control: no-store`.
@@ -174,6 +179,14 @@ The operation is idempotent: repeated requests, including a reversed request fro
   },
   "latestMessage": null,
   "unreadCount": 0,
+  "settings": {
+    "archived": false,
+    "muted": false,
+    "pinned": false,
+    "archivedAt": null,
+    "mutedAt": null,
+    "pinnedAt": null
+  },
   "lastActivityAt": "2026-08-12T12:30:00.000Z",
   "createdAt": "2026-08-12T12:30:00.000Z",
   "updatedAt": "2026-08-12T12:30:00.000Z"
@@ -181,10 +194,88 @@ The operation is idempotent: repeated requests, including a reversed request fro
 ```
 
 `GET /v1/conversations` uses opaque cursor pagination.
+It returns active conversations by default; pass `archived=true` to list the
+caller's archived conversations instead. Each item includes the caller's
+archive, mute, and pin state. Pinned conversations sort before unpinned
+conversations within either archive mode; each segment is newest-activity first.
+Pass `pageInfo.nextCursor` unchanged with the same `archived` mode. Cursors are
+bound to that mode, so using one in a different mode—including dropping
+`archived=true` while paging—returns `CONVERSATION_CURSOR_INVALID` rather than
+silently skipping conversations.
 `GET /v1/conversations/:conversationId` returns `CONVERSATION_NOT_FOUND` for
 both a missing conversation and a non-member, avoiding existence disclosure.
 After messages are sent, `latestMessage` contains a safe 120-code-point preview
 and `unreadCount` is specific to the signed-in user.
+Archived conversations remain archived when a new message arrives until the
+member explicitly restores them with the settings endpoint; their unread count
+continues to advance and is visible through `archived=true`.
+
+## Conversation settings
+
+Archive, mute, and pin are per-user preferences, so changing them never changes
+another participant's settings:
+
+```http
+PATCH /v1/conversations/550e8400-e29b-41d4-a716-446655440000/settings
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "archived": true,
+  "muted": false,
+  "pinned": true
+}
+```
+
+Every property is optional, but at least one must be supplied. Each supplied
+value must be a JSON boolean; explicit `null` is rejected. Repeating the same
+update is idempotent, preserves the original transition timestamp, and does not
+publish another realtime settings event.
+Mute is currently a persisted preference exposed through REST and realtime
+updates. Push delivery and mute-based notification filtering are not implemented
+yet, so muting does not suppress messages or Socket.IO events.
+
+## Blocking users
+
+Use `PUT /v1/me/blocks/:userId` and `DELETE /v1/me/blocks/:userId` to block and
+unblock idempotently. `GET /v1/me/blocks` returns public profile fields only.
+Blocks are directional to store but enforced in either direction: blocked pairs
+are hidden from search/contact matching and cannot create a direct conversation,
+send a new direct message, or subscribe to direct-chat presence/typing. Existing
+history remains available to the participants. A creator also cannot invite a
+user to a new group when either side has blocked the other; the API uses the same
+privacy-safe `USER_NOT_FOUND` response as a missing invitee. Existing groups
+shared by blocked users remain usable, including their message, receipt,
+presence, and typing flows.
+New direct-chat receipt events do not cross an active block, while the member
+advancing the receipt still receives the update on their own active devices.
+
+## Group conversations
+
+Create a group with one to 99 other registered users:
+
+```http
+POST /v1/conversations/group
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "name": "Study Group",
+  "participantIds": [
+    "7d444840-9dc0-41d1-b245-5ffdce74fad2",
+    "8e555951-aed1-42e2-8346-6aadece85be3"
+  ]
+}
+```
+
+The creator is stored as the group owner and selected users join as members.
+Creation is rejected if the creator has blocked any invitee or any invitee has
+blocked the creator; blocks solely between invitees do not reject the request.
+Group responses include group metadata, public participant profiles, roles, and
+the requesting member's role. The existing message, history, receipt, presence,
+and typing APIs work with group conversation IDs. Adding or removing members,
+promoting or demoting admins, editing group metadata, transferring ownership,
+and leaving or deleting a group remain future APIs.
 
 ## Text messages
 
@@ -305,6 +396,14 @@ const socket = io(`${apiOrigin}/chat`, {
 socket.on('message.created', (message) => {
   // Same public shape returned by POST .../messages.
 });
+
+socket.on('conversation.created', ({ conversationId, type, occurredAt }) => {
+  // Fetch the conversation through REST for its caller-specific representation.
+});
+
+socket.on('conversation.settings.updated', (settings) => {
+  // Sent only to active devices owned by the user whose settings changed.
+});
 ```
 
 An `Authorization: Bearer <access-token>` handshake header is also supported.
@@ -315,8 +414,8 @@ token.
 
 There is intentionally no client-to-server socket event for sending messages or
 writing receipts. REST stays authoritative; socket events are low-latency hints.
-`message.created` is delivered to all active devices belonging to both
-participants. The durable receipt events are:
+`message.created` is delivered to all active devices belonging to every
+conversation member. The durable receipt events are:
 
 ```ts
 socket.on(
@@ -463,8 +562,10 @@ Important auth codes include `AUTH_INVALID_PHONE_NUMBER`, `AUTH_OTP_COOLDOWN`, `
 Discovery, conversation, message, and receipt codes include
 `CONTACTS_INVALID_PHONE_NUMBER`, `DISCOVERY_INVALID_CURSOR`,
 `CONVERSATION_SELF_NOT_ALLOWED`, `CONVERSATION_CURSOR_INVALID`,
-`CONVERSATION_NOT_FOUND`, `USER_NOT_FOUND`, `MESSAGE_CURSOR_INVALID`, and
-`MESSAGE_IDEMPOTENCY_CONFLICT`.
+`CONVERSATION_GROUP_PARTICIPANTS_INVALID`,
+`CONVERSATION_SETTINGS_UPDATE_EMPTY`, `CONVERSATION_NOT_FOUND`,
+`USER_BLOCK_SELF_NOT_ALLOWED`, `USER_NOT_FOUND`, `MESSAGE_CURSOR_INVALID`,
+and `MESSAGE_IDEMPOTENCY_CONFLICT`.
 
 ## Security behavior
 
@@ -481,7 +582,10 @@ Discovery, conversation, message, and receipt codes include
 - Public OTP and refresh endpoints have IP throttles. Distributed deployments should replace the default in-memory throttle store with Redis.
 - Contact matching is exact-only, accepts at most 100 caller-supplied numbers, is never persisted, and returns no unmatched numbers.
 - Discovery and conversation responses use a public user shape that omits phone numbers.
+- Bidirectional block policy is enforced for discovery and direct realtime/message access without exposing which side blocked.
 - Direct-conversation participant pairs are stored in canonical UUID order under a database unique constraint.
+- Conversation archive, mute, and pin state is stored independently for each member.
+- Group creation assigns one owner and validates all selected users and creator-to-invitee block relationships atomically.
 - Message send retries are deduplicated by `(senderId, clientMessageId)` before unread counters change.
 - Receipt boundaries accept only incoming messages, advance monotonically, and persist before their socket events are published.
 - Socket handshakes validate both the JWT and its server-side session; private events are revalidated before delivery.
@@ -541,8 +645,14 @@ Health check: /v1/health
 Node version: 22
 ```
 
-The new text-message release requires the committed
-`20260812160000_add_text_messages` migration before it accepts traffic.
+The text-message release requires `20260812160000_add_text_messages`. The newer
+chat-management release requires
+`20260903090000_add_chat_settings_blocks_and_groups`. That migration backfills
+each pre-existing non-orphan group with the stable placeholder name
+`Migrated group <uuid>`, chooses the earliest membership (`joined_at`, then
+`user_id`) as `created_by_id`, and promotes that member to owner. It refuses an
+orphan group with no memberships before making schema changes and reports how to
+repair the data before retrying.
 
 Run the real-PostgreSQL integration suite against a dedicated database whose
 name ends in `_integration` (or a dedicated schema beginning with

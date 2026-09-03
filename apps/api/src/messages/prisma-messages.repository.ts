@@ -189,15 +189,21 @@ export class PrismaMessagesRepository extends MessagesRepository {
     transaction: Prisma.TransactionClient,
     input: SendTextMessageInput,
   ): Promise<SendTextMessageResult> {
-    const members = await transaction.conversationMember.findMany({
-      where: { conversationId: input.conversationId },
-      select: { userId: true },
+    const conversation = await transaction.conversation.findUnique({
+      where: { id: input.conversationId },
+      select: {
+        type: true,
+        members: { select: { userId: true } },
+      },
     });
+    const members = conversation?.members ?? [];
     if (!members.some((member) => member.userId === input.senderId)) {
       return { status: 'conversation-not-found' };
     }
     const participantIds = this.uniqueUserIds(members);
 
+    // Idempotency describes the already-committed request, so a later block
+    // must not change a safe retry from success (or conflict) into a 404.
     const existing = await transaction.message.findUnique({
       where: {
         senderId_clientMessageId: {
@@ -209,6 +215,17 @@ export class PrismaMessagesRepository extends MessagesRepository {
     });
     if (existing) {
       return this.resolveExisting(existing, input, participantIds);
+    }
+
+    if (
+      conversation?.type === 'DIRECT' &&
+      (await this.hasBlockBetweenDirectParticipants(
+        transaction,
+        input.senderId,
+        members,
+      ))
+    ) {
+      return { status: 'conversation-not-found' };
     }
 
     const message = await transaction.message.create({
@@ -246,10 +263,14 @@ export class PrismaMessagesRepository extends MessagesRepository {
   private async readConcurrentWinner(
     input: SendTextMessageInput,
   ): Promise<SendTextMessageResult | null> {
-    const members = await this.prisma.conversationMember.findMany({
-      where: { conversationId: input.conversationId },
-      select: { userId: true },
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: input.conversationId },
+      select: {
+        type: true,
+        members: { select: { userId: true } },
+      },
     });
+    const members = conversation?.members ?? [];
     if (!members.some((member) => member.userId === input.senderId)) {
       return { status: 'conversation-not-found' };
     }
@@ -263,9 +284,21 @@ export class PrismaMessagesRepository extends MessagesRepository {
       },
       select: messageSelect,
     });
-    return winner
-      ? this.resolveExisting(winner, input, this.uniqueUserIds(members))
-      : null;
+    if (winner) {
+      return this.resolveExisting(winner, input, this.uniqueUserIds(members));
+    }
+
+    if (
+      conversation?.type === 'DIRECT' &&
+      (await this.hasBlockBetweenDirectParticipants(
+        this.prisma,
+        input.senderId,
+        members,
+      ))
+    ) {
+      return { status: 'conversation-not-found' };
+    }
+    return null;
   }
 
   private resolveExisting(
@@ -304,6 +337,28 @@ export class PrismaMessagesRepository extends MessagesRepository {
 
   private uniqueUserIds(members: Array<{ userId: string }>): string[] {
     return [...new Set(members.map((member) => member.userId))];
+  }
+
+  private async hasBlockBetweenDirectParticipants(
+    client: Pick<Prisma.TransactionClient, 'userBlock'>,
+    senderId: string,
+    members: Array<{ userId: string }>,
+  ): Promise<boolean> {
+    const otherUserId = members.find(
+      (member) => member.userId !== senderId,
+    )?.userId;
+    if (!otherUserId) return true;
+
+    const block = await client.userBlock.findFirst({
+      where: {
+        OR: [
+          { blockerId: senderId, blockedId: otherUserId },
+          { blockerId: otherUserId, blockedId: senderId },
+        ],
+      },
+      select: { blockerId: true },
+    });
+    return block !== null;
   }
 
   private latestDate(

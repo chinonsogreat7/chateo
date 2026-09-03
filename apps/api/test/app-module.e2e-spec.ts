@@ -47,6 +47,15 @@ describe('AppModule wiring (e2e smoke)', () => {
       .get('/v1/users/search?q=ada')
       .expect(401);
     await request(app.getHttpServer()).get('/v1/conversations').expect(401);
+    await request(app.getHttpServer()).get('/v1/me/blocks').expect(401);
+    await request(app.getHttpServer())
+      .post('/v1/conversations/group')
+      .send({ name: 'Study Group', participantIds: [] })
+      .expect(401);
+    await request(app.getHttpServer())
+      .patch('/v1/conversations/550e8400-e29b-41d4-a716-446655440000/settings')
+      .send({ pinned: true })
+      .expect(401);
     await request(app.getHttpServer())
       .get('/v1/conversations/550e8400-e29b-41d4-a716-446655440000/messages')
       .expect(401);

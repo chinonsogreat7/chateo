@@ -155,8 +155,7 @@ describe('ChatStateService', () => {
       expect.objectContaining({ expiresAt: '2026-08-12T12:00:06.000Z' }),
     );
 
-    jest.advanceTimersByTime(5_000);
-    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(5_000);
     expect(second.emit).toHaveBeenLastCalledWith(
       TYPING_STOPPED_EVENT,
       expect.objectContaining({ userId: USER_ONE_ID }),
@@ -228,8 +227,7 @@ describe('ChatStateService', () => {
       expect.objectContaining({ status: 'offline' }),
     );
 
-    jest.advanceTimersByTime(10_000);
-    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(10_000);
     expect(peer.emit).toHaveBeenCalledWith(
       PRESENCE_CHANGED_EVENT,
       expect.objectContaining({ userId: USER_ONE_ID, status: 'offline' }),
@@ -401,5 +399,115 @@ describe('ChatStateService', () => {
 
     expect(revoked.emit).not.toHaveBeenCalled();
     expect(revoked.disconnect).toHaveBeenCalledWith(true);
+  });
+
+  it('reauthorizes and removes a blocked cached subscription before typing fan-out', async () => {
+    jest.useFakeTimers();
+    const { findAccessibleConversation, service } = createService();
+    const first = socket('one', USER_ONE_ID);
+    const blockedPeer = socket('two', USER_TWO_ID);
+    service.register(first);
+    service.register(blockedPeer);
+    await subscribe(service, first);
+    await subscribe(service, blockedPeer);
+    await service.startTyping(
+      blockedPeer,
+      { conversationId: CONVERSATION_ID },
+      jest.fn(),
+    );
+    (first.emit as jest.Mock).mockClear();
+    (blockedPeer.emit as jest.Mock).mockClear();
+
+    findAccessibleConversation.mockImplementation(
+      (_conversationId: string, userId: string) =>
+        Promise.resolve(
+          userId === USER_TWO_ID
+            ? null
+            : {
+                conversationId: CONVERSATION_ID,
+                participantIds: [USER_ONE_ID, USER_TWO_ID],
+              },
+        ),
+    );
+
+    await service.startTyping(
+      first,
+      { conversationId: CONVERSATION_ID },
+      jest.fn(),
+    );
+
+    expect(blockedPeer.emit).not.toHaveBeenCalledWith(
+      TYPING_STARTED_EVENT,
+      expect.anything(),
+    );
+
+    // Restoring repository access does not restore the removed subscription;
+    // the peer must explicitly subscribe again.
+    findAccessibleConversation.mockResolvedValue({
+      conversationId: CONVERSATION_ID,
+      participantIds: [USER_ONE_ID, USER_TWO_ID],
+    });
+    await service.startTyping(
+      first,
+      { conversationId: CONVERSATION_ID },
+      jest.fn(),
+    );
+    expect(blockedPeer.emit).not.toHaveBeenCalledWith(
+      TYPING_STARTED_EVENT,
+      expect.anything(),
+    );
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(first.emit).not.toHaveBeenCalledWith(
+      TYPING_STOPPED_EVENT,
+      expect.objectContaining({ userId: USER_TWO_ID }),
+    );
+  });
+
+  it('reauthorizes and removes a blocked cached subscription before presence fan-out', async () => {
+    const { findAccessibleConversation, service } = createService();
+    const first = socket('one', USER_ONE_ID);
+    const blockedPeer = socket('two', USER_TWO_ID);
+    service.register(first);
+    service.register(blockedPeer);
+    await subscribe(service, blockedPeer);
+    (blockedPeer.emit as jest.Mock).mockClear();
+
+    findAccessibleConversation.mockImplementation(
+      (_conversationId: string, userId: string) =>
+        Promise.resolve(
+          userId === USER_TWO_ID
+            ? null
+            : {
+                conversationId: CONVERSATION_ID,
+                participantIds: [USER_ONE_ID, USER_TWO_ID],
+              },
+        ),
+    );
+
+    await service.disconnect(first, false);
+
+    expect(blockedPeer.emit).not.toHaveBeenCalledWith(
+      PRESENCE_CHANGED_EVENT,
+      expect.anything(),
+    );
+
+    findAccessibleConversation.mockResolvedValue({
+      conversationId: CONVERSATION_ID,
+      participantIds: [USER_ONE_ID, USER_TWO_ID],
+    });
+    const unsubscribeAck = jest.fn();
+    await service.unsubscribe(
+      blockedPeer,
+      { conversationId: CONVERSATION_ID },
+      unsubscribeAck,
+    );
+    expect(unsubscribeAck).toHaveBeenCalledWith({
+      ok: true,
+      data: { conversationId: CONVERSATION_ID },
+    });
+    expect(findAccessibleConversation).toHaveBeenLastCalledWith(
+      CONVERSATION_ID,
+      USER_TWO_ID,
+    );
   });
 });

@@ -11,7 +11,9 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiBadRequestResponse,
   ApiBody,
+  ApiCreatedResponse,
   ApiExtraModels,
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -26,16 +28,25 @@ import { ConversationsService } from './conversations.service';
 import { ConversationParamsDto } from './dto/conversation-params.dto';
 import {
   ConversationListResponseDto,
-  ConversationResponseDto,
+  DirectConversationResponseDto,
+  GroupConversationResponseDto,
+  conversationResponseSchema,
 } from './dto/conversation-response.dto';
+import type { ConversationResponseDto } from './dto/conversation-response.dto';
 import { CreateDirectConversationDto } from './dto/create-direct-conversation.dto';
+import { CreateGroupConversationDto } from './dto/create-group-conversation.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
 
 const PARTICIPANT_ID_EXAMPLE = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
 
 @ApiTags('conversations')
 @ApiBearerAuth()
-@ApiExtraModels(CreateDirectConversationDto)
+@ApiExtraModels(
+  CreateDirectConversationDto,
+  CreateGroupConversationDto,
+  DirectConversationResponseDto,
+  GroupConversationResponseDto,
+)
 @Controller('conversations')
 @UseInterceptors(NoStoreInterceptor)
 export class ConversationsController {
@@ -55,15 +66,48 @@ export class ConversationsController {
       },
     },
   })
-  @ApiOkResponse({ type: ConversationResponseDto })
+  @ApiOkResponse({ type: DirectConversationResponseDto })
   createDirect(
     @CurrentUser() user: AuthenticatedUser,
     @Body() input: CreateDirectConversationDto,
-  ): Promise<ConversationResponseDto> {
+  ): Promise<DirectConversationResponseDto> {
     return this.conversationsService.createDirect(
       user.sub,
       input.participantId,
     );
+  }
+
+  @Post('group')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a group conversation' })
+  @ApiBody({
+    schema: { $ref: getSchemaPath(CreateGroupConversationDto) },
+    examples: {
+      default: {
+        summary: 'Start a named group with registered users',
+        value: {
+          name: 'Study Group',
+          participantIds: [
+            '7d444840-9dc0-41d1-b245-5ffdce74fad2',
+            '8e555951-aed1-42e2-8346-6aadece85be3',
+          ],
+        },
+      },
+    },
+  })
+  @ApiCreatedResponse({ type: GroupConversationResponseDto })
+  @ApiBadRequestResponse({
+    description:
+      'The group name or participant list is invalid, duplicated, or includes the creator.',
+  })
+  @ApiNotFoundResponse({
+    description: 'One or more selected users do not exist.',
+  })
+  createGroup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() input: CreateGroupConversationDto,
+  ): Promise<GroupConversationResponseDto> {
+    return this.conversationsService.createGroup(user.sub, input);
   }
 
   @Get()
@@ -73,12 +117,17 @@ export class ConversationsController {
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ListConversationsQueryDto,
   ): Promise<ConversationListResponseDto> {
-    return this.conversationsService.list(user.sub, query.limit, query.cursor);
+    return this.conversationsService.list(
+      user.sub,
+      query.limit,
+      query.cursor,
+      query.archived,
+    );
   }
 
   @Get(':conversationId')
   @ApiOperation({ summary: 'Get a conversation by ID' })
-  @ApiOkResponse({ type: ConversationResponseDto })
+  @ApiOkResponse({ schema: conversationResponseSchema })
   @ApiNotFoundResponse({
     description: 'The conversation is missing or the user is not a member.',
   })

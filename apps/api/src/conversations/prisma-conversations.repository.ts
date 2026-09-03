@@ -1,17 +1,28 @@
 import { Injectable } from '@nestjs/common';
-import { ConversationType, Prisma } from '@prisma/client';
+import {
+  ConversationMemberRole,
+  ConversationType,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { ConversationsRepository } from './conversations.repository';
 import type {
   ConversationPageCursor,
   ConversationRecord,
   CreateDirectConversationResult,
+  CreateGroupConversationInput,
+  CreateGroupConversationResult,
 } from './conversations.types';
 
 const conversationWithMembers = {
   members: {
     select: {
       userId: true,
+      joinedAt: true,
+      role: true,
+      archivedAt: true,
+      mutedAt: true,
+      pinnedAt: true,
       unreadCount: true,
       user: {
         select: {
@@ -21,6 +32,7 @@ const conversationWithMembers = {
         },
       },
     },
+    orderBy: [{ joinedAt: 'asc' as const }, { userId: 'asc' as const }],
   },
   messages: {
     select: {
@@ -70,6 +82,15 @@ export class PrismaConversationsRepository extends ConversationsRepository {
       try {
         const result = await this.prisma.$transaction(
           async (transaction) => {
+            if (
+              await this.hasBlockBetween(
+                transaction,
+                normalizedUserId,
+                normalizedParticipantId,
+              )
+            ) {
+              return { status: 'participant-not-found' } as const;
+            }
             const existing = await transaction.conversation.findUnique({
               where: {
                 directUserOneId_directUserTwoId: {
@@ -118,6 +139,15 @@ export class PrismaConversationsRepository extends ConversationsRepository {
         lastError = error;
         const code = this.prismaErrorCode(error);
         if (code === 'P2002') {
+          if (
+            await this.hasBlockBetween(
+              this.prisma,
+              normalizedUserId,
+              normalizedParticipantId,
+            )
+          ) {
+            return { status: 'participant-not-found' };
+          }
           const winner = await this.findDirectByPair(
             directUserOneId,
             directUserTwoId,
@@ -125,7 +155,10 @@ export class PrismaConversationsRepository extends ConversationsRepository {
           if (winner) {
             return {
               status: 'existing',
-              conversation: this.mapConversation(winner, normalizedUserId),
+              conversation: this.mapDirectConversation(
+                winner,
+                normalizedUserId,
+              ),
             };
           }
         }
@@ -138,16 +171,158 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     throw lastError;
   }
 
+  override async createGroup(
+    input: CreateGroupConversationInput,
+  ): Promise<CreateGroupConversationResult> {
+    const maxAttempts = 3;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            const blockedParticipant = await transaction.userBlock.findFirst({
+              where: {
+                OR: [
+                  {
+                    blockerId: input.creatorId,
+                    blockedId: { in: input.participantIds },
+                  },
+                  {
+                    blockerId: { in: input.participantIds },
+                    blockedId: input.creatorId,
+                  },
+                ],
+              },
+              select: { blockerId: true },
+            });
+            if (blockedParticipant) {
+              return { status: 'participant-not-found' } as const;
+            }
+
+            const participants = await transaction.user.findMany({
+              where: { id: { in: input.participantIds } },
+              select: { id: true },
+            });
+            if (participants.length !== input.participantIds.length) {
+              return { status: 'participant-not-found' } as const;
+            }
+
+            const conversation = await transaction.conversation.create({
+              data: {
+                type: ConversationType.GROUP,
+                name: input.name,
+                avatarUrl: input.avatarUrl,
+                createdById: input.creatorId,
+                lastActivityAt: input.now,
+                createdAt: input.now,
+                updatedAt: input.now,
+                members: {
+                  create: [
+                    {
+                      userId: input.creatorId,
+                      joinedAt: input.now,
+                      role: ConversationMemberRole.OWNER,
+                    },
+                    ...input.participantIds.map((participantId) => ({
+                      userId: participantId,
+                      joinedAt: input.now,
+                      role: ConversationMemberRole.MEMBER,
+                    })),
+                  ],
+                },
+              },
+              include: conversationWithMembers,
+            });
+
+            const mappedConversation = this.mapConversation(
+              conversation,
+              input.creatorId,
+            );
+            if (mappedConversation.type !== 'GROUP') {
+              throw new Error(
+                'Created group has an invalid conversation type.',
+              );
+            }
+            return {
+              status: 'created',
+              conversation: mappedConversation,
+            } as const;
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        lastError = error;
+        const code = this.prismaErrorCode(error);
+        if (code === 'P2003') return { status: 'participant-not-found' };
+        if (code !== 'P2034' || attempt === maxAttempts) throw error;
+      }
+    }
+
+    throw lastError;
+  }
+
   async listForUser(
     userId: string,
     cursor: ConversationPageCursor | null,
     take: number,
+    archived = false,
   ): Promise<ConversationRecord[]> {
     const normalizedUserId = userId.toLowerCase();
-    const conversations = await this.prisma.conversation.findMany({
+    if (!cursor || cursor.pinned) {
+      const pinnedConversations = await this.listSegment(
+        normalizedUserId,
+        cursor,
+        take,
+        archived,
+        true,
+      );
+      if (pinnedConversations.length === take) {
+        return pinnedConversations.map((conversation) =>
+          this.mapConversation(conversation, normalizedUserId),
+        );
+      }
+
+      const unpinnedConversations = await this.listSegment(
+        normalizedUserId,
+        null,
+        take - pinnedConversations.length,
+        archived,
+        false,
+      );
+      return [...pinnedConversations, ...unpinnedConversations].map(
+        (conversation) => this.mapConversation(conversation, normalizedUserId),
+      );
+    }
+
+    const conversations = await this.listSegment(
+      normalizedUserId,
+      cursor,
+      take,
+      archived,
+      false,
+    );
+    return conversations.map((conversation) =>
+      this.mapConversation(conversation, normalizedUserId),
+    );
+  }
+
+  private listSegment(
+    userId: string,
+    cursor: ConversationPageCursor | null,
+    take: number,
+    archived: boolean,
+    pinned: boolean,
+  ): Promise<ConversationWithMembers[]> {
+    return this.prisma.conversation.findMany({
       where: {
-        type: ConversationType.DIRECT,
-        members: { some: { userId: normalizedUserId } },
+        members: {
+          some: {
+            userId,
+            archivedAt: archived ? { not: null } : null,
+            pinnedAt: pinned ? { not: null } : null,
+          },
+        },
         ...(cursor
           ? {
               OR: [
@@ -164,21 +339,17 @@ export class PrismaConversationsRepository extends ConversationsRepository {
       orderBy: [{ lastActivityAt: 'desc' }, { id: 'desc' }],
       take,
     });
-
-    return conversations.map((conversation) =>
-      this.mapConversation(conversation, normalizedUserId),
-    );
   }
 
   async findForUser(
     conversationId: string,
     userId: string,
   ): Promise<ConversationRecord | null> {
+    const normalizedConversationId = conversationId.toLowerCase();
     const normalizedUserId = userId.toLowerCase();
     const conversation = await this.prisma.conversation.findFirst({
       where: {
-        id: conversationId,
-        type: ConversationType.DIRECT,
+        id: normalizedConversationId,
         members: { some: { userId: normalizedUserId } },
       },
       include: conversationWithMembers,
@@ -210,8 +381,19 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     if (result.status === 'participant-not-found') return result;
     return {
       status: result.status,
-      conversation: this.mapConversation(result.conversation, userId),
+      conversation: this.mapDirectConversation(result.conversation, userId),
     };
+  }
+
+  private mapDirectConversation(
+    conversation: ConversationWithMembers,
+    userId: string,
+  ) {
+    const mapped = this.mapConversation(conversation, userId);
+    if (mapped.type !== 'DIRECT') {
+      throw new Error('Direct conversation lookup returned a group.');
+    }
+    return mapped;
   }
 
   private mapConversation(
@@ -225,20 +407,15 @@ export class PrismaConversationsRepository extends ConversationsRepository {
       (member) => member.userId !== userId,
     );
     if (!actorMember) {
-      throw new Error('Direct conversation is missing the actor membership.');
-    }
-    if (!otherMember) {
-      throw new Error('Direct conversation is missing its other participant.');
+      throw new Error('Conversation is missing the actor membership.');
     }
     const latestMessage = conversation.messages[0] ?? null;
-
-    return {
+    const common = {
       id: conversation.id,
-      type: 'DIRECT',
-      otherParticipant: {
-        id: otherMember.user.id,
-        displayName: otherMember.user.displayName,
-        avatarUrl: otherMember.user.avatarUrl,
+      settings: {
+        archivedAt: actorMember.archivedAt,
+        mutedAt: actorMember.mutedAt,
+        pinnedAt: actorMember.pinnedAt,
       },
       latestMessage: latestMessage
         ? {
@@ -254,6 +431,40 @@ export class PrismaConversationsRepository extends ConversationsRepository {
       createdAt: conversation.createdAt,
       updatedAt: conversation.updatedAt,
     };
+
+    if (conversation.type === ConversationType.DIRECT) {
+      if (!otherMember) {
+        throw new Error(
+          'Direct conversation is missing its other participant.',
+        );
+      }
+      return {
+        ...common,
+        type: 'DIRECT',
+        otherParticipant: {
+          id: otherMember.user.id,
+          displayName: otherMember.user.displayName,
+          avatarUrl: otherMember.user.avatarUrl,
+        },
+      };
+    }
+
+    if (!conversation.name) {
+      throw new Error('Group conversation is missing its name.');
+    }
+    return {
+      ...common,
+      type: 'GROUP',
+      name: conversation.name,
+      avatarUrl: conversation.avatarUrl,
+      participants: conversation.members.map((member) => ({
+        id: member.user.id,
+        displayName: member.user.displayName,
+        avatarUrl: member.user.avatarUrl,
+        role: member.role,
+      })),
+      role: actorMember.role,
+    };
   }
 
   private canonicalPair(
@@ -263,6 +474,23 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     return userId < participantId
       ? [userId, participantId]
       : [participantId, userId];
+  }
+
+  private async hasBlockBetween(
+    client: Pick<Prisma.TransactionClient, 'userBlock'>,
+    firstUserId: string,
+    secondUserId: string,
+  ): Promise<boolean> {
+    const block = await client.userBlock.findFirst({
+      where: {
+        OR: [
+          { blockerId: firstUserId, blockedId: secondUserId },
+          { blockerId: secondUserId, blockedId: firstUserId },
+        ],
+      },
+      select: { blockerId: true },
+    });
+    return block !== null;
   }
 
   private prismaErrorCode(error: unknown): string | undefined {

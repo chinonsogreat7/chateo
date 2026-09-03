@@ -43,41 +43,56 @@ function knownRequestError(code: string): Prisma.PrismaClientKnownRequestError {
 function createRepository() {
   const transaction = jest.fn();
   const memberFindMany = jest.fn();
+  const conversationFindUnique = jest.fn().mockResolvedValue({
+    type: 'DIRECT',
+    members: [{ userId: USER_ID }, { userId: OTHER_USER_ID }],
+  });
+  const blockFindFirst = jest.fn().mockResolvedValue(null);
   const messageFindUnique = jest.fn();
   const messageFindMany = jest.fn();
   const prisma = {
     $transaction: transaction,
     conversationMember: { findMany: memberFindMany },
+    conversation: { findUnique: conversationFindUnique },
+    userBlock: { findFirst: blockFindFirst },
     message: { findUnique: messageFindUnique, findMany: messageFindMany },
   } as unknown as PrismaService;
   return {
     repository: new PrismaMessagesRepository(prisma),
     transaction,
     memberFindMany,
+    conversationFindUnique,
+    blockFindFirst,
     messageFindUnique,
     messageFindMany,
   };
 }
 
 function sendTransactionState(existing: unknown = null) {
-  const memberFindMany = jest
-    .fn()
-    .mockResolvedValue([{ userId: USER_ID }, { userId: OTHER_USER_ID }]);
+  const conversationFindUnique = jest.fn().mockResolvedValue({
+    type: 'DIRECT',
+    members: [{ userId: USER_ID }, { userId: OTHER_USER_ID }],
+  });
+  const blockFindFirst = jest.fn().mockResolvedValue(null);
   const messageFindUnique = jest.fn().mockResolvedValue(existing);
   const messageCreate = jest.fn().mockResolvedValue(rawMessage());
   const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
   const memberUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
   const client = {
     conversationMember: {
-      findMany: memberFindMany,
       updateMany: memberUpdateMany,
     },
+    userBlock: { findFirst: blockFindFirst },
     message: { findUnique: messageFindUnique, create: messageCreate },
-    conversation: { updateMany: conversationUpdateMany },
+    conversation: {
+      findUnique: conversationFindUnique,
+      updateMany: conversationUpdateMany,
+    },
   };
   return {
     client,
-    memberFindMany,
+    conversationFindUnique,
+    blockFindFirst,
     messageFindUnique,
     messageCreate,
     conversationUpdateMany,
@@ -131,9 +146,10 @@ describe('PrismaMessagesRepository', () => {
     });
   });
 
-  it('returns an existing identical message without changing counters', async () => {
+  it('returns an existing identical message despite a later block', async () => {
     const { repository, transaction } = createRepository();
     const state = sendTransactionState(rawMessage());
+    state.blockFindFirst.mockResolvedValue({ blockerId: OTHER_USER_ID });
     transaction.mockImplementation(
       async (operation: (client: unknown) => Promise<unknown>) =>
         operation(state.client),
@@ -146,6 +162,7 @@ describe('PrismaMessagesRepository', () => {
     expect(state.messageCreate).not.toHaveBeenCalled();
     expect(state.conversationUpdateMany).not.toHaveBeenCalled();
     expect(state.memberUpdateMany).not.toHaveBeenCalled();
+    expect(state.blockFindFirst).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -171,7 +188,10 @@ describe('PrismaMessagesRepository', () => {
   it('returns the indistinguishable not-found result for a non-member', async () => {
     const { repository, transaction } = createRepository();
     const state = sendTransactionState();
-    state.memberFindMany.mockResolvedValue([{ userId: OTHER_USER_ID }]);
+    state.conversationFindUnique.mockResolvedValue({
+      type: 'DIRECT',
+      members: [{ userId: OTHER_USER_ID }],
+    });
     transaction.mockImplementation(
       async (operation: (client: unknown) => Promise<unknown>) =>
         operation(state.client),
@@ -181,6 +201,22 @@ describe('PrismaMessagesRepository', () => {
       status: 'conversation-not-found',
     });
     expect(state.messageFindUnique).not.toHaveBeenCalled();
+    expect(state.messageCreate).not.toHaveBeenCalled();
+  });
+
+  it('conceals a direct conversation when either participant has blocked the other', async () => {
+    const { repository, transaction } = createRepository();
+    const state = sendTransactionState();
+    state.blockFindFirst.mockResolvedValue({ blockerId: OTHER_USER_ID });
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation(state.client),
+    );
+
+    await expect(repository.sendText(sendInput())).resolves.toEqual({
+      status: 'conversation-not-found',
+    });
+    expect(state.messageFindUnique).toHaveBeenCalled();
     expect(state.messageCreate).not.toHaveBeenCalled();
   });
 
@@ -202,14 +238,11 @@ describe('PrismaMessagesRepository', () => {
   });
 
   it('reads the concurrent winner after a unique conflict', async () => {
-    const { repository, transaction, memberFindMany, messageFindUnique } =
+    const { repository, transaction, blockFindFirst, messageFindUnique } =
       createRepository();
     transaction.mockRejectedValueOnce(knownRequestError('P2002'));
-    memberFindMany.mockResolvedValue([
-      { userId: USER_ID },
-      { userId: OTHER_USER_ID },
-    ]);
     messageFindUnique.mockResolvedValue(rawMessage());
+    blockFindFirst.mockResolvedValue({ blockerId: OTHER_USER_ID });
 
     await expect(repository.sendText(sendInput())).resolves.toMatchObject({
       status: 'existing',
@@ -226,6 +259,7 @@ describe('PrismaMessagesRepository', () => {
         },
       }),
     );
+    expect(blockFindFirst).not.toHaveBeenCalled();
   });
 
   it('uses stable newest-first keyset pagination after membership validation', async () => {

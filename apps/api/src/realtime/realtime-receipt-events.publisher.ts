@@ -4,6 +4,7 @@ import { Clock } from '../auth/providers/clock';
 import { ReceiptEventsPublisher } from '../receipts/receipt-events.publisher';
 import type { ReceiptUpdateRecord } from '../receipts/receipts.types';
 import { ChatGateway } from './chat.gateway';
+import { RealtimeConversationsRepository } from './realtime-conversations.repository';
 import {
   RECEIPT_DELIVERED_EVENT,
   RECEIPT_READ_EVENT,
@@ -17,6 +18,7 @@ export class RealtimeReceiptEventsPublisher extends ReceiptEventsPublisher {
   constructor(
     private readonly gateway: ChatGateway,
     private readonly repository: AuthRepository,
+    private readonly conversations: RealtimeConversationsRepository,
     private readonly clock: Clock,
   ) {
     super();
@@ -48,7 +50,13 @@ export class RealtimeReceiptEventsPublisher extends ReceiptEventsPublisher {
 
     await Promise.all(
       sockets.map((socket) =>
-        this.emitToActiveSocket(socket, participantIdSet, event, payload),
+        this.emitToActiveSocket(
+          socket,
+          participantIdSet,
+          receipt.userId,
+          event,
+          payload,
+        ),
       ),
     );
   }
@@ -56,6 +64,7 @@ export class RealtimeReceiptEventsPublisher extends ReceiptEventsPublisher {
   private async emitToActiveSocket(
     socket: RealtimeSocketTarget,
     participantIds: ReadonlySet<string>,
+    updatingUserId: string,
     event: typeof RECEIPT_DELIVERED_EVENT | typeof RECEIPT_READ_EVENT,
     payload: ReceiptUpdatedEventPayload,
   ): Promise<void> {
@@ -78,6 +87,16 @@ export class RealtimeReceiptEventsPublisher extends ReceiptEventsPublisher {
       );
       if (!active) {
         socket.disconnect(true);
+        return;
+      }
+
+      if (
+        data.userId !== updatingUserId &&
+        !(await this.conversations.findAccessibleConversation(
+          payload.conversationId,
+          data.userId,
+        ))
+      ) {
         return;
       }
     } catch {

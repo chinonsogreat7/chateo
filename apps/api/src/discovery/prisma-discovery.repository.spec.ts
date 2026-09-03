@@ -25,6 +25,8 @@ describe('PrismaDiscoveryRepository', () => {
       where: {
         id: { not: currentUserId },
         phoneNumber: { in: ['+2348012345678', '+2348098765432'] },
+        blocksInitiated: { none: { blockedId: currentUserId } },
+        blocksReceived: { none: { blockerId: currentUserId } },
       },
       select: {
         id: true,
@@ -62,6 +64,8 @@ describe('PrismaDiscoveryRepository', () => {
       where: {
         id: { not: currentUserId },
         profileCompletedAt: { not: null },
+        blocksInitiated: { none: { blockedId: currentUserId } },
+        blocksReceived: { none: { blockerId: currentUserId } },
         displayName: {
           not: null,
           contains: 'ada',

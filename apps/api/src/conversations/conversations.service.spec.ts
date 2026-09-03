@@ -1,19 +1,24 @@
 import { HttpStatus } from '@nestjs/common';
 import { Clock } from '../auth/providers/clock';
 import { ApiException } from '../common/errors/api.exception';
+import { ConversationEventsPublisher } from './conversation-events.publisher';
 import { ConversationsRepository } from './conversations.repository';
 import { ConversationsService } from './conversations.service';
-import type { ConversationRecord } from './conversations.types';
+import type {
+  DirectConversationRecord,
+  GroupConversationRecord,
+} from './conversations.types';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const PARTICIPANT_ID = '22222222-2222-4222-8222-222222222222';
+const SECOND_PARTICIPANT_ID = '55555555-5555-4555-8555-555555555555';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
 const NOW = new Date('2026-08-12T12:00:00.000Z');
 
 function conversation(
-  overrides: Partial<ConversationRecord> = {},
-): ConversationRecord {
+  overrides: Partial<DirectConversationRecord> = {},
+): DirectConversationRecord {
   return {
     id: CONVERSATION_ID,
     type: 'DIRECT',
@@ -31,16 +36,54 @@ function conversation(
   };
 }
 
+function groupConversation(
+  overrides: Partial<GroupConversationRecord> = {},
+): GroupConversationRecord {
+  return {
+    id: CONVERSATION_ID,
+    type: 'GROUP',
+    name: 'Study Group',
+    avatarUrl: null,
+    participants: [
+      {
+        id: USER_ID,
+        displayName: 'Current User',
+        avatarUrl: null,
+        role: 'OWNER',
+      },
+      {
+        id: PARTICIPANT_ID,
+        displayName: 'Ada Okafor',
+        avatarUrl: null,
+        role: 'MEMBER',
+      },
+    ],
+    role: 'OWNER',
+    latestMessage: null,
+    unreadCount: 0,
+    lastActivityAt: NOW,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
 function createService() {
   const repository: jest.Mocked<ConversationsRepository> = {
     createOrGetDirect: jest.fn(),
+    createGroup: jest.fn(),
     listForUser: jest.fn(),
     findForUser: jest.fn(),
   };
   const clock: Clock = { now: jest.fn().mockReturnValue(NOW) };
+  const eventsPublisher: jest.Mocked<ConversationEventsPublisher> = {
+    publishCreated: jest.fn().mockResolvedValue(undefined),
+    publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
+  };
   return {
     repository,
-    service: new ConversationsService(repository, clock),
+    eventsPublisher,
+    service: new ConversationsService(repository, clock, eventsPublisher),
   };
 }
 
@@ -121,7 +164,7 @@ describe('ConversationsService', () => {
   });
 
   it('maps a direct conversation without exposing a phone number', async () => {
-    const { repository, service } = createService();
+    const { repository, eventsPublisher, service } = createService();
     repository.createOrGetDirect.mockResolvedValue({
       status: 'created',
       conversation: conversation(),
@@ -139,11 +182,131 @@ describe('ConversationsService', () => {
       },
       latestMessage: null,
       unreadCount: 0,
+      settings: {
+        archived: false,
+        muted: false,
+        pinned: false,
+        archivedAt: null,
+        mutedAt: null,
+        pinnedAt: null,
+      },
       lastActivityAt: NOW.toISOString(),
       createdAt: NOW.toISOString(),
       updatedAt: NOW.toISOString(),
     });
     expect(result.otherParticipant).not.toHaveProperty('phoneNumber');
+    expect(eventsPublisher.publishCreated).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      type: 'DIRECT',
+      participantIds: [USER_ID, PARTICIPANT_ID],
+      occurredAt: NOW,
+    });
+  });
+
+  it('creates and maps a group with normalized participants and roles', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.createGroup.mockResolvedValue({
+      status: 'created',
+      conversation: groupConversation({
+        avatarUrl: 'https://example.com/groups/study.jpg',
+      }),
+    });
+
+    const result = await service.createGroup(USER_ID.toUpperCase(), {
+      name: '  Study Group  ',
+      participantIds: [
+        PARTICIPANT_ID.toUpperCase(),
+        SECOND_PARTICIPANT_ID.toUpperCase(),
+      ],
+      avatarUrl: 'https://example.com/groups/study.jpg',
+    });
+
+    expect(repository.createGroup).toHaveBeenCalledWith({
+      creatorId: USER_ID,
+      name: 'Study Group',
+      avatarUrl: 'https://example.com/groups/study.jpg',
+      participantIds: [PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+      now: NOW,
+    });
+    expect(result).toEqual({
+      id: CONVERSATION_ID,
+      type: 'group',
+      name: 'Study Group',
+      avatarUrl: 'https://example.com/groups/study.jpg',
+      participants: [
+        {
+          id: USER_ID,
+          displayName: 'Current User',
+          avatarUrl: null,
+          role: 'owner',
+        },
+        {
+          id: PARTICIPANT_ID,
+          displayName: 'Ada Okafor',
+          avatarUrl: null,
+          role: 'member',
+        },
+      ],
+      role: 'owner',
+      latestMessage: null,
+      unreadCount: 0,
+      settings: {
+        archived: false,
+        muted: false,
+        pinned: false,
+        archivedAt: null,
+        mutedAt: null,
+        pinnedAt: null,
+      },
+      lastActivityAt: NOW.toISOString(),
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+    expect(eventsPublisher.publishCreated).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      type: 'GROUP',
+      participantIds: [USER_ID, PARTICIPANT_ID],
+      occurredAt: NOW,
+    });
+  });
+
+  it.each([
+    { participantIds: [USER_ID] },
+    {
+      participantIds: [PARTICIPANT_ID, PARTICIPANT_ID.toUpperCase()],
+    },
+  ])(
+    'rejects invalid group participants before persistence: $participantIds',
+    async ({ participantIds }) => {
+      const { repository, service } = createService();
+
+      await expectApiError(
+        service.createGroup(USER_ID, {
+          name: 'Study Group',
+          participantIds,
+        }),
+        HttpStatus.BAD_REQUEST,
+        'CONVERSATION_GROUP_PARTICIPANTS_INVALID',
+      );
+
+      expect(repository.createGroup).not.toHaveBeenCalled();
+    },
+  );
+
+  it('conceals which selected group participant does not exist', async () => {
+    const { repository, service } = createService();
+    repository.createGroup.mockResolvedValue({
+      status: 'participant-not-found',
+    });
+
+    await expectApiError(
+      service.createGroup(USER_ID, {
+        name: 'Study Group',
+        participantIds: [PARTICIPANT_ID],
+      }),
+      HttpStatus.NOT_FOUND,
+      'USER_NOT_FOUND',
+    );
   });
 
   it('maps the persisted latest message and actor unread count', async () => {
@@ -257,9 +420,76 @@ describe('ConversationsService', () => {
     expect(repository.listForUser).toHaveBeenNthCalledWith(
       2,
       USER_ID,
-      { id: second.id, lastActivityAt: second.lastActivityAt },
+      {
+        id: second.id,
+        pinned: false,
+        archived: false,
+        lastActivityAt: second.lastActivityAt,
+      },
       3,
     );
+  });
+
+  it('preserves pinned cursor state across pages', async () => {
+    const { repository, service } = createService();
+    const pinned = conversation({
+      settings: { archivedAt: null, mutedAt: null, pinnedAt: NOW },
+    });
+    const lookahead = conversation({
+      id: '33333333-3333-4333-8333-333333333334',
+    });
+    repository.listForUser
+      .mockResolvedValueOnce([pinned, lookahead])
+      .mockResolvedValueOnce([]);
+
+    const page = await service.list(USER_ID, 1);
+    await service.list(USER_ID, 1, page.pageInfo.nextCursor ?? undefined);
+
+    expect(repository.listForUser).toHaveBeenNthCalledWith(
+      2,
+      USER_ID,
+      {
+        id: pinned.id,
+        pinned: true,
+        archived: false,
+        lastActivityAt: pinned.lastActivityAt,
+      },
+      2,
+    );
+  });
+
+  it('requests archived conversations separately when the filter is set', async () => {
+    const { repository, service } = createService();
+    repository.listForUser.mockResolvedValue([]);
+
+    await expect(service.list(USER_ID, 20, undefined, true)).resolves.toEqual({
+      items: [],
+      pageInfo: { nextCursor: null, hasNextPage: false },
+    });
+    expect(repository.listForUser).toHaveBeenCalledWith(
+      USER_ID,
+      null,
+      21,
+      true,
+    );
+  });
+
+  it('rejects a cursor when its archive filter does not match the request', async () => {
+    const { repository, service } = createService();
+    const first = conversation();
+    const lookahead = conversation({
+      id: '33333333-3333-4333-8333-333333333334',
+    });
+    repository.listForUser.mockResolvedValueOnce([first, lookahead]);
+
+    const page = await service.list(USER_ID, 1, undefined, true);
+    await expectApiError(
+      service.list(USER_ID, 1, page.pageInfo.nextCursor ?? undefined, false),
+      HttpStatus.BAD_REQUEST,
+      'CONVERSATION_CURSOR_INVALID',
+    );
+
+    expect(repository.listForUser).toHaveBeenCalledTimes(1);
   });
 
   it.each(['', 'not-a-valid-cursor'])(

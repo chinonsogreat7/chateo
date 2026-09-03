@@ -132,7 +132,10 @@ export class ChatStateService implements OnModuleDestroy {
     if (!this.consumeCommand(state)) return this.ack(ack, rateLimitError());
 
     const access = await this.authorize(client, conversationId);
-    if (!access.ok) return this.ack(ack, access.error);
+    if (!access.ok) {
+      await this.removeCachedConversationAccess(client, state, conversationId);
+      return this.ack(ack, access.error);
+    }
     if (!this.isCurrentClientState(client, state)) {
       return this.ack(ack, authError());
     }
@@ -204,7 +207,10 @@ export class ChatStateService implements OnModuleDestroy {
     if (!this.consumeCommand(state)) return this.ack(ack, rateLimitError());
 
     const access = await this.authorize(client, conversationId);
-    if (!access.ok) return this.ack(ack, access.error);
+    if (!access.ok) {
+      await this.removeCachedConversationAccess(client, state, conversationId);
+      return this.ack(ack, access.error);
+    }
     if (!this.isCurrentClientState(client, state)) {
       return this.ack(ack, authError());
     }
@@ -370,6 +376,12 @@ export class ChatStateService implements OnModuleDestroy {
       if (!target) continue;
       for (const [conversationId, subscription] of state.subscriptions) {
         if (!subscription.participantIds.includes(userId)) continue;
+        const currentSubscription = await this.reauthorizeSubscription(
+          target,
+          state,
+          conversationId,
+        );
+        if (!currentSubscription?.participantIds.includes(userId)) continue;
         const payload: PresenceChangedEventPayload = {
           conversationId,
           userId,
@@ -438,7 +450,47 @@ export class ChatStateService implements OnModuleDestroy {
       ) {
         continue;
       }
+      const subscription = await this.reauthorizeSubscription(
+        target,
+        state,
+        conversationId,
+      );
+      if (!subscription?.participantIds.includes(source.data.userId)) continue;
       await this.emitIfActive(target, event, payload);
+    }
+  }
+
+  private async reauthorizeSubscription(
+    target: AuthenticatedChatSocket,
+    state: ClientState,
+    conversationId: string,
+  ): Promise<ConversationSubscription | null> {
+    if (!this.isCurrentClientState(target, state)) return null;
+
+    const access = await this.authorize(target, conversationId);
+    if (!access.ok) {
+      await this.removeCachedConversationAccess(target, state, conversationId);
+      return null;
+    }
+    if (!this.isCurrentClientState(target, state)) return null;
+
+    const subscription = { participantIds: access.participantIds };
+    state.subscriptions.set(conversationId, subscription);
+    return subscription;
+  }
+
+  private async removeCachedConversationAccess(
+    target: AuthenticatedChatSocket,
+    state: ClientState,
+    conversationId: string,
+  ): Promise<void> {
+    if (this.clients.get(target.id) !== state) return;
+
+    // Clearing without fan-out prevents a stale typing.stop from crossing the
+    // same access boundary that invalidated this cached subscription.
+    await this.stopTypingInternal(target, conversationId, false);
+    if (this.clients.get(target.id) === state) {
+      state.subscriptions.delete(conversationId);
     }
   }
 

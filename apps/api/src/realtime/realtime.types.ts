@@ -2,6 +2,9 @@ import type { Socket } from 'socket.io';
 
 export const CHAT_NAMESPACE = '/chat';
 export const MESSAGE_CREATED_EVENT = 'message.created';
+export const CONVERSATION_CREATED_EVENT = 'conversation.created';
+export const CONVERSATION_SETTINGS_UPDATED_EVENT =
+  'conversation.settings.updated';
 export const RECEIPT_DELIVERED_EVENT = 'receipt.delivered';
 export const RECEIPT_READ_EVENT = 'receipt.read';
 export const PRESENCE_SUBSCRIBE_COMMAND = 'presence.subscribe';
@@ -102,12 +105,34 @@ export interface ChatClientToServerEvents {
 }
 
 export interface ChatServerToClientEvents {
+  [CONVERSATION_CREATED_EVENT](payload: ConversationCreatedEventPayload): void;
+  [CONVERSATION_SETTINGS_UPDATED_EVENT](
+    payload: ConversationSettingsUpdatedEventPayload,
+  ): void;
   [MESSAGE_CREATED_EVENT](payload: MessageCreatedEventPayload): void;
   [RECEIPT_DELIVERED_EVENT](payload: ReceiptUpdatedEventPayload): void;
   [RECEIPT_READ_EVENT](payload: ReceiptUpdatedEventPayload): void;
   [PRESENCE_CHANGED_EVENT](payload: PresenceChangedEventPayload): void;
   [TYPING_STARTED_EVENT](payload: TypingStartedEventPayload): void;
   [TYPING_STOPPED_EVENT](payload: TypingStoppedEventPayload): void;
+}
+
+export interface ConversationCreatedEventPayload {
+  conversationId: string;
+  type: 'direct' | 'group';
+  occurredAt: string;
+}
+
+export interface ConversationSettingsUpdatedEventPayload {
+  conversationId: string;
+  userId: string;
+  archived: boolean;
+  muted: boolean;
+  pinned: boolean;
+  archivedAt: string | null;
+  mutedAt: string | null;
+  pinnedAt: string | null;
+  occurredAt: string;
 }
 
 export type AuthenticatedChatSocket = Socket<

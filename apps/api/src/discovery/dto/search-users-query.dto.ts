@@ -24,13 +24,18 @@ export class SearchUsersQueryDto {
   @Length(3, 80)
   q!: string;
 
-  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 25 })
+  @ApiPropertyOptional({
+    type: 'integer',
+    default: 20,
+    minimum: 1,
+    maximum: 25,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(25)
-  limit = 20;
+  limit: number = 20;
 
   @ApiPropertyOptional({
     description: 'Opaque cursor returned by the previous search response.',

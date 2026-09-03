@@ -2,6 +2,8 @@ import type {
   ConversationPageCursor,
   ConversationRecord,
   CreateDirectConversationResult,
+  CreateGroupConversationInput,
+  CreateGroupConversationResult,
 } from './conversations.types';
 
 export abstract class ConversationsRepository {
@@ -11,10 +13,15 @@ export abstract class ConversationsRepository {
     now: Date,
   ): Promise<CreateDirectConversationResult>;
 
+  abstract createGroup(
+    input: CreateGroupConversationInput,
+  ): Promise<CreateGroupConversationResult>;
+
   abstract listForUser(
     userId: string,
     cursor: ConversationPageCursor | null,
     take: number,
+    archived?: boolean,
   ): Promise<ConversationRecord[]>;
 
   abstract findForUser(

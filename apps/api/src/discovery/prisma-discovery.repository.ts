@@ -31,6 +31,8 @@ export class PrismaDiscoveryRepository extends DiscoveryRepository {
       where: {
         id: { not: input.currentUserId },
         phoneNumber: { in: [...input.phoneNumbers] },
+        blocksInitiated: { none: { blockedId: input.currentUserId } },
+        blocksReceived: { none: { blockerId: input.currentUserId } },
       },
       select: {
         ...publicUserSelect,
@@ -58,6 +60,8 @@ export class PrismaDiscoveryRepository extends DiscoveryRepository {
       where: {
         id: { not: input.currentUserId },
         profileCompletedAt: { not: null },
+        blocksInitiated: { none: { blockedId: input.currentUserId } },
+        blocksReceived: { none: { blockerId: input.currentUserId } },
         displayName: {
           not: null,
           contains: input.databaseQuery,

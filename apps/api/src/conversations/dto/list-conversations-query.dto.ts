@@ -1,6 +1,7 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -11,6 +12,7 @@ import {
 
 export class ListConversationsQueryDto {
   @ApiPropertyOptional({
+    type: 'integer',
     minimum: 1,
     maximum: 50,
     default: 20,
@@ -20,7 +22,22 @@ export class ListConversationsQueryDto {
   @IsInt()
   @Min(1)
   @Max(50)
-  limit = 20;
+  limit: number = 20;
+
+  @ApiPropertyOptional({
+    type: Boolean,
+    default: false,
+    description:
+      'When true, return archived conversations; otherwise return active conversations.',
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  @IsBoolean()
+  archived?: boolean;
 
   @ApiPropertyOptional({
     description: 'Opaque cursor returned by the previous page.',

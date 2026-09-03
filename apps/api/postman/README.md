@@ -22,7 +22,7 @@ Set these environment values:
 | `socketUrl`        | Local: `ws://localhost:3000/chat`; production: `wss://HOST/chat`     |
 | `accessTokenA`     | Current access token for the first test user                         |
 | `accessTokenB`     | Current access token for the second test user                        |
-| `conversationId`   | A direct conversation shared by users A and B                        |
+| `conversationId`   | A direct or group conversation shared by the test users              |
 | `throughMessageId` | An incoming message ID used when testing delivered and read receipts |
 
 Replace `HOST` with the exact deployment hostname. `WSS` means WebSocket
@@ -38,7 +38,8 @@ obtain the prerequisites. Otherwise, call the same REST endpoints from an HTTP
 Postman collection:
 
 1. Sign in two different users and copy each `accessToken`.
-2. Create or open one direct conversation between them.
+2. Create or open a conversation shared by them. A direct conversation is the
+   simplest choice for the two-user walkthrough below.
 3. Copy its `id` into `conversationId`.
 
 ## 2. Create and save the Socket.IO request
@@ -78,16 +79,47 @@ All UUIDs and timestamps below are examples. Actual values and participant
 ordering depend on the accounts, conversation, and server time used for the
 test.
 
-Open **Events**, add each server event below, and select **Listen** for all six:
+Open **Events**, add each server event below, and select **Listen** for all eight:
 
-| Event               | When it is received                                                |
-| ------------------- | ------------------------------------------------------------------ |
-| `message.created`   | A participant persists a new message through the REST API          |
-| `receipt.delivered` | A participant advances the durable delivered frontier through REST |
-| `receipt.read`      | A participant advances the durable read frontier through REST      |
-| `presence.changed`  | A subscribed participant changes between online and offline        |
-| `typing.started`    | Another subscribed participant starts or refreshes typing          |
-| `typing.stopped`    | Another subscribed participant stops typing or its timer expires   |
+| Event                           | When it is received                                                |
+| ------------------------------- | ------------------------------------------------------------------ |
+| `conversation.created`          | The user is added to a new direct or group conversation            |
+| `conversation.settings.updated` | Archive, mute, or pin state changes on another user device         |
+| `message.created`               | A member persists a new message through the REST API               |
+| `receipt.delivered`             | A participant advances the durable delivered frontier through REST |
+| `receipt.read`                  | A participant advances the durable read frontier through REST      |
+| `presence.changed`              | A subscribed participant changes between online and offline        |
+| `typing.started`                | Another subscribed participant starts or refreshes typing          |
+| `typing.stopped`                | Another subscribed participant stops typing or its timer expires   |
+
+### `conversation.created`
+
+```json
+{
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  "type": "group",
+  "occurredAt": "2026-09-03T12:00:00.000Z"
+}
+```
+
+### `conversation.settings.updated`
+
+```json
+{
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  "userId": "956d3268-0f92-4bc1-a2bb-9c4768ee11ee",
+  "archived": true,
+  "muted": false,
+  "pinned": true,
+  "archivedAt": "2026-09-03T12:00:00.000Z",
+  "mutedAt": null,
+  "pinnedAt": "2026-09-03T12:00:00.000Z",
+  "occurredAt": "2026-09-03T12:00:00.000Z"
+}
+```
+
+This event is emitted only when the persisted state changes. Repeating an
+identical settings PATCH produces no duplicate event.
 
 ### `message.created`
 
@@ -292,9 +324,10 @@ Possible codes are `AUTH_ACCESS_TOKEN_INVALID`, `REALTIME_PAYLOAD_INVALID`,
    }
    ```
 
-   Use a fresh `clientMessageId` UUID for each new test. Both socket tabs
-   receive one `message.created` event. Copy the returned server message `id`
-   into `throughMessageId`.
+   Use a fresh `clientMessageId` UUID for each new test. In this two-user direct
+   setup, both socket tabs receive one `message.created` event. For a group,
+   every active device belonging to every member receives it. Copy the returned
+   server message `id` into `throughMessageId`.
 
 6. As B, call
    `PUT {{apiBaseUrl}}/conversations/{{conversationId}}/receipts/delivered`

@@ -2,6 +2,7 @@ import { AuthRepository } from '../auth/auth.repository';
 import { Clock } from '../auth/providers/clock';
 import type { ReceiptUpdateRecord } from '../receipts/receipts.types';
 import { ChatGateway } from './chat.gateway';
+import { RealtimeConversationsRepository } from './realtime-conversations.repository';
 import { RealtimeReceiptEventsPublisher } from './realtime-receipt-events.publisher';
 import {
   RECEIPT_DELIVERED_EVENT,
@@ -13,12 +14,13 @@ import {
 const NOW = new Date('2026-08-12T21:30:00.000Z');
 const USER_ONE_ID = '11111111-1111-4111-8111-111111111111';
 const USER_TWO_ID = '22222222-2222-4222-8222-222222222222';
+const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
 
 function receipt(
   overrides: Partial<ReceiptUpdateRecord> = {},
 ): ReceiptUpdateRecord {
   return {
-    conversationId: '33333333-3333-4333-8333-333333333333',
+    conversationId: CONVERSATION_ID,
     userId: USER_TWO_ID,
     status: 'DELIVERED',
     throughMessageId: '44444444-4444-4444-8444-444444444444',
@@ -47,12 +49,24 @@ function target(data: Partial<RealtimeSocketData>): RealtimeSocketTarget {
 function createPublisher(sockets: RealtimeSocketTarget[]) {
   const findSocketsForUsers = jest.fn().mockResolvedValue(sockets);
   const isSessionActive = jest.fn();
+  const findAccessibleConversation = jest.fn().mockResolvedValue({
+    conversationId: CONVERSATION_ID,
+    participantIds: [USER_ONE_ID, USER_TWO_ID],
+  });
   const publisher = new RealtimeReceiptEventsPublisher(
     { findSocketsForUsers } as unknown as ChatGateway,
     { isSessionActive } as unknown as AuthRepository,
+    {
+      findAccessibleConversation,
+    } as unknown as RealtimeConversationsRepository,
     { now: jest.fn().mockReturnValue(NOW) } as Clock,
   );
-  return { findSocketsForUsers, isSessionActive, publisher };
+  return {
+    findAccessibleConversation,
+    findSocketsForUsers,
+    isSessionActive,
+    publisher,
+  };
 }
 
 describe('RealtimeReceiptEventsPublisher', () => {
@@ -67,9 +81,12 @@ describe('RealtimeReceiptEventsPublisher', () => {
       sessionId: 'participant-session',
       tokenExpiresAt: NOW.getTime() + 60_000,
     });
-    const { findSocketsForUsers, isSessionActive, publisher } = createPublisher(
-      [actorDevice, participantDevice],
-    );
+    const {
+      findAccessibleConversation,
+      findSocketsForUsers,
+      isSessionActive,
+      publisher,
+    } = createPublisher([actorDevice, participantDevice]);
     isSessionActive.mockResolvedValue(true);
 
     await publisher.publishUpdated(
@@ -81,7 +98,7 @@ describe('RealtimeReceiptEventsPublisher', () => {
       USER_TWO_ID,
     ]);
     const payload = {
-      conversationId: '33333333-3333-4333-8333-333333333333',
+      conversationId: CONVERSATION_ID,
       userId: USER_TWO_ID,
       throughMessageId: '44444444-4444-4444-8444-444444444444',
       at: NOW.toISOString(),
@@ -102,6 +119,11 @@ describe('RealtimeReceiptEventsPublisher', () => {
     );
     expect(payload).not.toHaveProperty('participantIds');
     expect(payload).not.toHaveProperty('unreadCount');
+    expect(findAccessibleConversation).toHaveBeenCalledTimes(1);
+    expect(findAccessibleConversation).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      USER_ONE_ID,
+    );
   });
 
   it('uses the dedicated read event for an advanced read frontier', async () => {
@@ -162,5 +184,81 @@ describe('RealtimeReceiptEventsPublisher', () => {
       expect(socket.disconnect).toHaveBeenCalledWith(true);
     }
     expect(isSessionActive).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the updating user in sync but suppresses a blocked direct peer', async () => {
+    const actorDevice = target({
+      userId: USER_TWO_ID,
+      sessionId: 'actor-session',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const blockedPeerDevice = target({
+      userId: USER_ONE_ID,
+      sessionId: 'blocked-peer-session',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { findAccessibleConversation, isSessionActive, publisher } =
+      createPublisher([actorDevice, blockedPeerDevice]);
+    isSessionActive.mockResolvedValue(true);
+    findAccessibleConversation.mockResolvedValue(null);
+
+    await publisher.publishUpdated(receipt());
+
+    expect(actorDevice.emit).toHaveBeenCalledWith(
+      RECEIPT_DELIVERED_EVENT,
+      expect.objectContaining({ conversationId: CONVERSATION_ID }),
+    );
+    expect(blockedPeerDevice.emit).not.toHaveBeenCalled();
+    expect(blockedPeerDevice.disconnect).not.toHaveBeenCalled();
+    expect(findAccessibleConversation).toHaveBeenCalledTimes(1);
+    expect(findAccessibleConversation).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      USER_ONE_ID,
+    );
+  });
+
+  it('fans group receipts out when the non-actor still has conversation access', async () => {
+    const groupParticipantDevice = target({
+      userId: USER_ONE_ID,
+      sessionId: 'group-participant-session',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { findAccessibleConversation, isSessionActive, publisher } =
+      createPublisher([groupParticipantDevice]);
+    isSessionActive.mockResolvedValue(true);
+    findAccessibleConversation.mockResolvedValue({
+      conversationId: CONVERSATION_ID,
+      participantIds: [USER_ONE_ID, USER_TWO_ID],
+    });
+
+    await publisher.publishUpdated(receipt());
+
+    expect(findAccessibleConversation).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      USER_ONE_ID,
+    );
+    expect(groupParticipantDevice.emit).toHaveBeenCalledWith(
+      RECEIPT_DELIVERED_EVENT,
+      expect.objectContaining({ conversationId: CONVERSATION_ID }),
+    );
+  });
+
+  it('fails closed when current conversation access cannot be verified', async () => {
+    const participantDevice = target({
+      userId: USER_ONE_ID,
+      sessionId: 'access-error-session',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { findAccessibleConversation, isSessionActive, publisher } =
+      createPublisher([participantDevice]);
+    isSessionActive.mockResolvedValue(true);
+    findAccessibleConversation.mockRejectedValue(
+      new Error('database unavailable'),
+    );
+
+    await expect(publisher.publishUpdated(receipt())).resolves.toBeUndefined();
+
+    expect(participantDevice.emit).not.toHaveBeenCalled();
+    expect(participantDevice.disconnect).toHaveBeenCalledWith(true);
   });
 });

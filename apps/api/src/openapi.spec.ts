@@ -7,6 +7,10 @@ import {
 } from '@nestjs/swagger';
 import { AuthController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
+import { BlocksController } from './blocks/blocks.controller';
+import { BlocksService } from './blocks/blocks.service';
+import { ConversationSettingsController } from './conversation-settings/conversation-settings.controller';
+import { ConversationSettingsService } from './conversation-settings/conversation-settings.service';
 import { ConversationsController } from './conversations/conversations.controller';
 import { ConversationsService } from './conversations/conversations.service';
 import { DiscoveryController } from './discovery/discovery.controller';
@@ -22,6 +26,8 @@ const CHALLENGE_ID = '550e8400-e29b-41d4-a716-446655440000';
 const REFRESH_TOKEN =
   '550e8400-e29b-41d4-a716-446655440000.3fQ8xZ7uV2nK5mP9rT4wY6aB1cD0eF8gH2jL7sN5qRk';
 const PARTICIPANT_ID = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
+const GROUP_PARTICIPANT_ID = '7d444840-9dc0-41d1-b245-5ffdce74fad2';
+const SECOND_PARTICIPANT_ID = '8e555951-aed1-42e2-8346-6aadece85be3';
 const CLIENT_MESSAGE_ID = '7d444840-9dc0-41d1-b245-5ffdce74fad2';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
 
@@ -41,16 +47,20 @@ describe('OpenAPI request examples', () => {
       controllers: [
         AuthController,
         UsersController,
+        BlocksController,
         DiscoveryController,
         ConversationsController,
+        ConversationSettingsController,
         MessagesController,
         ReceiptsController,
       ],
       providers: [
         { provide: AuthService, useValue: {} },
         { provide: UsersService, useValue: {} },
+        { provide: BlocksService, useValue: {} },
         { provide: DiscoveryService, useValue: {} },
         { provide: ConversationsService, useValue: {} },
+        { provide: ConversationSettingsService, useValue: {} },
         { provide: MessagesService, useValue: {} },
         { provide: ReceiptsService, useValue: {} },
       ],
@@ -136,6 +146,21 @@ describe('OpenAPI request examples', () => {
     },
     {
       method: 'post',
+      path: '/v1/conversations/group',
+      schemaName: 'CreateGroupConversationDto',
+      payload: {
+        name: 'Study Group',
+        participantIds: [GROUP_PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+      },
+    },
+    {
+      method: 'patch',
+      path: '/v1/conversations/{conversationId}/settings',
+      schemaName: 'UpdateConversationSettingsDto',
+      payload: { archived: true, muted: false, pinned: true },
+    },
+    {
+      method: 'post',
       path: `/v1/conversations/{conversationId}/messages`,
       schemaName: 'SendMessageDto',
       payload: {
@@ -206,7 +231,12 @@ describe('OpenAPI request examples', () => {
     });
   });
 
-  it.each(['PublicDiscoveryUserDto', 'ConversationParticipantDto'])(
+  it.each([
+    'PublicDiscoveryUserDto',
+    'ConversationParticipantDto',
+    'GroupConversationParticipantDto',
+    'BlockedPublicUserDto',
+  ])(
     '%s exposes public profile fields without a phone number',
     (schemaName) => {
       const schema = document.components?.schemas?.[schemaName];
@@ -224,12 +254,96 @@ describe('OpenAPI request examples', () => {
     },
   );
 
+  it('models direct and group conversations as distinct required schemas', () => {
+    const commonRequired = [
+      'id',
+      'type',
+      'latestMessage',
+      'unreadCount',
+      'settings',
+      'lastActivityAt',
+      'createdAt',
+      'updatedAt',
+    ];
+
+    expect(
+      document.components?.schemas?.DirectConversationResponseDto,
+    ).toMatchObject({
+      required: expect.arrayContaining([...commonRequired, 'otherParticipant']),
+      properties: {
+        type: { type: 'string', enum: ['direct'] },
+        otherParticipant: {
+          $ref: '#/components/schemas/ConversationParticipantDto',
+        },
+      },
+    });
+    expect(
+      document.components?.schemas?.GroupConversationResponseDto,
+    ).toMatchObject({
+      required: expect.arrayContaining([
+        ...commonRequired,
+        'name',
+        'avatarUrl',
+        'participants',
+        'role',
+      ]),
+      properties: {
+        type: { type: 'string', enum: ['group'] },
+        name: expect.any(Object) as object,
+        participants: expect.any(Object) as object,
+        role: expect.any(Object) as object,
+      },
+    });
+  });
+
+  it('uses a type discriminator for mixed conversation responses', () => {
+    const expectedUnion = {
+      oneOf: [
+        { $ref: '#/components/schemas/DirectConversationResponseDto' },
+        { $ref: '#/components/schemas/GroupConversationResponseDto' },
+      ],
+      discriminator: {
+        propertyName: 'type',
+        mapping: {
+          direct: '#/components/schemas/DirectConversationResponseDto',
+          group: '#/components/schemas/GroupConversationResponseDto',
+        },
+      },
+    };
+    const detailResponse =
+      document.paths['/v1/conversations/{conversationId}']?.get?.responses?.[
+        '200'
+      ];
+    if (!detailResponse || '$ref' in detailResponse) {
+      throw new Error('Missing inline conversation detail response.');
+    }
+    expect(detailResponse.content?.['application/json']?.schema).toEqual(
+      expectedUnion,
+    );
+
+    expect(
+      document.components?.schemas?.ConversationListResponseDto,
+    ).toMatchObject({
+      properties: {
+        items: {
+          type: 'array',
+          items: expectedUnion,
+        },
+      },
+    });
+  });
+
   it.each([
     ['/v1/contacts/match', 'post'],
     ['/v1/users/search', 'get'],
+    ['/v1/me/blocks', 'get'],
+    ['/v1/me/blocks/{userId}', 'put'],
+    ['/v1/me/blocks/{userId}', 'delete'],
     ['/v1/conversations/direct', 'post'],
+    ['/v1/conversations/group', 'post'],
     ['/v1/conversations', 'get'],
     ['/v1/conversations/{conversationId}', 'get'],
+    ['/v1/conversations/{conversationId}/settings', 'patch'],
     ['/v1/conversations/{conversationId}/messages', 'post'],
     ['/v1/conversations/{conversationId}/messages', 'get'],
     ['/v1/conversations/{conversationId}/read', 'post'],
@@ -239,6 +353,48 @@ describe('OpenAPI request examples', () => {
   ] as const)('%s requires bearer authentication', (path, method) => {
     expect(document.paths[path]?.[method]?.security).toEqual([{ bearer: [] }]);
   });
+
+  it.each([
+    [
+      '/v1/users/search',
+      { type: 'integer', minimum: 1, maximum: 25, default: 20 },
+    ],
+    [
+      '/v1/conversations',
+      {
+        type: 'integer',
+        minimum: 1,
+        maximum: 50,
+        default: 20,
+        example: 20,
+      },
+    ],
+    [
+      '/v1/conversations/{conversationId}/messages',
+      { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+    ],
+  ] as const)(
+    '%s documents limit as an integer query parameter',
+    (path, expectedSchema) => {
+      const parameter = document.paths[path]?.get?.parameters?.find(
+        (candidate) =>
+          !('$ref' in candidate) &&
+          candidate.in === 'query' &&
+          candidate.name === 'limit',
+      );
+
+      if (!parameter || '$ref' in parameter) {
+        throw new Error(`Missing inline limit parameter for GET ${path}`);
+      }
+
+      expect(parameter).toMatchObject({
+        in: 'query',
+        name: 'limit',
+        required: false,
+      });
+      expect(parameter.schema).toEqual(expectedSchema);
+    },
+  );
 
   it('documents the message conversation path parameter', () => {
     const parameter = document.paths[
@@ -251,6 +407,23 @@ describe('OpenAPI request examples', () => {
       in: 'path',
       required: true,
       schema: { format: 'uuid', type: 'string' },
+    });
+  });
+
+  it('documents the archived conversation filter as a boolean', () => {
+    const parameter = document.paths[
+      '/v1/conversations'
+    ]?.get?.parameters?.find(
+      (candidate) =>
+        !('$ref' in candidate) &&
+        candidate.in === 'query' &&
+        candidate.name === 'archived',
+    );
+    expect(parameter).toMatchObject({
+      in: 'query',
+      name: 'archived',
+      required: false,
+      schema: { type: 'boolean', default: false },
     });
   });
 
