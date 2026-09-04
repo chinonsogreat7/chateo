@@ -5,6 +5,15 @@ export const MESSAGE_CREATED_EVENT = 'message.created';
 export const CONVERSATION_CREATED_EVENT = 'conversation.created';
 export const CONVERSATION_SETTINGS_UPDATED_EVENT =
   'conversation.settings.updated';
+export const CONVERSATION_METADATA_UPDATED_EVENT =
+  'conversation.metadata.updated';
+export const CONVERSATION_MEMBERS_ADDED_EVENT = 'conversation.members.added';
+export const CONVERSATION_MEMBER_REMOVED_EVENT = 'conversation.member.removed';
+export const CONVERSATION_MEMBER_ROLE_UPDATED_EVENT =
+  'conversation.member.role.updated';
+export const CONVERSATION_OWNER_TRANSFERRED_EVENT =
+  'conversation.owner.transferred';
+export const CONVERSATION_DELETED_EVENT = 'conversation.deleted';
 export const RECEIPT_DELIVERED_EVENT = 'receipt.delivered';
 export const RECEIPT_READ_EVENT = 'receipt.read';
 export const PRESENCE_SUBSCRIBE_COMMAND = 'presence.subscribe';
@@ -109,6 +118,22 @@ export interface ChatServerToClientEvents {
   [CONVERSATION_SETTINGS_UPDATED_EVENT](
     payload: ConversationSettingsUpdatedEventPayload,
   ): void;
+  [CONVERSATION_METADATA_UPDATED_EVENT](
+    payload: ConversationMetadataUpdatedEventPayload,
+  ): void;
+  [CONVERSATION_MEMBERS_ADDED_EVENT](
+    payload: ConversationMembersAddedEventPayload,
+  ): void;
+  [CONVERSATION_MEMBER_REMOVED_EVENT](
+    payload: ConversationMemberRemovedEventPayload,
+  ): void;
+  [CONVERSATION_MEMBER_ROLE_UPDATED_EVENT](
+    payload: ConversationMemberRoleUpdatedEventPayload,
+  ): void;
+  [CONVERSATION_OWNER_TRANSFERRED_EVENT](
+    payload: ConversationOwnerTransferredEventPayload,
+  ): void;
+  [CONVERSATION_DELETED_EVENT](payload: ConversationDeletedEventPayload): void;
   [MESSAGE_CREATED_EVENT](payload: MessageCreatedEventPayload): void;
   [RECEIPT_DELIVERED_EVENT](payload: ReceiptUpdatedEventPayload): void;
   [RECEIPT_READ_EVENT](payload: ReceiptUpdatedEventPayload): void;
@@ -134,6 +159,43 @@ export interface ConversationSettingsUpdatedEventPayload {
   pinnedAt: string | null;
   occurredAt: string;
 }
+
+interface GroupChangedEventPayloadBase {
+  conversationId: string;
+  actorId: string;
+  occurredAt: string;
+}
+
+export interface ConversationMetadataUpdatedEventPayload
+  extends GroupChangedEventPayloadBase {
+  name: string;
+  avatarUrl: string | null;
+}
+
+export interface ConversationMembersAddedEventPayload
+  extends GroupChangedEventPayloadBase {
+  memberIds: string[];
+}
+
+export interface ConversationMemberRemovedEventPayload
+  extends GroupChangedEventPayloadBase {
+  memberId: string;
+  reason: 'removed' | 'left';
+}
+
+export interface ConversationMemberRoleUpdatedEventPayload
+  extends GroupChangedEventPayloadBase {
+  memberId: string;
+  role: 'admin' | 'member';
+}
+
+export interface ConversationOwnerTransferredEventPayload
+  extends GroupChangedEventPayloadBase {
+  previousOwnerId: string;
+  newOwnerId: string;
+}
+
+export type ConversationDeletedEventPayload = GroupChangedEventPayloadBase;
 
 export type AuthenticatedChatSocket = Socket<
   ChatClientToServerEvents,

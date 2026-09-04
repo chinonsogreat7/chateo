@@ -150,3 +150,33 @@ describe('PrismaAuthRepository serializable transaction retries', () => {
     expect(transaction).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('PrismaAuthRepository active-session batching', () => {
+  it('loads active sessions once and verifies each session-user pair', async () => {
+    const findMany = jest.fn().mockResolvedValue([
+      { id: 'session-one', userId: 'user-one' },
+      { id: 'session-two', userId: 'different-user' },
+    ]);
+    const repository = new PrismaAuthRepository({
+      authSession: { findMany },
+    } as unknown as PrismaService);
+
+    await expect(
+      repository.findActiveSessionIds(
+        [
+          { sessionId: 'SESSION-ONE', userId: 'USER-ONE' },
+          { sessionId: 'session-two', userId: 'user-two' },
+        ],
+        now,
+      ),
+    ).resolves.toEqual(['session-one']);
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['session-one', 'session-two'] },
+        revokedAt: null,
+        expiresAt: { gt: now },
+      },
+      select: { id: true, userId: true },
+    });
+  });
+});

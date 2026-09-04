@@ -9,6 +9,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { AuthRepository } from './auth.repository';
+import type { AuthSessionIdentity } from './auth.repository';
 import type {
   AuthDevicePlatform,
   AuthSessionRecord,
@@ -383,6 +384,34 @@ export class PrismaAuthRepository extends AuthRepository {
       select: { id: true },
     });
     return session !== null;
+  }
+
+  async findActiveSessionIds(
+    sessions: readonly AuthSessionIdentity[],
+    now: Date,
+  ): Promise<string[]> {
+    const expectedUserIdBySessionId = new Map(
+      sessions.map(({ sessionId, userId }) => [
+        sessionId.toLowerCase(),
+        userId.toLowerCase(),
+      ]),
+    );
+    if (expectedUserIdBySessionId.size === 0) return [];
+
+    const activeSessions = await this.prisma.authSession.findMany({
+      where: {
+        id: { in: [...expectedUserIdBySessionId.keys()] },
+        revokedAt: null,
+        expiresAt: { gt: now },
+      },
+      select: { id: true, userId: true },
+    });
+    return activeSessions
+      .filter(
+        (session) =>
+          expectedUserIdBySessionId.get(session.id) === session.userId,
+      )
+      .map((session) => session.id);
   }
 
   async findUserById(id: string): Promise<AuthUserRecord | null> {

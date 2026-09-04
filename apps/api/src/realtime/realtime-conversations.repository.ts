@@ -11,6 +11,10 @@ export abstract class RealtimeConversationsRepository {
     conversationId: string,
     userId: string,
   ): Promise<RealtimeConversationAccess | null>;
+
+  abstract findGroupParticipantIds(
+    conversationId: string,
+  ): Promise<string[] | null>;
 }
 
 @Injectable()
@@ -61,5 +65,23 @@ export class PrismaRealtimeConversationsRepository extends RealtimeConversations
       conversationId: conversation.id,
       participantIds: conversation.members.map((member) => member.userId),
     };
+  }
+
+  async findGroupParticipantIds(
+    conversationId: string,
+  ): Promise<string[] | null> {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        id: conversationId.toLowerCase(),
+        type: 'GROUP',
+      },
+      select: {
+        members: {
+          select: { userId: true },
+          orderBy: { userId: 'asc' },
+        },
+      },
+    });
+    return conversation?.members.map((member) => member.userId) ?? null;
   }
 }

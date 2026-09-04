@@ -5,12 +5,27 @@ import {
   ConversationEventsPublisher,
   type ConversationCreatedEventRecord,
   type ConversationSettingsUpdatedEventRecord,
+  type GroupChangedEventRecord,
 } from '../conversations/conversation-events.publisher';
+import { ChatStateService } from './chat-state.service';
 import { ChatGateway } from './chat.gateway';
+import { RealtimeConversationsRepository } from './realtime-conversations.repository';
 import {
   CONVERSATION_CREATED_EVENT,
+  CONVERSATION_DELETED_EVENT,
+  CONVERSATION_MEMBERS_ADDED_EVENT,
+  CONVERSATION_MEMBER_REMOVED_EVENT,
+  CONVERSATION_MEMBER_ROLE_UPDATED_EVENT,
+  CONVERSATION_METADATA_UPDATED_EVENT,
+  CONVERSATION_OWNER_TRANSFERRED_EVENT,
   CONVERSATION_SETTINGS_UPDATED_EVENT,
   type ConversationCreatedEventPayload,
+  type ConversationDeletedEventPayload,
+  type ConversationMembersAddedEventPayload,
+  type ConversationMemberRemovedEventPayload,
+  type ConversationMemberRoleUpdatedEventPayload,
+  type ConversationMetadataUpdatedEventPayload,
+  type ConversationOwnerTransferredEventPayload,
   type ConversationSettingsUpdatedEventPayload,
   type RealtimeSocketData,
   type RealtimeSocketTarget,
@@ -18,16 +33,41 @@ import {
 
 type ConversationEventName =
   | typeof CONVERSATION_CREATED_EVENT
-  | typeof CONVERSATION_SETTINGS_UPDATED_EVENT;
+  | typeof CONVERSATION_SETTINGS_UPDATED_EVENT
+  | typeof CONVERSATION_METADATA_UPDATED_EVENT
+  | typeof CONVERSATION_MEMBERS_ADDED_EVENT
+  | typeof CONVERSATION_MEMBER_REMOVED_EVENT
+  | typeof CONVERSATION_MEMBER_ROLE_UPDATED_EVENT
+  | typeof CONVERSATION_OWNER_TRANSFERRED_EVENT
+  | typeof CONVERSATION_DELETED_EVENT;
 type ConversationEventPayload =
   | ConversationCreatedEventPayload
-  | ConversationSettingsUpdatedEventPayload;
+  | ConversationSettingsUpdatedEventPayload
+  | ConversationMetadataUpdatedEventPayload
+  | ConversationMembersAddedEventPayload
+  | ConversationMemberRemovedEventPayload
+  | ConversationMemberRoleUpdatedEventPayload
+  | ConversationOwnerTransferredEventPayload
+  | ConversationDeletedEventPayload;
+
+interface CurrentAccessPolicy {
+  conversationId: string;
+  bypassUserIds?: ReadonlySet<string>;
+  currentParticipantIds?: ReadonlySet<string>;
+}
+
+interface ActiveSocketCandidate {
+  socket: RealtimeSocketTarget;
+  data: RealtimeSocketData;
+}
 
 @Injectable()
 export class RealtimeConversationEventsPublisher extends ConversationEventsPublisher {
   constructor(
     private readonly gateway: ChatGateway,
     private readonly repository: AuthRepository,
+    private readonly conversations: RealtimeConversationsRepository,
+    private readonly state: ChatStateService,
     private readonly clock: Clock,
   ) {
     super();
@@ -40,10 +80,23 @@ export class RealtimeConversationEventsPublisher extends ConversationEventsPubli
       type: event.type.toLowerCase() as 'direct' | 'group',
       occurredAt: event.occurredAt.toISOString(),
     };
+    const accessPolicy: CurrentAccessPolicy = {
+      conversationId: event.conversationId,
+      ...(event.type === 'GROUP'
+        ? {
+            currentParticipantIds: new Set(
+              (await this.conversations.findGroupParticipantIds(
+                event.conversationId,
+              )) ?? [],
+            ),
+          }
+        : {}),
+    };
     await this.publishToUsers(
       participantIds,
       CONVERSATION_CREATED_EVENT,
       payload,
+      accessPolicy,
     );
   }
 
@@ -68,45 +121,135 @@ export class RealtimeConversationEventsPublisher extends ConversationEventsPubli
     );
   }
 
+  async publishGroupChanged(event: GroupChangedEventRecord): Promise<void> {
+    const notification = toGroupChangedNotification(event);
+    const currentParticipantIds =
+      event.kind === 'deleted'
+        ? []
+        : ((await this.conversations.findGroupParticipantIds(
+            event.conversationId,
+          )) ?? []);
+    const accessPolicy: CurrentAccessPolicy | undefined =
+      event.kind === 'deleted'
+        ? undefined
+        : {
+            conversationId: event.conversationId,
+            currentParticipantIds: new Set(currentParticipantIds),
+            ...(event.kind === 'member-removed'
+              ? { bypassUserIds: new Set([event.memberId]) }
+              : {}),
+          };
+
+    // Existing subscribers must learn about the new member before the access
+    // refresh emits that member's current presence snapshot.
+    if (event.kind === 'members-added') {
+      await this.publishToUsers(
+        event.recipientIds,
+        notification.name,
+        notification.payload,
+        accessPolicy,
+      );
+      await this.state.refreshConversationAccess(event.conversationId);
+      return;
+    }
+
+    // Removed members must lose cached presence/typing access before their
+    // final tombstone is emitted. Deletion follows the same fail-closed order.
+    if (event.kind === 'member-removed' || event.kind === 'deleted') {
+      await this.state.refreshConversationAccess(event.conversationId);
+    }
+
+    await this.publishToUsers(
+      event.recipientIds,
+      notification.name,
+      notification.payload,
+      accessPolicy,
+    );
+  }
+
   private async publishToUsers(
     userIds: string[],
     event: ConversationEventName,
     payload: ConversationEventPayload,
+    accessPolicy?: CurrentAccessPolicy,
   ): Promise<void> {
-    const allowedUserIds = new Set(userIds);
-    const sockets = await this.gateway.findSocketsForUsers(userIds);
+    const uniqueUserIds = [...new Set(userIds)];
+    const allowedUserIds = new Set(uniqueUserIds);
+    const currentAccessByUserId = new Map<string, Promise<boolean>>();
+    const sockets = await this.gateway.findSocketsForUsers(uniqueUserIds);
+    const now = this.clock.now();
+    const candidates: ActiveSocketCandidate[] = [];
+    for (const socket of sockets) {
+      const data = readSocketData(socket.data);
+      if (
+        !data ||
+        !allowedUserIds.has(data.userId) ||
+        data.tokenExpiresAt <= now.getTime()
+      ) {
+        socket.disconnect(true);
+        continue;
+      }
+      candidates.push({ socket, data });
+    }
+
+    let activeSessionIds: ReadonlySet<string>;
+    try {
+      activeSessionIds = new Set(
+        await this.repository.findActiveSessionIds(
+          candidates.map(({ data }) => ({
+            sessionId: data.sessionId,
+            userId: data.userId,
+          })),
+          now,
+        ),
+      );
+    } catch {
+      for (const { socket } of candidates) socket.disconnect(true);
+      return;
+    }
+
     await Promise.all(
-      sockets.map((socket) =>
-        this.emitToActiveSocket(socket, allowedUserIds, event, payload),
+      candidates.map(({ socket, data }) =>
+        this.emitToActiveSocket(
+          socket,
+          data,
+          activeSessionIds,
+          event,
+          payload,
+          accessPolicy,
+          currentAccessByUserId,
+        ),
       ),
     );
   }
 
   private async emitToActiveSocket(
     socket: RealtimeSocketTarget,
-    allowedUserIds: ReadonlySet<string>,
+    data: RealtimeSocketData,
+    activeSessionIds: ReadonlySet<string>,
     event: ConversationEventName,
     payload: ConversationEventPayload,
+    accessPolicy?: CurrentAccessPolicy,
+    currentAccessByUserId = new Map<string, Promise<boolean>>(),
   ): Promise<void> {
-    const data = readSocketData(socket.data);
-    const now = this.clock.now();
-    if (
-      !data ||
-      !allowedUserIds.has(data.userId) ||
-      data.tokenExpiresAt <= now.getTime()
-    ) {
+    if (!activeSessionIds.has(data.sessionId)) {
       socket.disconnect(true);
       return;
     }
 
     try {
-      const active = await this.repository.isSessionActive(
-        data.sessionId,
-        data.userId,
-        now,
-      );
-      if (!active) {
-        socket.disconnect(true);
+      if (
+        accessPolicy &&
+        !accessPolicy.bypassUserIds?.has(data.userId) &&
+        !(
+          accessPolicy.currentParticipantIds?.has(data.userId) ??
+          (await this.hasCurrentAccess(
+            accessPolicy.conversationId,
+            data.userId,
+            currentAccessByUserId,
+          ))
+        )
+      ) {
         return;
       }
     } catch {
@@ -115,6 +258,78 @@ export class RealtimeConversationEventsPublisher extends ConversationEventsPubli
     }
 
     socket.emit(event, payload);
+  }
+
+  private hasCurrentAccess(
+    conversationId: string,
+    userId: string,
+    currentAccessByUserId: Map<string, Promise<boolean>>,
+  ): Promise<boolean> {
+    const existing = currentAccessByUserId.get(userId);
+    if (existing) return existing;
+
+    const pending = this.conversations
+      .findAccessibleConversation(conversationId, userId)
+      .then((conversation) => conversation !== null);
+    currentAccessByUserId.set(userId, pending);
+    return pending;
+  }
+}
+
+function toGroupChangedNotification(event: GroupChangedEventRecord): {
+  name: ConversationEventName;
+  payload: ConversationEventPayload;
+} {
+  const common = {
+    conversationId: event.conversationId,
+    actorId: event.actorId,
+    occurredAt: event.occurredAt.toISOString(),
+  };
+
+  switch (event.kind) {
+    case 'metadata-updated':
+      return {
+        name: CONVERSATION_METADATA_UPDATED_EVENT,
+        payload: {
+          ...common,
+          name: event.name,
+          avatarUrl: event.avatarUrl,
+        },
+      };
+    case 'members-added':
+      return {
+        name: CONVERSATION_MEMBERS_ADDED_EVENT,
+        payload: { ...common, memberIds: event.memberIds },
+      };
+    case 'member-removed':
+      return {
+        name: CONVERSATION_MEMBER_REMOVED_EVENT,
+        payload: {
+          ...common,
+          memberId: event.memberId,
+          reason: event.reason,
+        },
+      };
+    case 'member-role-updated':
+      return {
+        name: CONVERSATION_MEMBER_ROLE_UPDATED_EVENT,
+        payload: {
+          ...common,
+          memberId: event.memberId,
+          role: event.role.toLowerCase() as 'admin' | 'member',
+        },
+      };
+    case 'ownership-transferred':
+      return {
+        name: CONVERSATION_OWNER_TRANSFERRED_EVENT,
+        payload: {
+          ...common,
+          previousOwnerId: event.previousOwnerId,
+          newOwnerId: event.newOwnerId,
+        },
+      };
+    case 'deleted':
+      return { name: CONVERSATION_DELETED_EVENT, payload: common };
   }
 }
 

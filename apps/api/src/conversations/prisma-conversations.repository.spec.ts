@@ -5,6 +5,7 @@ import { PrismaConversationsRepository } from './prisma-conversations.repository
 const USER_ID = '22222222-2222-4222-8222-222222222222';
 const PARTICIPANT_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_PARTICIPANT_ID = '55555555-5555-4555-8555-555555555555';
+const NEW_PARTICIPANT_ID = '77777777-7777-4777-8777-777777777777';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
 const NOW = new Date('2026-08-12T12:00:00.000Z');
@@ -131,6 +132,24 @@ function rawGroupConversation() {
       },
     ],
     messages: [],
+  };
+}
+
+function rawGroupMember(
+  userId: string,
+  role: 'OWNER' | 'ADMIN' | 'MEMBER' = 'MEMBER',
+) {
+  return {
+    conversationId: CONVERSATION_ID,
+    userId,
+    joinedAt: NOW,
+    role,
+    archivedAt: null,
+    mutedAt: null,
+    pinnedAt: null,
+    unreadCount: 0,
+    lastReadAt: null,
+    user: { id: userId, displayName: 'Group member', avatarUrl: null },
   };
 }
 
@@ -699,5 +718,498 @@ describe('PrismaConversationsRepository', () => {
     });
     expect(findFirst.mock.calls[0]?.[0]?.where).not.toHaveProperty('type');
     expect(JSON.stringify(result)).not.toContain('phoneNumber');
+  });
+
+  it('updates group metadata without changing message activity or creator provenance', async () => {
+    const { repository, transaction } = createRepository();
+    const original = rawGroupConversation();
+    const updated = {
+      ...rawGroupConversation(),
+      name: 'Renamed Group',
+      avatarUrl: null,
+      updatedAt: NOW,
+    };
+    const findUnique = jest.fn().mockResolvedValue(original);
+    const update = jest.fn().mockResolvedValue(updated);
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({ conversation: { findUnique, update } }),
+    );
+
+    await expect(
+      repository.updateGroup({
+        conversationId: CONVERSATION_ID.toUpperCase(),
+        actorId: USER_ID.toUpperCase(),
+        name: 'Renamed Group',
+        avatarUrl: null,
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({
+      status: 'updated',
+      changed: true,
+      conversation: { name: 'Renamed Group', avatarUrl: null },
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+    });
+    expect(findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: CONVERSATION_ID } }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: CONVERSATION_ID },
+        data: {
+          name: 'Renamed Group',
+          avatarUrl: null,
+          updatedAt: NOW,
+        },
+      }),
+    );
+    expect(update.mock.calls[0]?.[0]?.data).not.toHaveProperty(
+      'lastActivityAt',
+    );
+    expect(update.mock.calls[0]?.[0]?.data).not.toHaveProperty('createdById');
+  });
+
+  it('allows admins to update metadata and treats unchanged values as a no-op', async () => {
+    const { repository, transaction } = createRepository();
+    const group = rawGroupConversation();
+    group.members[0]!.role = 'ADMIN';
+    group.members[2]!.role = 'OWNER';
+    const findUnique = jest.fn().mockResolvedValue(group);
+    const update = jest.fn();
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({ conversation: { findUnique, update } }),
+    );
+
+    await expect(
+      repository.updateGroup({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        name: 'Study Group',
+        avatarUrl: 'https://example.com/groups/study.jpg',
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({ status: 'updated', changed: false });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('adds validated members as members and returns post-add recipients', async () => {
+    const { repository, transaction } = createRepository();
+    const original = rawGroupConversation();
+    const updated = rawGroupConversation();
+    updated.members.push(rawGroupMember(NEW_PARTICIPANT_ID));
+    const findUnique = jest.fn().mockResolvedValue(original);
+    const update = jest.fn().mockResolvedValue(updated);
+    const blockFindFirst = jest.fn().mockResolvedValue(null);
+    const userFindMany = jest
+      .fn()
+      .mockResolvedValue([{ id: NEW_PARTICIPANT_ID }]);
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, update },
+          userBlock: { findFirst: blockFindFirst },
+          user: { findMany: userFindMany },
+        }),
+    );
+
+    await expect(
+      repository.addGroupMembers({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        participantIds: [NEW_PARTICIPANT_ID.toUpperCase()],
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({
+      status: 'members-added',
+      conversation: {
+        participants: expect.arrayContaining([
+          expect.objectContaining({
+            id: NEW_PARTICIPANT_ID,
+            role: 'MEMBER',
+          }),
+        ]),
+      },
+      eventRecipientIds: [
+        USER_ID,
+        PARTICIPANT_ID,
+        SECOND_PARTICIPANT_ID,
+        NEW_PARTICIPANT_ID,
+      ],
+    });
+    expect(blockFindFirst).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            blockerId: USER_ID,
+            blockedId: { in: [NEW_PARTICIPANT_ID] },
+          },
+          {
+            blockerId: { in: [NEW_PARTICIPANT_ID] },
+            blockedId: USER_ID,
+          },
+        ],
+      },
+      select: { blockerId: true },
+    });
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          updatedAt: NOW,
+          members: {
+            create: [
+              {
+                userId: NEW_PARTICIPANT_ID,
+                joinedAt: NOW,
+                role: 'MEMBER',
+              },
+            ],
+          },
+        },
+      }),
+    );
+    expect(update.mock.calls[0]?.[0]?.data).not.toHaveProperty(
+      'lastActivityAt',
+    );
+  });
+
+  it('rejects existing additions and enforces the 100-member group limit', async () => {
+    const { repository, transaction } = createRepository();
+    const existing = rawGroupConversation();
+    const full = rawGroupConversation();
+    while (full.members.length < 100) {
+      const suffix = String(full.members.length).padStart(12, '0');
+      full.members.push(rawGroupMember(`00000000-0000-4000-8000-${suffix}`));
+    }
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(full);
+    const blockFindFirst = jest.fn();
+    const userFindMany = jest.fn();
+    const update = jest.fn();
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, update },
+          userBlock: { findFirst: blockFindFirst },
+          user: { findMany: userFindMany },
+        }),
+    );
+
+    await expect(
+      repository.addGroupMembers({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        participantIds: [PARTICIPANT_ID],
+        now: NOW,
+      }),
+    ).resolves.toEqual({ status: 'member-already-exists' });
+    await expect(
+      repository.addGroupMembers({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        participantIds: [NEW_PARTICIPANT_ID],
+        now: NOW,
+      }),
+    ).resolves.toEqual({ status: 'group-full' });
+    expect(blockFindFirst).not.toHaveBeenCalled();
+    expect(userFindMany).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['P2002', 'member-already-exists'],
+    ['P2003', 'participant-not-found'],
+    ['P2025', 'conversation-not-found'],
+  ])('maps add-member %s races to %s', async (code, status) => {
+    const { repository, transaction } = createRepository();
+    transaction.mockRejectedValue(knownRequestError(code));
+
+    await expect(
+      repository.addGroupMembers({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        participantIds: [NEW_PARTICIPANT_ID],
+        now: NOW,
+      }),
+    ).resolves.toEqual({ status });
+  });
+
+  it('removes a member while retaining the pre-removal event recipients', async () => {
+    const { repository, transaction } = createRepository();
+    const original = rawGroupConversation();
+    const updated = rawGroupConversation();
+    updated.members = updated.members.filter(
+      (member) => member.userId !== PARTICIPANT_ID,
+    );
+    const findUnique = jest.fn().mockResolvedValue(original);
+    const deleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    const update = jest.fn().mockResolvedValue(updated);
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, update },
+          conversationMember: { deleteMany },
+        }),
+    );
+
+    await expect(
+      repository.removeGroupMember({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        memberId: PARTICIPANT_ID,
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({
+      status: 'member-removed',
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+    });
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: { conversationId: CONVERSATION_ID, userId: PARTICIPANT_ID },
+    });
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { updatedAt: NOW } }),
+    );
+  });
+
+  it('protects the owner and prevents an admin from removing another admin', async () => {
+    const { repository, transaction } = createRepository();
+    const owned = rawGroupConversation();
+    const administered = rawGroupConversation();
+    administered.members[0]!.role = 'ADMIN';
+    administered.members[1]!.role = 'ADMIN';
+    administered.members[2]!.role = 'OWNER';
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce(owned)
+      .mockResolvedValueOnce(administered);
+    const deleteMany = jest.fn();
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, update: jest.fn() },
+          conversationMember: { deleteMany },
+        }),
+    );
+
+    await expect(
+      repository.removeGroupMember({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        memberId: USER_ID,
+        now: NOW,
+      }),
+    ).resolves.toEqual({ status: 'owner-protected' });
+    await expect(
+      repository.removeGroupMember({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        memberId: PARTICIPANT_ID,
+        now: NOW,
+      }),
+    ).resolves.toEqual({ status: 'forbidden' });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('lets only the owner change a non-owner member role', async () => {
+    const { repository, transaction } = createRepository();
+    const original = rawGroupConversation();
+    const updated = rawGroupConversation();
+    updated.members[1]!.role = 'ADMIN';
+    const findUnique = jest.fn().mockResolvedValue(original);
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const update = jest.fn().mockResolvedValue(updated);
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, update },
+          conversationMember: { updateMany },
+        }),
+    );
+
+    await expect(
+      repository.updateGroupMemberRole({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        memberId: PARTICIPANT_ID,
+        role: 'ADMIN',
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({
+      status: 'role-updated',
+      changed: true,
+      conversation: {
+        participants: expect.arrayContaining([
+          expect.objectContaining({ id: PARTICIPANT_ID, role: 'ADMIN' }),
+        ]),
+      },
+    });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        conversationId: CONVERSATION_ID,
+        userId: PARTICIPANT_ID,
+        role: 'MEMBER',
+      },
+      data: { role: 'ADMIN' },
+    });
+  });
+
+  it('transfers ownership atomically without changing createdById', async () => {
+    const { repository, transaction } = createRepository();
+    const original = rawGroupConversation();
+    const updated = rawGroupConversation();
+    updated.members[0]!.role = 'ADMIN';
+    updated.members[1]!.role = 'OWNER';
+    const findUnique = jest.fn().mockResolvedValue(original);
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    const update = jest.fn().mockResolvedValue(updated);
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, update },
+          conversationMember: { updateMany },
+        }),
+    );
+
+    await expect(
+      repository.transferGroupOwnership({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        memberId: PARTICIPANT_ID,
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({
+      status: 'ownership-transferred',
+      changed: true,
+      conversation: { role: 'ADMIN' },
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+    });
+    expect(updateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        conversationId: CONVERSATION_ID,
+        userId: USER_ID,
+        role: 'OWNER',
+      },
+      data: { role: 'ADMIN' },
+    });
+    expect(updateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        conversationId: CONVERSATION_ID,
+        userId: PARTICIPANT_ID,
+        role: 'MEMBER',
+      },
+      data: { role: 'OWNER' },
+    });
+    expect(update.mock.calls[0]?.[0]?.data).toEqual({ updatedAt: NOW });
+    expect(update.mock.calls[0]?.[0]?.data).not.toHaveProperty('createdById');
+  });
+
+  it('requires ownership transfer before the owner can leave', async () => {
+    const { repository, transaction } = createRepository();
+    const findUnique = jest.fn().mockResolvedValue(rawGroupConversation());
+    const deleteMany = jest.fn();
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, update: jest.fn() },
+          conversationMember: { deleteMany },
+        }),
+    );
+
+    await expect(
+      repository.leaveGroup({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        now: NOW,
+      }),
+    ).resolves.toEqual({ status: 'owner-transfer-required' });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('lets a non-owner leave and notifies the pre-leave member set', async () => {
+    const { repository, transaction } = createRepository();
+    const findUnique = jest.fn().mockResolvedValue(rawGroupConversation());
+    const deleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    const update = jest.fn().mockResolvedValue({ id: CONVERSATION_ID });
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, update },
+          conversationMember: { deleteMany },
+        }),
+    );
+
+    await expect(
+      repository.leaveGroup({
+        conversationId: CONVERSATION_ID,
+        actorId: PARTICIPANT_ID,
+        now: NOW,
+      }),
+    ).resolves.toEqual({
+      status: 'left',
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+    });
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CONVERSATION_ID },
+      data: { updatedAt: NOW },
+      select: { id: true },
+    });
+  });
+
+  it('allows only the group owner to delete and returns pre-delete recipients', async () => {
+    const { repository, transaction } = createRepository();
+    const findUnique = jest.fn().mockResolvedValue(rawGroupConversation());
+    const deleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversation: { findUnique, deleteMany },
+        }),
+    );
+
+    await expect(
+      repository.deleteGroup({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        now: NOW,
+      }),
+    ).resolves.toEqual({
+      status: 'deleted',
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+    });
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: { id: CONVERSATION_ID, type: 'GROUP' },
+    });
+  });
+
+  it('retries group mutations at most three times on serializable conflicts', async () => {
+    const { repository, transaction } = createRepository();
+    const group = rawGroupConversation();
+    transaction
+      .mockRejectedValueOnce(knownRequestError('P2034'))
+      .mockRejectedValueOnce(knownRequestError('P2034'))
+      .mockImplementationOnce(
+        async (operation: (client: unknown) => Promise<unknown>) =>
+          operation({ conversation: { findUnique: jest.fn(() => group) } }),
+      );
+
+    await expect(
+      repository.updateGroup({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        name: group.name,
+        now: NOW,
+      }),
+    ).resolves.toMatchObject({ status: 'updated', changed: false });
+    expect(transaction).toHaveBeenCalledTimes(3);
+    for (const call of transaction.mock.calls) {
+      expect(call[1]).toEqual({
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    }
   });
 });

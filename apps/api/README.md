@@ -20,32 +20,39 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 
 ## Endpoints
 
-| Method   | Path                                                   | Auth   | Purpose                                           |
-| -------- | ------------------------------------------------------ | ------ | ------------------------------------------------- |
-| `GET`    | `/v1/health`                                           | Public | Liveness check                                    |
-| `POST`   | `/v1/auth/otp/request`                                 | Public | Request a verification code                       |
-| `POST`   | `/v1/auth/otp/resend`                                  | Public | Resend after the cooldown                         |
-| `POST`   | `/v1/auth/otp/verify`                                  | Public | Verify and receive a token pair                   |
-| `POST`   | `/v1/auth/refresh`                                     | Public | Rotate a refresh token                            |
-| `POST`   | `/v1/auth/logout`                                      | Public | Revoke a refresh session; always idempotent       |
-| `GET`    | `/v1/me`                                               | Bearer | Read the signed-in profile                        |
-| `PATCH`  | `/v1/me`                                               | Bearer | Set the name and optional avatar URL              |
-| `GET`    | `/v1/me/blocks`                                        | Bearer | List users blocked by the caller                  |
-| `PUT`    | `/v1/me/blocks/:userId`                                | Bearer | Block a user idempotently                         |
-| `DELETE` | `/v1/me/blocks/:userId`                                | Bearer | Unblock a user idempotently                       |
-| `POST`   | `/v1/contacts/match`                                   | Bearer | Match phone numbers already known to caller       |
-| `GET`    | `/v1/users/search`                                     | Bearer | Search completed profiles by display name         |
-| `POST`   | `/v1/conversations/direct`                             | Bearer | Create or return a direct conversation            |
-| `POST`   | `/v1/conversations/group`                              | Bearer | Create a named group conversation                 |
-| `GET`    | `/v1/conversations`                                    | Bearer | List the signed-in user's conversations           |
-| `GET`    | `/v1/conversations/:conversationId`                    | Bearer | Open a conversation as a member                   |
-| `PATCH`  | `/v1/conversations/:conversationId/settings`           | Bearer | Archive, mute, or pin for the caller              |
-| `POST`   | `/v1/conversations/:conversationId/messages`           | Bearer | Persist or replay an idempotent text message      |
-| `GET`    | `/v1/conversations/:conversationId/messages`           | Bearer | Read newest-first message history                 |
-| `PUT`    | `/v1/conversations/:conversationId/receipts/delivered` | Bearer | Advance the caller's durable delivery boundary    |
-| `PUT`    | `/v1/conversations/:conversationId/receipts/read`      | Bearer | Advance the caller's durable read boundary        |
-| `GET`    | `/v1/conversations/:conversationId/receipts`           | Bearer | Reconcile every participant's receipt frontiers   |
-| `POST`   | `/v1/conversations/:conversationId/read`               | Bearer | Legacy local read marker; use receipt route above |
+| Method   | Path                                                       | Auth   | Purpose                                           |
+| -------- | ---------------------------------------------------------- | ------ | ------------------------------------------------- |
+| `GET`    | `/v1/health`                                               | Public | Liveness check                                    |
+| `POST`   | `/v1/auth/otp/request`                                     | Public | Request a verification code                       |
+| `POST`   | `/v1/auth/otp/resend`                                      | Public | Resend after the cooldown                         |
+| `POST`   | `/v1/auth/otp/verify`                                      | Public | Verify and receive a token pair                   |
+| `POST`   | `/v1/auth/refresh`                                         | Public | Rotate a refresh token                            |
+| `POST`   | `/v1/auth/logout`                                          | Public | Revoke a refresh session; always idempotent       |
+| `GET`    | `/v1/me`                                                   | Bearer | Read the signed-in profile                        |
+| `PATCH`  | `/v1/me`                                                   | Bearer | Set the name and optional avatar URL              |
+| `GET`    | `/v1/me/blocks`                                            | Bearer | List users blocked by the caller                  |
+| `PUT`    | `/v1/me/blocks/:userId`                                    | Bearer | Block a user idempotently                         |
+| `DELETE` | `/v1/me/blocks/:userId`                                    | Bearer | Unblock a user idempotently                       |
+| `POST`   | `/v1/contacts/match`                                       | Bearer | Match phone numbers already known to caller       |
+| `GET`    | `/v1/users/search`                                         | Bearer | Search completed profiles by display name         |
+| `POST`   | `/v1/conversations/direct`                                 | Bearer | Create or return a direct conversation            |
+| `POST`   | `/v1/conversations/group`                                  | Bearer | Create a named group conversation                 |
+| `GET`    | `/v1/conversations`                                        | Bearer | List the signed-in user's conversations           |
+| `GET`    | `/v1/conversations/:conversationId`                        | Bearer | Open a conversation as a member                   |
+| `PATCH`  | `/v1/conversations/:conversationId`                        | Bearer | Edit group name or avatar                         |
+| `POST`   | `/v1/conversations/:conversationId/members`                | Bearer | Add registered group members                      |
+| `DELETE` | `/v1/conversations/:conversationId/members/:memberId`      | Bearer | Remove a group member                             |
+| `PATCH`  | `/v1/conversations/:conversationId/members/:memberId/role` | Bearer | Promote or demote a group member                  |
+| `POST`   | `/v1/conversations/:conversationId/transfer-ownership`     | Bearer | Transfer group ownership                          |
+| `POST`   | `/v1/conversations/:conversationId/leave`                  | Bearer | Leave a group                                     |
+| `DELETE` | `/v1/conversations/:conversationId`                        | Bearer | Delete an owned group                             |
+| `PATCH`  | `/v1/conversations/:conversationId/settings`               | Bearer | Archive, mute, or pin for the caller              |
+| `POST`   | `/v1/conversations/:conversationId/messages`               | Bearer | Persist or replay an idempotent text message      |
+| `GET`    | `/v1/conversations/:conversationId/messages`               | Bearer | Read newest-first message history                 |
+| `PUT`    | `/v1/conversations/:conversationId/receipts/delivered`     | Bearer | Advance the caller's durable delivery boundary    |
+| `PUT`    | `/v1/conversations/:conversationId/receipts/read`          | Bearer | Advance the caller's durable read boundary        |
+| `GET`    | `/v1/conversations/:conversationId/receipts`               | Bearer | Reconcile every participant's receipt frontiers   |
+| `POST`   | `/v1/conversations/:conversationId/read`                   | Bearer | Legacy local read marker; use receipt route above |
 
 Authentication, profile, discovery, conversation, message, and receipt
 responses include `Cache-Control: no-store`.
@@ -273,9 +280,45 @@ Creation is rejected if the creator has blocked any invitee or any invitee has
 blocked the creator; blocks solely between invitees do not reject the request.
 Group responses include group metadata, public participant profiles, roles, and
 the requesting member's role. The existing message, history, receipt, presence,
-and typing APIs work with group conversation IDs. Adding or removing members,
-promoting or demoting admins, editing group metadata, transferring ownership,
-and leaving or deleting a group remain future APIs.
+and typing APIs work with group conversation IDs.
+
+Group lifecycle permissions are:
+
+| Action                                               | Allowed roles |
+| ---------------------------------------------------- | ------------- |
+| Edit the name/avatar or add members                  | Owner, admin  |
+| Remove an ordinary member                            | Owner, admin  |
+| Remove an admin                                      | Owner         |
+| Promote/demote admins, transfer ownership, or delete | Owner         |
+| Leave                                                | Admin, member |
+
+Edit metadata with `PATCH /v1/conversations/:conversationId`. At least one of
+`name` or `avatarUrl` is required; send `avatarUrl: null` to remove the avatar.
+Add one or more users atomically with:
+
+```http
+POST /v1/conversations/:conversationId/members
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "participantIds": ["7d444840-9dc0-41d1-b245-5ffdce74fad2"]
+}
+```
+
+A group contains at most 100 members. Adding fails as one operation if a user
+is missing, already belongs to the group, would exceed the limit, or has a
+bidirectional block with the acting inviter. Blocks involving unrelated group
+members do not prevent an invitation. Newly added or re-added members can read
+the existing group history; their unread state, settings, and receipt tracking
+start fresh from their latest join time.
+
+Use `PATCH .../members/:memberId/role` with `{ "role": "admin" }` or
+`{ "role": "member" }`. Ownership changes separately through
+`POST .../transfer-ownership` with `{ "newOwnerId": "<member UUID>" }`; the
+previous owner becomes an admin. Owners cannot leave or be removed until they
+transfer ownership, and deleting a group permanently removes its messages,
+memberships, and receipts.
 
 ## Text messages
 
@@ -384,7 +427,7 @@ prefix. Authenticate with the current access token in the handshake:
 Students can test every realtime command and event in Postman using the
 [Socket.IO Postman guide](./postman/README.md) and its importable environment
 template. A printable [student testing guide](../../output/pdf/ChatMe-Socket.IO-Postman-Student-Guide.pdf)
-is included for classroom use.
+is also included as a walkthrough of the core two-user socket flow.
 
 ```ts
 import { io } from 'socket.io-client';
@@ -404,6 +447,17 @@ socket.on('conversation.created', ({ conversationId, type, occurredAt }) => {
 socket.on('conversation.settings.updated', (settings) => {
   // Sent only to active devices owned by the user whose settings changed.
 });
+
+socket.on('conversation.members.added', ({ conversationId, memberIds }) => {
+  // Refetch the conversation to reconcile its personalized group snapshot.
+});
+
+socket.on(
+  'conversation.member.removed',
+  ({ conversationId, memberId, reason }) => {
+    // reason is "removed" or "left".
+  },
+);
 ```
 
 An `Authorization: Bearer <access-token>` handshake header is also supported.
@@ -414,6 +468,20 @@ token.
 
 There is intentionally no client-to-server socket event for sending messages or
 writing receipts. REST stays authoritative; socket events are low-latency hints.
+Conversation creation and group-lifecycle writes return after their database
+transaction commits and do not wait for socket delivery, so a delayed realtime
+path cannot turn a successful write into an ambiguous HTTP timeout.
+Group lifecycle writes are also REST-authoritative. The server publishes
+`conversation.metadata.updated`, `conversation.members.added`,
+`conversation.member.removed`, `conversation.member.role.updated`,
+`conversation.owner.transferred`, and `conversation.deleted`. Each contains
+`conversationId`, `actorId`, and `occurredAt`, plus the IDs or metadata relevant
+to the change. Clients should refetch conversation detail after a lifecycle
+event; a removed member or deleted-group recipient should remove the chat when
+that fetch returns `CONVERSATION_NOT_FOUND`. After `conversation.members.added`,
+existing presence subscribers receive a `presence.changed` snapshot for each
+newly visible member; removals and deletion evict stale presence and typing
+access before their lifecycle tombstone is sent.
 `message.created` is delivered to all active devices belonging to every
 conversation member. The durable receipt events are:
 
@@ -532,7 +600,9 @@ On initial connection or reconnection:
    snapshot before processing later events.
 
 Socket delivery is best-effort. Do not treat socket arrival order as message
-order; render the persisted `createdAt`/`id` order returned by history.
+order, or group lifecycle hints as an ordered change log. Refetch group detail
+after each lifecycle hint, and render messages in the persisted `createdAt`/`id`
+order returned by history.
 
 The current Socket.IO adapter and the process-local presence/typing state are
 intended for the classroom project's single Render instance. Before
@@ -563,6 +633,11 @@ Discovery, conversation, message, and receipt codes include
 `CONTACTS_INVALID_PHONE_NUMBER`, `DISCOVERY_INVALID_CURSOR`,
 `CONVERSATION_SELF_NOT_ALLOWED`, `CONVERSATION_CURSOR_INVALID`,
 `CONVERSATION_GROUP_PARTICIPANTS_INVALID`,
+`CONVERSATION_GROUP_UPDATE_EMPTY`, `CONVERSATION_GROUP_PERMISSION_DENIED`,
+`CONVERSATION_GROUP_FULL`, `CONVERSATION_MEMBER_ALREADY_EXISTS`,
+`CONVERSATION_MEMBER_NOT_FOUND`, `CONVERSATION_MEMBER_SELF_REMOVE_NOT_ALLOWED`,
+`CONVERSATION_OWNER_PROTECTED`, `CONVERSATION_OWNER_TRANSFER_REQUIRED`,
+`CONVERSATION_OWNER_TRANSFER_SELF_NOT_ALLOWED`,
 `CONVERSATION_SETTINGS_UPDATE_EMPTY`, `CONVERSATION_NOT_FOUND`,
 `USER_BLOCK_SELF_NOT_ALLOWED`, `USER_NOT_FOUND`, `MESSAGE_CURSOR_INVALID`,
 and `MESSAGE_IDEMPOTENCY_CONFLICT`.
@@ -585,7 +660,8 @@ and `MESSAGE_IDEMPOTENCY_CONFLICT`.
 - Bidirectional block policy is enforced for discovery and direct realtime/message access without exposing which side blocked.
 - Direct-conversation participant pairs are stored in canonical UUID order under a database unique constraint.
 - Conversation archive, mute, and pin state is stored independently for each member.
-- Group creation assigns one owner and validates all selected users and creator-to-invitee block relationships atomically.
+- Group creation and lifecycle mutations enforce one owner, role permissions, member limits, and inviter-to-invitee block checks atomically.
+- Realtime membership changes refresh cached presence/typing authorization, and message events recheck current membership before delivery.
 - Message send retries are deduplicated by `(senderId, clientMessageId)` before unread counters change.
 - Receipt boundaries accept only incoming messages, advance monotonically, and persist before their socket events are published.
 - Socket handshakes validate both the JWT and its server-side session; private events are revalidated before delivery.
@@ -653,6 +729,12 @@ each pre-existing non-orphan group with the stable placeholder name
 `user_id`) as `created_by_id`, and promotes that member to owner. It refuses an
 orphan group with no memberships before making schema changes and reports how to
 repair the data before retrying.
+
+The group-lifecycle release also requires
+`20260904090000_enforce_single_group_owner`. It verifies existing ownership
+data, rejects multiple owners immediately, and checks at transaction commit
+that every surviving group has exactly one owner while direct conversations
+have none.
 
 Run the real-PostgreSQL integration suite against a dedicated database whose
 name ends in `_integration` (or a dedicated schema beginning with

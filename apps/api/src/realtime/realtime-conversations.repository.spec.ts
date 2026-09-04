@@ -74,4 +74,24 @@ describe('PrismaRealtimeConversationsRepository', () => {
     });
     expect(blockFindFirst).not.toHaveBeenCalled();
   });
+
+  it('loads one current group roster for lifecycle fan-out and cache refresh', async () => {
+    const { repository, conversationFindFirst } = createRepository();
+    conversationFindFirst.mockResolvedValue({
+      members: [{ userId: USER_ID }, { userId: OTHER_USER_ID }],
+    });
+
+    await expect(
+      repository.findGroupParticipantIds(CONVERSATION_ID),
+    ).resolves.toEqual([USER_ID, OTHER_USER_ID]);
+    expect(conversationFindFirst).toHaveBeenCalledWith({
+      where: { id: CONVERSATION_ID, type: 'GROUP' },
+      select: {
+        members: {
+          select: { userId: true },
+          orderBy: { userId: 'asc' },
+        },
+      },
+    });
+  });
 });

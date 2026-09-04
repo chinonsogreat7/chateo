@@ -4,6 +4,7 @@ import { Clock } from '../auth/providers/clock';
 import { MessageEventsPublisher } from '../messages/message-events.publisher';
 import type { MessageRecord } from '../messages/messages.types';
 import { ChatGateway } from './chat.gateway';
+import { RealtimeConversationsRepository } from './realtime-conversations.repository';
 import {
   MESSAGE_CREATED_EVENT,
   type MessageCreatedEventPayload,
@@ -11,59 +12,86 @@ import {
   type RealtimeSocketTarget,
 } from './realtime.types';
 
+interface ActiveSocketCandidate {
+  socket: RealtimeSocketTarget;
+  data: RealtimeSocketData;
+}
+
 @Injectable()
 export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
   constructor(
     private readonly gateway: ChatGateway,
     private readonly repository: AuthRepository,
+    private readonly conversations: RealtimeConversationsRepository,
     private readonly clock: Clock,
   ) {
     super();
   }
 
   async publishCreated(message: MessageRecord): Promise<void> {
+    let currentParticipantIds: ReadonlySet<string>;
+    try {
+      const currentConversation =
+        await this.conversations.findAccessibleConversation(
+          message.conversationId,
+          message.senderId,
+        );
+      if (!currentConversation) return;
+      currentParticipantIds = new Set(currentConversation.participantIds);
+    } catch {
+      return;
+    }
     const participantIds = [
       ...new Set([...message.participantIds, message.senderId]),
-    ];
+    ].filter((userId) => currentParticipantIds.has(userId));
     const participantIdSet = new Set(participantIds);
     const sockets = await this.gateway.findSocketsForUsers(participantIds);
     const payload = toMessageCreatedPayload(message);
+    const now = this.clock.now();
+    const candidates: ActiveSocketCandidate[] = [];
+    for (const socket of sockets) {
+      const data = readSocketData(socket.data);
+      if (
+        !data ||
+        !participantIdSet.has(data.userId) ||
+        data.tokenExpiresAt <= now.getTime()
+      ) {
+        socket.disconnect(true);
+        continue;
+      }
+      candidates.push({ socket, data });
+    }
+
+    let activeSessionIds: ReadonlySet<string>;
+    try {
+      activeSessionIds = new Set(
+        await this.repository.findActiveSessionIds(
+          candidates.map(({ data }) => ({
+            sessionId: data.sessionId,
+            userId: data.userId,
+          })),
+          now,
+        ),
+      );
+    } catch {
+      for (const { socket } of candidates) socket.disconnect(true);
+      return;
+    }
 
     await Promise.all(
-      sockets.map((socket) =>
-        this.emitToActiveSocket(socket, participantIdSet, payload),
+      candidates.map(({ socket, data }) =>
+        this.emitToActiveSocket(socket, data, activeSessionIds, payload),
       ),
     );
   }
 
   private async emitToActiveSocket(
     socket: RealtimeSocketTarget,
-    participantIds: ReadonlySet<string>,
+    data: RealtimeSocketData,
+    activeSessionIds: ReadonlySet<string>,
     payload: MessageCreatedEventPayload,
   ): Promise<void> {
-    const data = readSocketData(socket.data);
-    const now = this.clock.now();
-    if (
-      !data ||
-      !participantIds.has(data.userId) ||
-      data.tokenExpiresAt <= now.getTime()
-    ) {
-      socket.disconnect(true);
-      return;
-    }
-
-    try {
-      const active = await this.repository.isSessionActive(
-        data.sessionId,
-        data.userId,
-        now,
-      );
-      if (!active) {
-        socket.disconnect(true);
-        return;
-      }
-    } catch {
-      // Fail closed: an unverifiable socket must not receive private messages.
+    if (!activeSessionIds.has(data.sessionId)) {
       socket.disconnect(true);
       return;
     }

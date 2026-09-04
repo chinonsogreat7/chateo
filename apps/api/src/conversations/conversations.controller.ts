@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
   UseInterceptors,
@@ -13,8 +15,11 @@ import {
   ApiBearerAuth,
   ApiBadRequestResponse,
   ApiBody,
+  ApiConflictResponse,
   ApiCreatedResponse,
   ApiExtraModels,
+  ApiForbiddenResponse,
+  ApiNoContentResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -25,6 +30,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { NoStoreInterceptor } from '../common/no-store.interceptor';
 import type { AuthenticatedUser } from '../common/types/authenticated-request';
 import { ConversationsService } from './conversations.service';
+import { AddGroupMembersDto } from './dto/add-group-members.dto';
 import { ConversationParamsDto } from './dto/conversation-params.dto';
 import {
   ConversationListResponseDto,
@@ -35,7 +41,11 @@ import {
 import type { ConversationResponseDto } from './dto/conversation-response.dto';
 import { CreateDirectConversationDto } from './dto/create-direct-conversation.dto';
 import { CreateGroupConversationDto } from './dto/create-group-conversation.dto';
+import { GroupMemberParamsDto } from './dto/group-member-params.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
+import { TransferGroupOwnershipDto } from './dto/transfer-group-ownership.dto';
+import { UpdateGroupConversationDto } from './dto/update-group-conversation.dto';
+import { UpdateGroupMemberRoleDto } from './dto/update-group-member-role.dto';
 
 const PARTICIPANT_ID_EXAMPLE = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
 
@@ -44,6 +54,10 @@ const PARTICIPANT_ID_EXAMPLE = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
 @ApiExtraModels(
   CreateDirectConversationDto,
   CreateGroupConversationDto,
+  UpdateGroupConversationDto,
+  AddGroupMembersDto,
+  UpdateGroupMemberRoleDto,
+  TransferGroupOwnershipDto,
   DirectConversationResponseDto,
   GroupConversationResponseDto,
 )
@@ -108,6 +122,233 @@ export class ConversationsController {
     @Body() input: CreateGroupConversationDto,
   ): Promise<GroupConversationResponseDto> {
     return this.conversationsService.createGroup(user.sub, input);
+  }
+
+  @Patch(':conversationId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update group conversation metadata' })
+  @ApiBody({
+    schema: {
+      minProperties: 1,
+      allOf: [{ $ref: getSchemaPath(UpdateGroupConversationDto) }],
+    },
+    examples: {
+      default: {
+        summary: 'Rename a group and remove its avatar',
+        value: { name: 'Project Team', avatarUrl: null },
+      },
+    },
+  })
+  @ApiOkResponse({ type: GroupConversationResponseDto })
+  @ApiBadRequestResponse({
+    description: 'No supported field was provided or the metadata is invalid.',
+  })
+  @ApiForbiddenResponse({
+    description: 'The member is not allowed to edit group metadata.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'The group conversation is missing or the user is not a member.',
+  })
+  updateGroup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationParamsDto,
+    @Body() input: UpdateGroupConversationDto,
+  ): Promise<GroupConversationResponseDto> {
+    return this.conversationsService.updateGroup(
+      user.sub,
+      params.conversationId,
+      input,
+    );
+  }
+
+  @Post(':conversationId/members')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Add members to a group conversation' })
+  @ApiBody({
+    schema: { $ref: getSchemaPath(AddGroupMembersDto) },
+    examples: {
+      default: {
+        summary: 'Add registered users to a group',
+        value: {
+          participantIds: [
+            '7d444840-9dc0-41d1-b245-5ffdce74fad2',
+            '8e555951-aed1-42e2-8346-6aadece85be3',
+          ],
+        },
+      },
+    },
+  })
+  @ApiOkResponse({ type: GroupConversationResponseDto })
+  @ApiBadRequestResponse({
+    description:
+      'The participant list is invalid, duplicated, or self-referential.',
+  })
+  @ApiForbiddenResponse({
+    description: 'The member is not allowed to add group members.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'The group is inaccessible, or one or more selected users are unavailable.',
+  })
+  @ApiConflictResponse({
+    description:
+      'A selected user is already a member or the group member limit would be exceeded.',
+  })
+  addGroupMembers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationParamsDto,
+    @Body() input: AddGroupMembersDto,
+  ): Promise<GroupConversationResponseDto> {
+    return this.conversationsService.addGroupMembers(
+      user.sub,
+      params.conversationId,
+      input,
+    );
+  }
+
+  @Delete(':conversationId/members/:memberId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Remove a member from a group conversation' })
+  @ApiNoContentResponse({ description: 'The member was removed.' })
+  @ApiBadRequestResponse({
+    description: 'Use the leave endpoint to remove yourself.',
+  })
+  @ApiForbiddenResponse({
+    description: 'The member is not allowed to remove the selected member.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'The group is inaccessible or the selected membership does not exist.',
+  })
+  @ApiConflictResponse({
+    description: 'The group owner cannot be removed.',
+  })
+  removeGroupMember(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: GroupMemberParamsDto,
+  ): Promise<void> {
+    return this.conversationsService.removeGroupMember(
+      user.sub,
+      params.conversationId,
+      params.memberId,
+    );
+  }
+
+  @Patch(':conversationId/members/:memberId/role')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Promote or demote a group member' })
+  @ApiBody({
+    schema: { $ref: getSchemaPath(UpdateGroupMemberRoleDto) },
+    examples: {
+      default: {
+        summary: 'Promote a member to admin',
+        value: { role: 'admin' },
+      },
+    },
+  })
+  @ApiOkResponse({ type: GroupConversationResponseDto })
+  @ApiBadRequestResponse({
+    description: 'The requested role is invalid.',
+  })
+  @ApiForbiddenResponse({
+    description: 'Only the group owner can change member roles.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'The group is inaccessible or the selected membership does not exist.',
+  })
+  @ApiConflictResponse({
+    description: 'The owner role can only change through ownership transfer.',
+  })
+  updateGroupMemberRole(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: GroupMemberParamsDto,
+    @Body() input: UpdateGroupMemberRoleDto,
+  ): Promise<GroupConversationResponseDto> {
+    return this.conversationsService.updateGroupMemberRole(
+      user.sub,
+      params.conversationId,
+      params.memberId,
+      input,
+    );
+  }
+
+  @Post(':conversationId/transfer-ownership')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Transfer ownership of a group conversation' })
+  @ApiBody({
+    schema: { $ref: getSchemaPath(TransferGroupOwnershipDto) },
+    examples: {
+      default: {
+        summary: 'Choose an existing member as the new owner',
+        value: { newOwnerId: PARTICIPANT_ID_EXAMPLE },
+      },
+    },
+  })
+  @ApiOkResponse({ type: GroupConversationResponseDto })
+  @ApiBadRequestResponse({
+    description: 'The owner must select another member.',
+  })
+  @ApiForbiddenResponse({
+    description: 'Only the current group owner can transfer ownership.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'The group is inaccessible or the selected membership does not exist.',
+  })
+  transferGroupOwnership(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationParamsDto,
+    @Body() input: TransferGroupOwnershipDto,
+  ): Promise<GroupConversationResponseDto> {
+    return this.conversationsService.transferGroupOwnership(
+      user.sub,
+      params.conversationId,
+      input,
+    );
+  }
+
+  @Post(':conversationId/leave')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Leave a group conversation' })
+  @ApiNoContentResponse({ description: 'The member left the group.' })
+  @ApiNotFoundResponse({
+    description:
+      'The group conversation is missing or the user is not a member.',
+  })
+  @ApiConflictResponse({
+    description: 'The owner must transfer ownership or delete the group.',
+  })
+  leaveGroup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationParamsDto,
+  ): Promise<void> {
+    return this.conversationsService.leaveGroup(
+      user.sub,
+      params.conversationId,
+    );
+  }
+
+  @Delete(':conversationId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete a group conversation' })
+  @ApiNoContentResponse({ description: 'The group was deleted.' })
+  @ApiForbiddenResponse({
+    description: 'Only the group owner can delete the group.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'The group conversation is missing or the user is not a member.',
+  })
+  deleteGroup(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationParamsDto,
+  ): Promise<void> {
+    return this.conversationsService.deleteGroup(
+      user.sub,
+      params.conversationId,
+    );
   }
 
   @Get()

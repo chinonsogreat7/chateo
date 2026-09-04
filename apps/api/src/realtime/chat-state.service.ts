@@ -2,7 +2,10 @@ import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import type { Socket } from 'socket.io';
 import { AuthRepository } from '../auth/auth.repository';
 import { Clock } from '../auth/providers/clock';
-import { RealtimeConversationsRepository } from './realtime-conversations.repository';
+import {
+  RealtimeConversationsRepository,
+  type RealtimeConversationAccess,
+} from './realtime-conversations.repository';
 import {
   PRESENCE_CHANGED_EVENT,
   REALTIME_AUTH_ERROR_CODE,
@@ -72,6 +75,10 @@ export class ChatStateService implements OnModuleDestroy {
     Set<string>
   >();
   private readonly offlineTimersByUser = new Map<string, NodeJS.Timeout>();
+  private readonly conversationAccessRefreshes = new Map<
+    string,
+    Promise<void>
+  >();
   private readonly sessionSweepTimer: NodeJS.Timeout;
 
   constructor(
@@ -118,6 +125,135 @@ export class ChatStateService implements OnModuleDestroy {
         'online',
       ).catch(() => undefined);
     }
+  }
+
+  async refreshConversationAccess(conversationId: string): Promise<void> {
+    const normalizedConversationId = conversationId.toLowerCase();
+    const previous = this.conversationAccessRefreshes.get(
+      normalizedConversationId,
+    );
+    const refresh = (previous ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.refreshConversationAccessNow(normalizedConversationId));
+    this.conversationAccessRefreshes.set(normalizedConversationId, refresh);
+
+    try {
+      await refresh;
+    } finally {
+      if (
+        this.conversationAccessRefreshes.get(normalizedConversationId) ===
+        refresh
+      ) {
+        this.conversationAccessRefreshes.delete(normalizedConversationId);
+      }
+    }
+  }
+
+  private async refreshConversationAccessNow(
+    normalizedConversationId: string,
+  ): Promise<void> {
+    const candidates = [...this.clients.entries()].filter(([, state]) =>
+      Boolean(
+        state.subscriptions.has(normalizedConversationId) ||
+          state.typing.has(normalizedConversationId),
+      ),
+    );
+    let suppliedParticipantIds: string[];
+    try {
+      suppliedParticipantIds =
+        (await this.conversations.findGroupParticipantIds(
+          normalizedConversationId,
+        )) ?? [];
+    } catch {
+      suppliedParticipantIds = [];
+    }
+    const suppliedParticipantIdSet = new Set(suppliedParticipantIds);
+    const sessionCheckNow = this.clock.now();
+    let activeSessionIds: ReadonlySet<string>;
+    try {
+      const sessions = candidates.flatMap(([socketId, state]) => {
+        const target = this.findLocalSocket(socketId);
+        return target && this.isCurrentClientState(target, state)
+          ? [
+              {
+                sessionId: target.data.sessionId,
+                userId: target.data.userId,
+              },
+            ]
+          : [];
+      });
+      activeSessionIds = new Set(
+        await this.authRepository.findActiveSessionIds(
+          sessions,
+          sessionCheckNow,
+        ),
+      );
+    } catch {
+      activeSessionIds = new Set();
+    }
+    const findAccess = (
+      userId: string,
+    ): Promise<RealtimeConversationAccess | null> => {
+      return Promise.resolve(
+        suppliedParticipantIdSet.has(userId)
+          ? {
+              conversationId: normalizedConversationId,
+              participantIds: suppliedParticipantIds,
+            }
+          : null,
+      );
+    };
+
+    await Promise.all(
+      candidates.map(async ([socketId, state]) => {
+        const target = this.findLocalSocket(socketId);
+        if (!target || !this.isCurrentClientState(target, state)) return;
+
+        const access = await this.authorize(
+          target,
+          normalizedConversationId,
+          () => findAccess(target.data.userId),
+          activeSessionIds,
+        );
+        if (!access.ok) {
+          await this.removeCachedConversationAccess(
+            target,
+            state,
+            normalizedConversationId,
+          );
+          return;
+        }
+        if (!this.isCurrentClientState(target, state)) return;
+
+        const previousSubscription = state.subscriptions.get(
+          normalizedConversationId,
+        );
+        if (previousSubscription) {
+          state.subscriptions.set(normalizedConversationId, {
+            participantIds: access.participantIds,
+          });
+
+          const previousParticipantIds = new Set(
+            previousSubscription.participantIds,
+          );
+          const newlyVisibleParticipantIds = access.participantIds.filter(
+            (userId) => !previousParticipantIds.has(userId),
+          );
+          const occurredAt = this.clock.now().toISOString();
+          for (const userId of newlyVisibleParticipantIds) {
+            if (!this.isCurrentClientState(target, state)) return;
+            target.emit(PRESENCE_CHANGED_EVENT, {
+              conversationId: normalizedConversationId,
+              userId,
+              status: this.isUserOnline(userId) ? 'online' : 'offline',
+              occurredAt,
+            });
+          }
+        }
+        const typing = state.typing.get(normalizedConversationId);
+        if (typing) typing.participantIds = access.participantIds;
+      }),
+    );
   }
 
   async subscribe(
@@ -315,6 +451,8 @@ export class ChatStateService implements OnModuleDestroy {
   private async authorize(
     client: AuthenticatedChatSocket,
     conversationId: string,
+    conversationLookup?: () => Promise<RealtimeConversationAccess | null>,
+    activeSessionIds?: ReadonlySet<string>,
   ): Promise<
     | { ok: true; participantIds: string[] }
     | { ok: false; error: RealtimeAck<never> }
@@ -326,19 +464,22 @@ export class ChatStateService implements OnModuleDestroy {
     }
 
     try {
-      const active = await this.authRepository.isSessionActive(
-        client.data.sessionId,
-        client.data.userId,
-        now,
-      );
+      const active = activeSessionIds
+        ? activeSessionIds.has(client.data.sessionId)
+        : await this.authRepository.isSessionActive(
+            client.data.sessionId,
+            client.data.userId,
+            now,
+          );
       if (!active) {
         client.disconnect(true);
         return { ok: false, error: authError() };
       }
-      const conversation = await this.conversations.findAccessibleConversation(
-        conversationId,
-        client.data.userId,
-      );
+      const conversation = await (conversationLookup?.() ??
+        this.conversations.findAccessibleConversation(
+          conversationId,
+          client.data.userId,
+        ));
       if (!conversation) {
         return { ok: false, error: conversationError() };
       }

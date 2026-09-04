@@ -22,7 +22,6 @@ import { ConversationSettingsRepository } from '../src/conversation-settings/con
 import { ConversationSettingsService } from '../src/conversation-settings/conversation-settings.service';
 import { ConversationEventsPublisher } from '../src/conversations/conversation-events.publisher';
 import { ConversationsController } from '../src/conversations/conversations.controller';
-import { ConversationsRepository } from '../src/conversations/conversations.repository';
 import { ConversationsService } from '../src/conversations/conversations.service';
 
 const NOW = new Date('2026-09-03T12:00:00.000Z');
@@ -30,6 +29,61 @@ const USER_ID = '11111111-1111-4111-8111-111111111111';
 const TARGET_ID = '22222222-2222-4222-8222-222222222222';
 const SECOND_TARGET_ID = '55555555-5555-4555-8555-555555555555';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
+
+const GROUP_RESPONSE = {
+  id: CONVERSATION_ID,
+  type: 'group' as const,
+  name: 'Study Group',
+  avatarUrl: null,
+  participants: [
+    {
+      id: USER_ID,
+      displayName: 'Teacher',
+      avatarUrl: null,
+      role: 'owner' as const,
+    },
+    {
+      id: TARGET_ID,
+      displayName: 'Ada Okafor',
+      avatarUrl: null,
+      role: 'member' as const,
+    },
+    {
+      id: SECOND_TARGET_ID,
+      displayName: 'Tunde Bello',
+      avatarUrl: null,
+      role: 'member' as const,
+    },
+  ],
+  role: 'owner' as const,
+  latestMessage: null,
+  unreadCount: 0,
+  settings: {
+    archived: false,
+    muted: false,
+    pinned: false,
+    archivedAt: null,
+    mutedAt: null,
+    pinnedAt: null,
+  },
+  lastActivityAt: NOW.toISOString(),
+  createdAt: NOW.toISOString(),
+  updatedAt: NOW.toISOString(),
+};
+
+interface ConversationsServiceDouble {
+  createDirect: jest.Mock;
+  createGroup: jest.Mock;
+  list: jest.Mock;
+  get: jest.Mock;
+  updateGroup: jest.Mock;
+  addGroupMembers: jest.Mock;
+  removeGroupMember: jest.Mock;
+  updateGroupMemberRole: jest.Mock;
+  transferGroupOwnership: jest.Mock;
+  leaveGroup: jest.Mock;
+  deleteGroup: jest.Mock;
+}
 
 @Injectable()
 class TestBearerGuard implements CanActivate {
@@ -55,7 +109,7 @@ describe('Chat management API (e2e, in memory)', () => {
   let app: INestApplication;
   let blocks: jest.Mocked<BlocksRepository>;
   let settings: jest.Mocked<ConversationSettingsRepository>;
-  let conversations: jest.Mocked<ConversationsRepository>;
+  let conversationsService: ConversationsServiceDouble;
 
   beforeEach(async () => {
     blocks = {
@@ -95,49 +149,23 @@ describe('Chat management API (e2e, in memory)', () => {
         },
       }),
     };
-    conversations = {
-      createOrGetDirect: jest.fn(),
-      createGroup: jest.fn().mockResolvedValue({
-        status: 'created',
-        conversation: {
-          id: CONVERSATION_ID,
-          type: 'GROUP',
-          name: 'Study Group',
-          avatarUrl: null,
-          participants: [
-            {
-              id: USER_ID,
-              displayName: 'Teacher',
-              avatarUrl: null,
-              role: 'OWNER',
-            },
-            {
-              id: TARGET_ID,
-              displayName: 'Ada Okafor',
-              avatarUrl: null,
-              role: 'MEMBER',
-            },
-            {
-              id: SECOND_TARGET_ID,
-              displayName: 'Tunde Bello',
-              avatarUrl: null,
-              role: 'MEMBER',
-            },
-          ],
-          role: 'OWNER',
-          latestMessage: null,
-          unreadCount: 0,
-          lastActivityAt: NOW,
-          createdAt: NOW,
-          updatedAt: NOW,
-        },
-      }),
-      listForUser: jest.fn(),
-      findForUser: jest.fn(),
+    conversationsService = {
+      createDirect: jest.fn(),
+      createGroup: jest.fn().mockResolvedValue(GROUP_RESPONSE),
+      list: jest.fn(),
+      get: jest.fn(),
+      updateGroup: jest.fn().mockResolvedValue(GROUP_RESPONSE),
+      addGroupMembers: jest.fn().mockResolvedValue(GROUP_RESPONSE),
+      removeGroupMember: jest.fn().mockResolvedValue(undefined),
+      updateGroupMemberRole: jest.fn().mockResolvedValue(GROUP_RESPONSE),
+      transferGroupOwnership: jest.fn().mockResolvedValue(GROUP_RESPONSE),
+      leaveGroup: jest.fn().mockResolvedValue(undefined),
+      deleteGroup: jest.fn().mockResolvedValue(undefined),
     };
     const events: jest.Mocked<ConversationEventsPublisher> = {
       publishCreated: jest.fn().mockResolvedValue(undefined),
       publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
+      publishGroupChanged: jest.fn().mockResolvedValue(undefined),
     };
     const clock: Clock = { now: jest.fn().mockReturnValue(NOW) };
 
@@ -150,11 +178,13 @@ describe('Chat management API (e2e, in memory)', () => {
       providers: [
         BlocksService,
         ConversationSettingsService,
-        ConversationsService,
+        {
+          provide: ConversationsService,
+          useValue: conversationsService as unknown as ConversationsService,
+        },
         NoStoreInterceptor,
         { provide: BlocksRepository, useValue: blocks },
         { provide: ConversationSettingsRepository, useValue: settings },
-        { provide: ConversationsRepository, useValue: conversations },
         { provide: ConversationEventsPublisher, useValue: events },
         { provide: Clock, useValue: clock },
         { provide: APP_GUARD, useClass: TestBearerGuard },
@@ -188,6 +218,31 @@ describe('Chat management API (e2e, in memory)', () => {
     await request(app.getHttpServer())
       .post('/v1/conversations/group')
       .send({ name: 'Study Group', participantIds: [TARGET_ID] })
+      .expect(401);
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}`)
+      .send({ name: 'Project Team' })
+      .expect(401);
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/members`)
+      .send({ participantIds: [TARGET_ID] })
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/members/${TARGET_ID}`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}/members/${TARGET_ID}/role`)
+      .send({ role: 'admin' })
+      .expect(401);
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/transfer-ownership`)
+      .send({ newOwnerId: TARGET_ID })
+      .expect(401);
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/leave`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}`)
       .expect(401);
   });
 
@@ -265,12 +320,130 @@ describe('Chat management API (e2e, in memory)', () => {
       role: 'owner',
       settings: { archived: false, muted: false, pinned: false },
     });
-    expect(conversations.createGroup).toHaveBeenCalledWith({
-      creatorId: USER_ID,
+    expect(conversationsService.createGroup).toHaveBeenCalledWith(USER_ID, {
       name: 'Study Group',
-      avatarUrl: null,
       participantIds: [TARGET_ID, SECOND_TARGET_ID],
-      now: NOW,
     });
+  });
+
+  it('routes the complete group lifecycle with validated and transformed input', async () => {
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}`)
+      .set('Authorization', 'Bearer classroom-token')
+      .send({ name: '  Project Team  ', avatarUrl: null })
+      .expect(HttpStatus.OK)
+      .expect('Cache-Control', 'no-store');
+    expect(conversationsService.updateGroup).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+      { name: 'Project Team', avatarUrl: null },
+    );
+
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/members`)
+      .set('Authorization', 'Bearer classroom-token')
+      .send({ participantIds: [TARGET_ID, SECOND_TARGET_ID] })
+      .expect(HttpStatus.OK);
+    expect(conversationsService.addGroupMembers).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+      { participantIds: [TARGET_ID, SECOND_TARGET_ID] },
+    );
+
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/members/${TARGET_ID}`)
+      .set('Authorization', 'Bearer classroom-token')
+      .expect(HttpStatus.NO_CONTENT);
+    expect(conversationsService.removeGroupMember).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+      TARGET_ID,
+    );
+
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}/members/${TARGET_ID}/role`)
+      .set('Authorization', 'Bearer classroom-token')
+      .send({ role: 'admin' })
+      .expect(HttpStatus.OK);
+    expect(conversationsService.updateGroupMemberRole).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+      TARGET_ID,
+      { role: 'admin' },
+    );
+
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/transfer-ownership`)
+      .set('Authorization', 'Bearer classroom-token')
+      .send({ newOwnerId: TARGET_ID })
+      .expect(HttpStatus.OK);
+    expect(conversationsService.transferGroupOwnership).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+      { newOwnerId: TARGET_ID },
+    );
+
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/leave`)
+      .set('Authorization', 'Bearer classroom-token')
+      .expect(HttpStatus.NO_CONTENT);
+    expect(conversationsService.leaveGroup).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+    );
+
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}`)
+      .set('Authorization', 'Bearer classroom-token')
+      .expect(HttpStatus.NO_CONTENT);
+    expect(conversationsService.deleteGroup).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+    );
+  });
+
+  it('rejects malformed group lifecycle payloads and path parameters', async () => {
+    const authorization = { Authorization: 'Bearer classroom-token' };
+
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}`)
+      .set(authorization)
+      .send({ name: '   ' })
+      .expect(HttpStatus.BAD_REQUEST);
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}`)
+      .set(authorization)
+      .send({ avatarUrl: 'not-a-url' })
+      .expect(HttpStatus.BAD_REQUEST);
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/members`)
+      .set(authorization)
+      .send({ participantIds: [TARGET_ID, TARGET_ID] })
+      .expect(HttpStatus.BAD_REQUEST);
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}/members/${TARGET_ID}/role`)
+      .set(authorization)
+      .send({ role: 'owner' })
+      .expect(HttpStatus.BAD_REQUEST);
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/transfer-ownership`)
+      .set(authorization)
+      .send({ newOwnerId: 'not-a-uuid' })
+      .expect(HttpStatus.BAD_REQUEST);
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/members/not-a-uuid`)
+      .set(authorization)
+      .expect(HttpStatus.BAD_REQUEST);
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}`)
+      .set(authorization)
+      .send({ name: 'Project Team', unsupported: true })
+      .expect(HttpStatus.BAD_REQUEST);
+
+    expect(conversationsService.updateGroup).not.toHaveBeenCalled();
+    expect(conversationsService.addGroupMembers).not.toHaveBeenCalled();
+    expect(conversationsService.updateGroupMemberRole).not.toHaveBeenCalled();
+    expect(conversationsService.transferGroupOwnership).not.toHaveBeenCalled();
+    expect(conversationsService.removeGroupMember).not.toHaveBeenCalled();
   });
 });

@@ -12,6 +12,11 @@ import type {
   UpdateProfileInput,
 } from './auth.types';
 
+export interface AuthSessionIdentity {
+  sessionId: string;
+  userId: string;
+}
+
 export abstract class AuthRepository {
   abstract getLatestOtpChallenge(
     phoneNumber: string,
@@ -72,6 +77,11 @@ export abstract class AuthRepository {
     userId: string,
     now: Date,
   ): Promise<boolean>;
+
+  abstract findActiveSessionIds(
+    sessions: readonly AuthSessionIdentity[],
+    now: Date,
+  ): Promise<string[]>;
 
   abstract findUserById(id: string): Promise<AuthUserRecord | null>;
 

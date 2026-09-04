@@ -155,6 +155,32 @@ describe('OpenAPI request examples', () => {
     },
     {
       method: 'patch',
+      path: '/v1/conversations/{conversationId}',
+      schemaName: 'UpdateGroupConversationDto',
+      payload: { name: 'Project Team', avatarUrl: null },
+    },
+    {
+      method: 'post',
+      path: '/v1/conversations/{conversationId}/members',
+      schemaName: 'AddGroupMembersDto',
+      payload: {
+        participantIds: [GROUP_PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+      },
+    },
+    {
+      method: 'patch',
+      path: '/v1/conversations/{conversationId}/members/{memberId}/role',
+      schemaName: 'UpdateGroupMemberRoleDto',
+      payload: { role: 'admin' },
+    },
+    {
+      method: 'post',
+      path: '/v1/conversations/{conversationId}/transfer-ownership',
+      schemaName: 'TransferGroupOwnershipDto',
+      payload: { newOwnerId: PARTICIPANT_ID },
+    },
+    {
+      method: 'patch',
       path: '/v1/conversations/{conversationId}/settings',
       schemaName: 'UpdateConversationSettingsDto',
       payload: { archived: true, muted: false, pinned: true },
@@ -192,9 +218,15 @@ describe('OpenAPI request examples', () => {
       }
 
       const media = requestBody.content['application/json'];
-      expect(media?.schema).toEqual({
-        $ref: `#/components/schemas/${schemaName}`,
-      });
+      const schemaRef = { $ref: `#/components/schemas/${schemaName}` };
+      if (method === 'patch' && path === '/v1/conversations/{conversationId}') {
+        expect(media?.schema).toEqual({
+          minProperties: 1,
+          allOf: [schemaRef],
+        });
+      } else {
+        expect(media?.schema).toEqual(schemaRef);
+      }
 
       const example = media?.examples?.default;
       expect(example).toBeDefined();
@@ -343,6 +375,13 @@ describe('OpenAPI request examples', () => {
     ['/v1/conversations/group', 'post'],
     ['/v1/conversations', 'get'],
     ['/v1/conversations/{conversationId}', 'get'],
+    ['/v1/conversations/{conversationId}', 'patch'],
+    ['/v1/conversations/{conversationId}', 'delete'],
+    ['/v1/conversations/{conversationId}/members', 'post'],
+    ['/v1/conversations/{conversationId}/members/{memberId}', 'delete'],
+    ['/v1/conversations/{conversationId}/members/{memberId}/role', 'patch'],
+    ['/v1/conversations/{conversationId}/transfer-ownership', 'post'],
+    ['/v1/conversations/{conversationId}/leave', 'post'],
     ['/v1/conversations/{conversationId}/settings', 'patch'],
     ['/v1/conversations/{conversationId}/messages', 'post'],
     ['/v1/conversations/{conversationId}/messages', 'get'],
@@ -426,6 +465,127 @@ describe('OpenAPI request examples', () => {
       schema: { type: 'boolean', default: false },
     });
   });
+
+  it('documents group lifecycle success responses and schemas', () => {
+    for (const [path, method] of [
+      ['/v1/conversations/{conversationId}', 'patch'],
+      ['/v1/conversations/{conversationId}/members', 'post'],
+      ['/v1/conversations/{conversationId}/members/{memberId}/role', 'patch'],
+      ['/v1/conversations/{conversationId}/transfer-ownership', 'post'],
+    ] as const) {
+      const response = document.paths[path]?.[method]?.responses?.['200'];
+      if (!response || '$ref' in response) {
+        throw new Error(
+          `Missing inline success response for ${method} ${path}`,
+        );
+      }
+      expect(response.content?.['application/json']?.schema).toEqual({
+        $ref: '#/components/schemas/GroupConversationResponseDto',
+      });
+    }
+
+    for (const [path, method] of [
+      ['/v1/conversations/{conversationId}/members/{memberId}', 'delete'],
+      ['/v1/conversations/{conversationId}/leave', 'post'],
+      ['/v1/conversations/{conversationId}', 'delete'],
+    ] as const) {
+      expect(document.paths[path]?.[method]?.responses?.['204']).toBeDefined();
+    }
+  });
+
+  it.each([
+    [
+      '/v1/conversations/{conversationId}',
+      'patch',
+      ['200', '400', '403', '404'],
+    ],
+    [
+      '/v1/conversations/{conversationId}/members',
+      'post',
+      ['200', '400', '403', '404', '409'],
+    ],
+    [
+      '/v1/conversations/{conversationId}/members/{memberId}',
+      'delete',
+      ['204', '400', '403', '404', '409'],
+    ],
+    [
+      '/v1/conversations/{conversationId}/members/{memberId}/role',
+      'patch',
+      ['200', '400', '403', '404', '409'],
+    ],
+    [
+      '/v1/conversations/{conversationId}/transfer-ownership',
+      'post',
+      ['200', '400', '403', '404'],
+    ],
+    ['/v1/conversations/{conversationId}/leave', 'post', ['204', '404', '409']],
+    ['/v1/conversations/{conversationId}', 'delete', ['204', '403', '404']],
+  ] as const)(
+    '%s documents its group lifecycle status outcomes',
+    (path, method, expectedStatuses) => {
+      expect(
+        Object.keys(document.paths[path]?.[method]?.responses ?? {}),
+      ).toEqual(expect.arrayContaining([...expectedStatuses]));
+    },
+  );
+
+  it('documents nullable group avatar removal and assignable member roles', () => {
+    expect(
+      document.components?.schemas?.UpdateGroupConversationDto,
+    ).toMatchObject({
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 100 },
+        avatarUrl: { type: 'string', nullable: true, format: 'uri' },
+      },
+    });
+    expect(
+      document.components?.schemas?.UpdateGroupMemberRoleDto,
+    ).toMatchObject({
+      required: ['role'],
+      properties: {
+        role: { type: 'string', enum: ['admin', 'member'] },
+      },
+    });
+  });
+
+  it.each([
+    ['/v1/conversations/{conversationId}', 'patch', ['conversationId']],
+    ['/v1/conversations/{conversationId}/members', 'post', ['conversationId']],
+    [
+      '/v1/conversations/{conversationId}/members/{memberId}',
+      'delete',
+      ['conversationId', 'memberId'],
+    ],
+    [
+      '/v1/conversations/{conversationId}/members/{memberId}/role',
+      'patch',
+      ['conversationId', 'memberId'],
+    ],
+    [
+      '/v1/conversations/{conversationId}/transfer-ownership',
+      'post',
+      ['conversationId'],
+    ],
+    ['/v1/conversations/{conversationId}/leave', 'post', ['conversationId']],
+    ['/v1/conversations/{conversationId}', 'delete', ['conversationId']],
+  ] as const)(
+    '%s documents UUID path parameters',
+    (path, method, expectedNames) => {
+      const parameters = document.paths[path]?.[method]?.parameters ?? [];
+      for (const name of expectedNames) {
+        const parameter = parameters.find(
+          (candidate) => !('$ref' in candidate) && candidate.name === name,
+        );
+        expect(parameter).toMatchObject({
+          in: 'path',
+          name,
+          required: true,
+          schema: { format: 'uuid', type: 'string' },
+        });
+      }
+    },
+  );
 
   it.each([
     ['/v1/conversations/{conversationId}/receipts/delivered', 'put'],

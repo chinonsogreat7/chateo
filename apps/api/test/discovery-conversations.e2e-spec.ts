@@ -205,6 +205,7 @@ describe('Discovery and direct conversations API (e2e, in memory)', () => {
           useValue: {
             publishCreated: jest.fn(),
             publishSettingsUpdated: jest.fn(),
+            publishGroupChanged: jest.fn(),
           },
         },
         { provide: Clock, useValue: clock },

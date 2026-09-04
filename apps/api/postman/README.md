@@ -79,18 +79,24 @@ All UUIDs and timestamps below are examples. Actual values and participant
 ordering depend on the accounts, conversation, and server time used for the
 test.
 
-Open **Events**, add each server event below, and select **Listen** for all eight:
+Open **Events**, add each server event below, and select **Listen** for all 14:
 
-| Event                           | When it is received                                                |
-| ------------------------------- | ------------------------------------------------------------------ |
-| `conversation.created`          | The user is added to a new direct or group conversation            |
-| `conversation.settings.updated` | Archive, mute, or pin state changes on another user device         |
-| `message.created`               | A member persists a new message through the REST API               |
-| `receipt.delivered`             | A participant advances the durable delivered frontier through REST |
-| `receipt.read`                  | A participant advances the durable read frontier through REST      |
-| `presence.changed`              | A subscribed participant changes between online and offline        |
-| `typing.started`                | Another subscribed participant starts or refreshes typing          |
-| `typing.stopped`                | Another subscribed participant stops typing or its timer expires   |
+| Event                              | When it is received                                                |
+| ---------------------------------- | ------------------------------------------------------------------ |
+| `conversation.created`             | The user is added to a new direct or group conversation            |
+| `conversation.settings.updated`    | Archive, mute, or pin state changes on another user device         |
+| `conversation.metadata.updated`    | A group name or avatar changes                                     |
+| `conversation.members.added`       | One or more users join a group                                     |
+| `conversation.member.removed`      | A user is removed from or leaves a group                           |
+| `conversation.member.role.updated` | A group member is promoted or demoted                              |
+| `conversation.owner.transferred`   | Group ownership moves to another member                            |
+| `conversation.deleted`             | An owner permanently deletes a group                               |
+| `message.created`                  | A member persists a new message through the REST API               |
+| `receipt.delivered`                | A participant advances the durable delivered frontier through REST |
+| `receipt.read`                     | A participant advances the durable read frontier through REST      |
+| `presence.changed`                 | A subscribed participant changes between online and offline        |
+| `typing.started`                   | Another subscribed participant starts or refreshes typing          |
+| `typing.stopped`                   | Another subscribed participant stops typing or its timer expires   |
 
 ### `conversation.created`
 
@@ -120,6 +126,45 @@ Open **Events**, add each server event below, and select **Listen** for all eigh
 
 This event is emitted only when the persisted state changes. Repeating an
 identical settings PATCH produces no duplicate event.
+
+### Group lifecycle events
+
+Every group event includes `conversationId`, the acting `actorId`, and
+`occurredAt`. Use it as a signal to refetch the caller-specific conversation
+through REST. Examples of the event-specific fields are:
+
+```json
+{
+  "conversation.metadata.updated": {
+    "name": "Project Team",
+    "avatarUrl": null
+  },
+  "conversation.members.added": {
+    "memberIds": ["7d444840-9dc0-41d1-b245-5ffdce74fad2"]
+  },
+  "conversation.member.removed": {
+    "memberId": "7d444840-9dc0-41d1-b245-5ffdce74fad2",
+    "reason": "removed"
+  },
+  "conversation.member.role.updated": {
+    "memberId": "7d444840-9dc0-41d1-b245-5ffdce74fad2",
+    "role": "admin"
+  },
+  "conversation.owner.transferred": {
+    "previousOwnerId": "956d3268-0f92-4bc1-a2bb-9c4768ee11ee",
+    "newOwnerId": "7d444840-9dc0-41d1-b245-5ffdce74fad2"
+  },
+  "conversation.deleted": {}
+}
+```
+
+The object above is a compact field reference, not one combined server event.
+Postman displays each named event separately with the common fields alongside
+its listed fields. A removal event uses `reason: "left"` when the member leaves
+voluntarily. Removed members receive their final removal event, and every
+pre-delete member receives the deletion event. Existing presence subscribers
+also receive the added member's current `presence.changed` status immediately
+after `conversation.members.added`.
 
 ### `message.created`
 

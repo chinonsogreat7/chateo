@@ -21,6 +21,7 @@ function createService() {
   const eventsPublisher: jest.Mocked<ConversationEventsPublisher> = {
     publishCreated: jest.fn().mockResolvedValue(undefined),
     publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
+    publishGroupChanged: jest.fn().mockResolvedValue(undefined),
   };
   return {
     repository,

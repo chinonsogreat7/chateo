@@ -2,6 +2,7 @@ import { AuthRepository } from '../auth/auth.repository';
 import { Clock } from '../auth/providers/clock';
 import type { MessageRecord } from '../messages/messages.types';
 import { ChatGateway } from './chat.gateway';
+import { RealtimeConversationsRepository } from './realtime-conversations.repository';
 import { RealtimeMessageEventsPublisher } from './realtime-message-events.publisher';
 import {
   MESSAGE_CREATED_EVENT,
@@ -12,11 +13,12 @@ import {
 const NOW = new Date('2026-08-12T12:00:00.000Z');
 const USER_ONE_ID = '11111111-1111-4111-8111-111111111111';
 const USER_TWO_ID = '22222222-2222-4222-8222-222222222222';
+const CONVERSATION_ID = '44444444-4444-4444-8444-444444444444';
 
 function message(overrides: Partial<MessageRecord> = {}): MessageRecord {
   return {
     id: '33333333-3333-4333-8333-333333333333',
-    conversationId: '44444444-4444-4444-8444-444444444444',
+    conversationId: CONVERSATION_ID,
     clientMessageId: '55555555-5555-4555-8555-555555555555',
     senderId: USER_ONE_ID,
     kind: 'TEXT',
@@ -40,12 +42,39 @@ function target(data: Partial<RealtimeSocketData>) {
 function createPublisher(sockets: RealtimeSocketTarget[]) {
   const findSocketsForUsers = jest.fn().mockResolvedValue(sockets);
   const isSessionActive = jest.fn();
+  const findActiveSessionIds = jest.fn(
+    async (
+      sessions: Array<{ sessionId: string; userId: string }>,
+      now: Date,
+    ) => {
+      const activeSessionIds: string[] = [];
+      for (const session of sessions) {
+        if (await isSessionActive(session.sessionId, session.userId, now)) {
+          activeSessionIds.push(session.sessionId);
+        }
+      }
+      return activeSessionIds;
+    },
+  );
+  const findAccessibleConversation = jest.fn().mockResolvedValue({
+    conversationId: CONVERSATION_ID,
+    participantIds: [USER_ONE_ID, USER_TWO_ID],
+  });
   const publisher = new RealtimeMessageEventsPublisher(
     { findSocketsForUsers } as unknown as ChatGateway,
-    { isSessionActive } as unknown as AuthRepository,
+    { findActiveSessionIds, isSessionActive } as unknown as AuthRepository,
+    {
+      findAccessibleConversation,
+    } as unknown as RealtimeConversationsRepository,
     { now: jest.fn().mockReturnValue(NOW) } as Clock,
   );
-  return { findSocketsForUsers, isSessionActive, publisher };
+  return {
+    findAccessibleConversation,
+    findActiveSessionIds,
+    findSocketsForUsers,
+    isSessionActive,
+    publisher,
+  };
 }
 
 describe('RealtimeMessageEventsPublisher', () => {
@@ -60,9 +89,12 @@ describe('RealtimeMessageEventsPublisher', () => {
       sessionId: 'session-two',
       tokenExpiresAt: NOW.getTime() + 60_000,
     });
-    const { findSocketsForUsers, isSessionActive, publisher } = createPublisher(
-      [first, second],
-    );
+    const {
+      findAccessibleConversation,
+      findSocketsForUsers,
+      isSessionActive,
+      publisher,
+    } = createPublisher([first, second]);
     isSessionActive.mockResolvedValue(true);
 
     await publisher.publishCreated(
@@ -75,7 +107,7 @@ describe('RealtimeMessageEventsPublisher', () => {
     ]);
     const expectedPayload = {
       id: '33333333-3333-4333-8333-333333333333',
-      conversationId: '44444444-4444-4444-8444-444444444444',
+      conversationId: CONVERSATION_ID,
       clientMessageId: '55555555-5555-4555-8555-555555555555',
       senderId: USER_ONE_ID,
       kind: 'text',
@@ -91,6 +123,11 @@ describe('RealtimeMessageEventsPublisher', () => {
       expectedPayload,
     );
     expect(expectedPayload).not.toHaveProperty('participantIds');
+    expect(findAccessibleConversation).toHaveBeenCalledTimes(1);
+    expect(findAccessibleConversation).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      USER_ONE_ID,
+    );
   });
 
   it('always includes the sender room for multi-device synchronization', async () => {
@@ -102,6 +139,39 @@ describe('RealtimeMessageEventsPublisher', () => {
       USER_TWO_ID,
       USER_ONE_ID,
     ]);
+  });
+
+  it('reuses one current-access lookup across a user multiple devices', async () => {
+    const first = target({
+      userId: USER_ONE_ID,
+      sessionId: 'session-one-a',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const second = target({
+      userId: USER_ONE_ID,
+      sessionId: 'session-one-b',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { findAccessibleConversation, isSessionActive, publisher } =
+      createPublisher([first, second]);
+    isSessionActive.mockResolvedValue(true);
+
+    await publisher.publishCreated(message());
+
+    expect(findAccessibleConversation).toHaveBeenCalledTimes(1);
+    expect(findAccessibleConversation).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      USER_ONE_ID,
+    );
+    expect(isSessionActive).toHaveBeenCalledTimes(2);
+    expect(first.emit).toHaveBeenCalledWith(
+      MESSAGE_CREATED_EVENT,
+      expect.objectContaining({ conversationId: CONVERSATION_ID }),
+    );
+    expect(second.emit).toHaveBeenCalledWith(
+      MESSAGE_CREATED_EVENT,
+      expect.objectContaining({ conversationId: CONVERSATION_ID }),
+    );
   });
 
   it('disconnects expired, revoked, and unverifiable sockets without emitting', async () => {
@@ -139,5 +209,45 @@ describe('RealtimeMessageEventsPublisher', () => {
       expect(socket.disconnect).toHaveBeenCalledWith(true);
     }
     expect(isSessionActive).toHaveBeenCalledTimes(2);
+  });
+
+  it('suppresses a socket that lost conversation membership before fan-out', async () => {
+    const removedMember = target({
+      userId: USER_TWO_ID,
+      sessionId: 'removed-member-session',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { findAccessibleConversation, isSessionActive, publisher } =
+      createPublisher([removedMember]);
+    isSessionActive.mockResolvedValue(true);
+    findAccessibleConversation.mockResolvedValue(null);
+
+    await publisher.publishCreated(message());
+
+    expect(findAccessibleConversation).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      USER_ONE_ID,
+    );
+    expect(removedMember.emit).not.toHaveBeenCalled();
+    expect(removedMember.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when current membership cannot be verified', async () => {
+    const socket = target({
+      userId: USER_TWO_ID,
+      sessionId: 'access-error-session',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { findAccessibleConversation, isSessionActive, publisher } =
+      createPublisher([socket]);
+    isSessionActive.mockResolvedValue(true);
+    findAccessibleConversation.mockRejectedValue(
+      new Error('database unavailable'),
+    );
+
+    await expect(publisher.publishCreated(message())).resolves.toBeUndefined();
+
+    expect(socket.emit).not.toHaveBeenCalled();
+    expect(socket.disconnect).not.toHaveBeenCalled();
   });
 });

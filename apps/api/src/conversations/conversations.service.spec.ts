@@ -72,6 +72,13 @@ function createService() {
   const repository: jest.Mocked<ConversationsRepository> = {
     createOrGetDirect: jest.fn(),
     createGroup: jest.fn(),
+    updateGroup: jest.fn(),
+    addGroupMembers: jest.fn(),
+    removeGroupMember: jest.fn(),
+    updateGroupMemberRole: jest.fn(),
+    transferGroupOwnership: jest.fn(),
+    leaveGroup: jest.fn(),
+    deleteGroup: jest.fn(),
     listForUser: jest.fn(),
     findForUser: jest.fn(),
   };
@@ -79,6 +86,7 @@ function createService() {
   const eventsPublisher: jest.Mocked<ConversationEventsPublisher> = {
     publishCreated: jest.fn().mockResolvedValue(undefined),
     publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
+    publishGroupChanged: jest.fn().mockResolvedValue(undefined),
   };
   return {
     repository,
@@ -307,6 +315,341 @@ describe('ConversationsService', () => {
       HttpStatus.NOT_FOUND,
       'USER_NOT_FOUND',
     );
+  });
+
+  it('updates group metadata and publishes the committed snapshot', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    const updated = groupConversation({
+      name: 'Project Team',
+      avatarUrl: 'https://example.com/groups/project.jpg',
+    });
+    repository.updateGroup.mockResolvedValue({
+      status: 'updated',
+      changed: true,
+      conversation: updated,
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID],
+    });
+
+    const response = await service.updateGroup(USER_ID, CONVERSATION_ID, {
+      name: '  Project Team  ',
+      avatarUrl: 'https://example.com/groups/project.jpg',
+    });
+
+    expect(repository.updateGroup).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      name: 'Project Team',
+      avatarUrl: 'https://example.com/groups/project.jpg',
+      now: NOW,
+    });
+    expect(response).toMatchObject({
+      type: 'group',
+      name: 'Project Team',
+      avatarUrl: 'https://example.com/groups/project.jpg',
+    });
+    expect(eventsPublisher.publishGroupChanged).toHaveBeenCalledWith({
+      kind: 'metadata-updated',
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      recipientIds: [USER_ID, PARTICIPANT_ID],
+      name: 'Project Team',
+      avatarUrl: 'https://example.com/groups/project.jpg',
+      occurredAt: NOW,
+    });
+  });
+
+  it('rejects an empty group metadata update and does not publish no-op changes', async () => {
+    const { repository, eventsPublisher, service } = createService();
+
+    await expectApiError(
+      service.updateGroup(USER_ID, CONVERSATION_ID, {}),
+      HttpStatus.BAD_REQUEST,
+      'CONVERSATION_GROUP_UPDATE_EMPTY',
+    );
+    expect(repository.updateGroup).not.toHaveBeenCalled();
+
+    repository.updateGroup.mockResolvedValue({
+      status: 'updated',
+      changed: false,
+      conversation: groupConversation(),
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID],
+    });
+    await service.updateGroup(USER_ID, CONVERSATION_ID, {
+      name: 'Study Group',
+    });
+    expect(eventsPublisher.publishGroupChanged).not.toHaveBeenCalled();
+  });
+
+  it('adds normalized group members and notifies the resulting roster', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.addGroupMembers.mockResolvedValue({
+      status: 'members-added',
+      conversation: groupConversation({
+        participants: [
+          ...groupConversation().participants,
+          {
+            id: SECOND_PARTICIPANT_ID,
+            displayName: 'Tunde Bello',
+            avatarUrl: null,
+            role: 'MEMBER',
+          },
+        ],
+      }),
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+    });
+
+    await service.addGroupMembers(USER_ID.toUpperCase(), CONVERSATION_ID, {
+      participantIds: [SECOND_PARTICIPANT_ID.toUpperCase()],
+    });
+
+    expect(repository.addGroupMembers).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      participantIds: [SECOND_PARTICIPANT_ID],
+      now: NOW,
+    });
+    expect(eventsPublisher.publishGroupChanged).toHaveBeenCalledWith({
+      kind: 'members-added',
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      recipientIds: [USER_ID, PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+      memberIds: [SECOND_PARTICIPANT_ID],
+      occurredAt: NOW,
+    });
+  });
+
+  it('returns a committed group write without waiting for socket delivery', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.addGroupMembers.mockResolvedValue({
+      status: 'members-added',
+      conversation: groupConversation(),
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
+    });
+    let finishDelivery: (() => void) | undefined;
+    eventsPublisher.publishGroupChanged.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishDelivery = resolve;
+      }),
+    );
+
+    const request = service.addGroupMembers(USER_ID, CONVERSATION_ID, {
+      participantIds: [SECOND_PARTICIPANT_ID],
+    });
+    const outcome = await Promise.race([
+      request.then(() => 'response'),
+      new Promise<'publisher-pending'>((resolve) => {
+        setImmediate(() => resolve('publisher-pending'));
+      }),
+    ]);
+    finishDelivery?.();
+
+    expect(outcome).toBe('response');
+    await expect(request).resolves.toMatchObject({
+      id: CONVERSATION_ID,
+      type: 'group',
+    });
+  });
+
+  it.each([
+    ['participant-not-found', HttpStatus.NOT_FOUND, 'USER_NOT_FOUND'],
+    [
+      'member-already-exists',
+      HttpStatus.CONFLICT,
+      'CONVERSATION_MEMBER_ALREADY_EXISTS',
+    ],
+    ['group-full', HttpStatus.CONFLICT, 'CONVERSATION_GROUP_FULL'],
+    ['forbidden', HttpStatus.FORBIDDEN, 'CONVERSATION_GROUP_PERMISSION_DENIED'],
+  ] as const)(
+    'maps add-member status %s to its public API error',
+    async (status, httpStatus, code) => {
+      const { repository, service } = createService();
+      repository.addGroupMembers.mockResolvedValue({ status });
+
+      await expectApiError(
+        service.addGroupMembers(USER_ID, CONVERSATION_ID, {
+          participantIds: [SECOND_PARTICIPANT_ID],
+        }),
+        httpStatus,
+        code,
+      );
+    },
+  );
+
+  it('removes a member and sends a tombstone to the previous roster', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.removeGroupMember.mockResolvedValue({
+      status: 'member-removed',
+      conversation: groupConversation({
+        participants: [groupConversation().participants[0]!],
+      }),
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID],
+    });
+
+    await service.removeGroupMember(USER_ID, CONVERSATION_ID, PARTICIPANT_ID);
+
+    expect(eventsPublisher.publishGroupChanged).toHaveBeenCalledWith({
+      kind: 'member-removed',
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      recipientIds: [USER_ID, PARTICIPANT_ID],
+      memberId: PARTICIPANT_ID,
+      reason: 'removed',
+      occurredAt: NOW,
+    });
+  });
+
+  it('requires the leave route for self-removal and protects the owner', async () => {
+    const { repository, service } = createService();
+
+    await expectApiError(
+      service.removeGroupMember(USER_ID, CONVERSATION_ID, USER_ID),
+      HttpStatus.BAD_REQUEST,
+      'CONVERSATION_MEMBER_SELF_REMOVE_NOT_ALLOWED',
+    );
+    expect(repository.removeGroupMember).not.toHaveBeenCalled();
+
+    repository.removeGroupMember.mockResolvedValue({
+      status: 'owner-protected',
+    });
+    await expectApiError(
+      service.removeGroupMember(USER_ID, CONVERSATION_ID, PARTICIPANT_ID),
+      HttpStatus.CONFLICT,
+      'CONVERSATION_OWNER_PROTECTED',
+    );
+  });
+
+  it('changes a member role idempotently and emits only on change', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    const promoted = groupConversation({
+      participants: [
+        groupConversation().participants[0]!,
+        { ...groupConversation().participants[1]!, role: 'ADMIN' },
+      ],
+    });
+    repository.updateGroupMemberRole.mockResolvedValueOnce({
+      status: 'role-updated',
+      changed: true,
+      conversation: promoted,
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID],
+    });
+
+    const response = await service.updateGroupMemberRole(
+      USER_ID,
+      CONVERSATION_ID,
+      PARTICIPANT_ID,
+      { role: 'admin' },
+    );
+    expect(response.participants[1]?.role).toBe('admin');
+    expect(eventsPublisher.publishGroupChanged).toHaveBeenCalledWith({
+      kind: 'member-role-updated',
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      recipientIds: [USER_ID, PARTICIPANT_ID],
+      memberId: PARTICIPANT_ID,
+      role: 'ADMIN',
+      occurredAt: NOW,
+    });
+
+    eventsPublisher.publishGroupChanged.mockClear();
+    repository.updateGroupMemberRole.mockResolvedValueOnce({
+      status: 'role-updated',
+      changed: false,
+      conversation: promoted,
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID],
+    });
+    await service.updateGroupMemberRole(
+      USER_ID,
+      CONVERSATION_ID,
+      PARTICIPANT_ID,
+      { role: 'admin' },
+    );
+    expect(eventsPublisher.publishGroupChanged).not.toHaveBeenCalled();
+  });
+
+  it('transfers ownership to another member and prevents a self-transfer', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    const transferred = groupConversation({
+      role: 'ADMIN',
+      participants: [
+        { ...groupConversation().participants[0]!, role: 'ADMIN' },
+        { ...groupConversation().participants[1]!, role: 'OWNER' },
+      ],
+    });
+    repository.transferGroupOwnership.mockResolvedValue({
+      status: 'ownership-transferred',
+      changed: true,
+      conversation: transferred,
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID],
+    });
+
+    const response = await service.transferGroupOwnership(
+      USER_ID,
+      CONVERSATION_ID,
+      { newOwnerId: PARTICIPANT_ID },
+    );
+    expect(response.role).toBe('admin');
+    expect(eventsPublisher.publishGroupChanged).toHaveBeenCalledWith({
+      kind: 'ownership-transferred',
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      recipientIds: [USER_ID, PARTICIPANT_ID],
+      previousOwnerId: USER_ID,
+      newOwnerId: PARTICIPANT_ID,
+      occurredAt: NOW,
+    });
+
+    await expectApiError(
+      service.transferGroupOwnership(USER_ID, CONVERSATION_ID, {
+        newOwnerId: USER_ID,
+      }),
+      HttpStatus.BAD_REQUEST,
+      'CONVERSATION_OWNER_TRANSFER_SELF_NOT_ALLOWED',
+    );
+  });
+
+  it('lets a non-owner leave, while requiring owners to transfer first', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.leaveGroup.mockResolvedValueOnce({
+      status: 'owner-transfer-required',
+    });
+    await expectApiError(
+      service.leaveGroup(USER_ID, CONVERSATION_ID),
+      HttpStatus.CONFLICT,
+      'CONVERSATION_OWNER_TRANSFER_REQUIRED',
+    );
+
+    repository.leaveGroup.mockResolvedValueOnce({
+      status: 'left',
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID],
+    });
+    await service.leaveGroup(PARTICIPANT_ID, CONVERSATION_ID);
+    expect(eventsPublisher.publishGroupChanged).toHaveBeenCalledWith({
+      kind: 'member-removed',
+      conversationId: CONVERSATION_ID,
+      actorId: PARTICIPANT_ID,
+      recipientIds: [USER_ID, PARTICIPANT_ID],
+      memberId: PARTICIPANT_ID,
+      reason: 'left',
+      occurredAt: NOW,
+    });
+  });
+
+  it('deletes an owned group and notifies its final roster', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.deleteGroup.mockResolvedValue({
+      status: 'deleted',
+      eventRecipientIds: [USER_ID, PARTICIPANT_ID],
+    });
+
+    await service.deleteGroup(USER_ID, CONVERSATION_ID);
+
+    expect(eventsPublisher.publishGroupChanged).toHaveBeenCalledWith({
+      kind: 'deleted',
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      recipientIds: [USER_ID, PARTICIPANT_ID],
+      occurredAt: NOW,
+    });
   });
 
   it('maps the persisted latest message and actor unread count', async () => {

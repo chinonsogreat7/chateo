@@ -17,7 +17,7 @@ and the project rubric in this workspace.
 - Registered-user search by display name without exposing phone numbers
 - Idempotent direct-conversation creation with membership-protected list/detail APIs
 - Per-user archive, mute, and pin settings with pinned-first conversation lists, plus idempotent user blocking
-- Group creation with owner/member roles and group-aware list/detail APIs
+- Complete group lifecycle APIs for metadata, members, admins, ownership, leaving, and deletion
 - Persistent, idempotent text-message sending and cursor-paginated history
 - Per-user unread counts, durable delivery/read receipts, and latest-message chat-list previews
 - Authenticated Socket.IO conversation, message, receipt, presence, and typing events on the `/chat` namespace
@@ -28,10 +28,8 @@ and the project rubric in this workspace.
 - Swagger/OpenAPI documentation in non-production environments
 - Development console OTP delivery and production Twilio SMS delivery
 
-Group scope currently covers creation and shared chat. Adding or removing
-members, changing admins, editing group metadata, and leaving a group remain
-future work. Mute is persisted as a per-user preference, but push notification
-delivery and mute-based notification filtering are not implemented yet.
+Mute is persisted as a per-user preference, but push notification delivery and
+mute-based notification filtering are not implemented yet.
 
 The SMS integration uses a console adapter in development and a Twilio API-key adapter in production.
 
@@ -64,10 +62,11 @@ docker compose -f apps/api/compose.yaml up -d
 npm run prisma:deploy --workspace @chateo/api
 ```
 
-The chat-management migration upgrades any legacy group that has members by
+The chat-management migrations upgrade any legacy group that has members by
 choosing its earliest member as owner and creator and assigning a stable
 placeholder name. It refuses to migrate an orphan group with no memberships so
-the data can be repaired explicitly before retrying.
+the data can be repaired explicitly before retrying. A follow-up ownership
+constraint refuses inconsistent historical groups and prevents multiple owners.
 
 Replace the two placeholder secrets in `apps/api/.env`. Generate independent values with:
 

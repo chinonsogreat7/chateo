@@ -10,6 +10,10 @@ import type {
   GroupConversationResponseDto,
 } from './dto/conversation-response.dto';
 import type { CreateGroupConversationDto } from './dto/create-group-conversation.dto';
+import type { AddGroupMembersDto } from './dto/add-group-members.dto';
+import type { TransferGroupOwnershipDto } from './dto/transfer-group-ownership.dto';
+import type { UpdateGroupConversationDto } from './dto/update-group-conversation.dto';
+import type { UpdateGroupMemberRoleDto } from './dto/update-group-member-role.dto';
 import type {
   ConversationPageCursor,
   ConversationRecord,
@@ -73,7 +77,7 @@ export class ConversationsService {
     }
 
     if (result.status === 'created') {
-      await this.publishCreatedBestEffort({
+      this.publishCreatedBestEffort({
         conversationId: result.conversation.id,
         type: 'DIRECT',
         participantIds: [normalizedUserId, normalizedParticipantId],
@@ -120,7 +124,7 @@ export class ConversationsService {
       );
     }
 
-    await this.publishCreatedBestEffort({
+    this.publishCreatedBestEffort({
       conversationId: result.conversation.id,
       type: 'GROUP',
       participantIds: result.conversation.participants.map(
@@ -132,14 +136,357 @@ export class ConversationsService {
     return this.toResponse(result.conversation);
   }
 
-  private async publishCreatedBestEffort(
-    event: Parameters<ConversationEventsPublisher['publishCreated']>[0],
+  async updateGroup(
+    actorId: string,
+    conversationId: string,
+    input: UpdateGroupConversationDto,
+  ): Promise<GroupConversationResponseDto> {
+    if (input.name === undefined && input.avatarUrl === undefined) {
+      throw new ApiException(
+        HttpStatus.BAD_REQUEST,
+        'CONVERSATION_GROUP_UPDATE_EMPTY',
+        'At least one group property must be supplied.',
+      );
+    }
+
+    const normalizedActorId = actorId.toLowerCase();
+    const now = this.clock.now();
+    const result = await this.repository.updateGroup({
+      conversationId: conversationId.toLowerCase(),
+      actorId: normalizedActorId,
+      ...(input.name === undefined ? {} : { name: input.name.trim() }),
+      ...(input.avatarUrl === undefined ? {} : { avatarUrl: input.avatarUrl }),
+      now,
+    });
+    if (result.status === 'conversation-not-found') {
+      throw this.notFoundException();
+    }
+    if (result.status === 'forbidden') {
+      throw this.groupForbiddenException();
+    }
+    if (result.status !== 'updated') {
+      throw new Error(`Unexpected group update status: ${result.status}`);
+    }
+
+    if (result.changed) {
+      this.publishGroupChangedBestEffort({
+        kind: 'metadata-updated',
+        conversationId: result.conversation.id,
+        actorId: normalizedActorId,
+        recipientIds: result.eventRecipientIds,
+        name: result.conversation.name,
+        avatarUrl: result.conversation.avatarUrl,
+        occurredAt: now,
+      });
+    }
+    return this.toResponse(result.conversation);
+  }
+
+  async addGroupMembers(
+    actorId: string,
+    conversationId: string,
+    input: AddGroupMembersDto,
+  ): Promise<GroupConversationResponseDto> {
+    const normalizedActorId = actorId.toLowerCase();
+    const participantIds = input.participantIds.map((participantId) =>
+      participantId.toLowerCase(),
+    );
+    const uniqueParticipantIds = new Set(participantIds);
+    if (
+      participantIds.length === 0 ||
+      participantIds.length > 99 ||
+      uniqueParticipantIds.size !== participantIds.length ||
+      uniqueParticipantIds.has(normalizedActorId)
+    ) {
+      throw new ApiException(
+        HttpStatus.BAD_REQUEST,
+        'CONVERSATION_GROUP_PARTICIPANTS_INVALID',
+        'Group participants must be unique and must not include the acting user.',
+      );
+    }
+
+    const now = this.clock.now();
+    const result = await this.repository.addGroupMembers({
+      conversationId: conversationId.toLowerCase(),
+      actorId: normalizedActorId,
+      participantIds,
+      now,
+    });
+    if (result.status === 'conversation-not-found') {
+      throw this.notFoundException();
+    }
+    if (result.status === 'forbidden') {
+      throw this.groupForbiddenException();
+    }
+    if (result.status === 'participant-not-found') {
+      throw new ApiException(
+        HttpStatus.NOT_FOUND,
+        'USER_NOT_FOUND',
+        'One or more selected users do not exist.',
+      );
+    }
+    if (result.status === 'member-already-exists') {
+      throw new ApiException(
+        HttpStatus.CONFLICT,
+        'CONVERSATION_MEMBER_ALREADY_EXISTS',
+        'One or more selected users are already group members.',
+      );
+    }
+    if (result.status === 'group-full') {
+      throw new ApiException(
+        HttpStatus.CONFLICT,
+        'CONVERSATION_GROUP_FULL',
+        'A group cannot contain more than 100 members.',
+      );
+    }
+    if (result.status !== 'members-added') {
+      throw new Error(`Unexpected add-members status: ${result.status}`);
+    }
+
+    this.publishGroupChangedBestEffort({
+      kind: 'members-added',
+      conversationId: result.conversation.id,
+      actorId: normalizedActorId,
+      recipientIds: result.eventRecipientIds,
+      memberIds: participantIds,
+      occurredAt: now,
+    });
+    return this.toResponse(result.conversation);
+  }
+
+  async removeGroupMember(
+    actorId: string,
+    conversationId: string,
+    memberId: string,
   ): Promise<void> {
+    const normalizedActorId = actorId.toLowerCase();
+    const normalizedMemberId = memberId.toLowerCase();
+    if (normalizedActorId === normalizedMemberId) {
+      throw new ApiException(
+        HttpStatus.BAD_REQUEST,
+        'CONVERSATION_MEMBER_SELF_REMOVE_NOT_ALLOWED',
+        'Use the leave endpoint to remove yourself from a group.',
+      );
+    }
+
+    const now = this.clock.now();
+    const result = await this.repository.removeGroupMember({
+      conversationId: conversationId.toLowerCase(),
+      actorId: normalizedActorId,
+      memberId: normalizedMemberId,
+      now,
+    });
+    if (result.status === 'conversation-not-found') {
+      throw this.notFoundException();
+    }
+    if (result.status === 'forbidden') {
+      throw this.groupForbiddenException();
+    }
+    if (result.status === 'member-not-found') {
+      throw this.memberNotFoundException();
+    }
+    if (result.status === 'owner-protected') {
+      throw this.ownerProtectedException();
+    }
+    if (result.status !== 'member-removed') {
+      throw new Error(`Unexpected remove-member status: ${result.status}`);
+    }
+
+    this.publishGroupChangedBestEffort({
+      kind: 'member-removed',
+      conversationId: result.conversation.id,
+      actorId: normalizedActorId,
+      recipientIds: result.eventRecipientIds,
+      memberId: normalizedMemberId,
+      reason: 'removed',
+      occurredAt: now,
+    });
+  }
+
+  async updateGroupMemberRole(
+    actorId: string,
+    conversationId: string,
+    memberId: string,
+    input: UpdateGroupMemberRoleDto,
+  ): Promise<GroupConversationResponseDto> {
+    const normalizedActorId = actorId.toLowerCase();
+    const normalizedMemberId = memberId.toLowerCase();
+    const now = this.clock.now();
+    const result = await this.repository.updateGroupMemberRole({
+      conversationId: conversationId.toLowerCase(),
+      actorId: normalizedActorId,
+      memberId: normalizedMemberId,
+      role: input.role === 'admin' ? 'ADMIN' : 'MEMBER',
+      now,
+    });
+    if (result.status === 'conversation-not-found') {
+      throw this.notFoundException();
+    }
+    if (result.status === 'forbidden') {
+      throw this.groupForbiddenException();
+    }
+    if (result.status === 'member-not-found') {
+      throw this.memberNotFoundException();
+    }
+    if (result.status === 'owner-protected') {
+      throw this.ownerProtectedException();
+    }
+    if (result.status !== 'role-updated') {
+      throw new Error(`Unexpected role-update status: ${result.status}`);
+    }
+
+    if (result.changed) {
+      this.publishGroupChangedBestEffort({
+        kind: 'member-role-updated',
+        conversationId: result.conversation.id,
+        actorId: normalizedActorId,
+        recipientIds: result.eventRecipientIds,
+        memberId: normalizedMemberId,
+        role: input.role === 'admin' ? 'ADMIN' : 'MEMBER',
+        occurredAt: now,
+      });
+    }
+    return this.toResponse(result.conversation);
+  }
+
+  async transferGroupOwnership(
+    actorId: string,
+    conversationId: string,
+    input: TransferGroupOwnershipDto,
+  ): Promise<GroupConversationResponseDto> {
+    const normalizedActorId = actorId.toLowerCase();
+    const normalizedNewOwnerId = input.newOwnerId.toLowerCase();
+    if (normalizedActorId === normalizedNewOwnerId) {
+      throw new ApiException(
+        HttpStatus.BAD_REQUEST,
+        'CONVERSATION_OWNER_TRANSFER_SELF_NOT_ALLOWED',
+        'Select another group member as the new owner.',
+      );
+    }
+
+    const now = this.clock.now();
+    const result = await this.repository.transferGroupOwnership({
+      conversationId: conversationId.toLowerCase(),
+      actorId: normalizedActorId,
+      memberId: normalizedNewOwnerId,
+      now,
+    });
+    if (result.status === 'conversation-not-found') {
+      throw this.notFoundException();
+    }
+    if (result.status === 'forbidden') {
+      throw this.groupForbiddenException();
+    }
+    if (result.status === 'member-not-found') {
+      throw this.memberNotFoundException();
+    }
+    if (result.status !== 'ownership-transferred') {
+      throw new Error(`Unexpected ownership status: ${result.status}`);
+    }
+
+    if (result.changed) {
+      this.publishGroupChangedBestEffort({
+        kind: 'ownership-transferred',
+        conversationId: result.conversation.id,
+        actorId: normalizedActorId,
+        recipientIds: result.eventRecipientIds,
+        previousOwnerId: normalizedActorId,
+        newOwnerId: normalizedNewOwnerId,
+        occurredAt: now,
+      });
+    }
+    return this.toResponse(result.conversation);
+  }
+
+  async leaveGroup(actorId: string, conversationId: string): Promise<void> {
+    const normalizedActorId = actorId.toLowerCase();
+    const now = this.clock.now();
+    const result = await this.repository.leaveGroup({
+      conversationId: conversationId.toLowerCase(),
+      actorId: normalizedActorId,
+      now,
+    });
+    if (result.status === 'conversation-not-found') {
+      throw this.notFoundException();
+    }
+    if (result.status === 'owner-transfer-required') {
+      throw new ApiException(
+        HttpStatus.CONFLICT,
+        'CONVERSATION_OWNER_TRANSFER_REQUIRED',
+        'Transfer ownership before leaving the group.',
+      );
+    }
+    if (result.status !== 'left') {
+      throw new Error(`Unexpected leave-group status: ${result.status}`);
+    }
+
+    this.publishGroupChangedBestEffort({
+      kind: 'member-removed',
+      conversationId: conversationId.toLowerCase(),
+      actorId: normalizedActorId,
+      recipientIds: result.eventRecipientIds,
+      memberId: normalizedActorId,
+      reason: 'left',
+      occurredAt: now,
+    });
+  }
+
+  async deleteGroup(actorId: string, conversationId: string): Promise<void> {
+    const normalizedActorId = actorId.toLowerCase();
+    const normalizedConversationId = conversationId.toLowerCase();
+    const now = this.clock.now();
+    const result = await this.repository.deleteGroup({
+      conversationId: normalizedConversationId,
+      actorId: normalizedActorId,
+      now,
+    });
+    if (result.status === 'conversation-not-found') {
+      throw this.notFoundException();
+    }
+    if (result.status === 'forbidden') {
+      throw this.groupForbiddenException();
+    }
+    if (result.status !== 'deleted') {
+      throw new Error(`Unexpected delete-group status: ${result.status}`);
+    }
+
+    this.publishGroupChangedBestEffort({
+      kind: 'deleted',
+      conversationId: normalizedConversationId,
+      actorId: normalizedActorId,
+      recipientIds: result.eventRecipientIds,
+      occurredAt: now,
+    });
+  }
+
+  private publishCreatedBestEffort(
+    event: Parameters<ConversationEventsPublisher['publishCreated']>[0],
+  ): void {
     try {
-      await this.eventsPublisher.publishCreated(event);
+      void this.eventsPublisher.publishCreated(event).catch(() => {
+        this.logger.warn(
+          `Failed to publish conversation.created for ${event.conversationId}`,
+        );
+      });
     } catch {
       this.logger.warn(
         `Failed to publish conversation.created for ${event.conversationId}`,
+      );
+    }
+  }
+
+  private publishGroupChangedBestEffort(
+    event: Parameters<ConversationEventsPublisher['publishGroupChanged']>[0],
+  ): void {
+    try {
+      void this.eventsPublisher.publishGroupChanged(event).catch(() => {
+        this.logger.warn(
+          `Failed to publish ${event.kind} for ${event.conversationId}`,
+        );
+      });
+    } catch {
+      this.logger.warn(
+        `Failed to publish ${event.kind} for ${event.conversationId}`,
       );
     }
   }
@@ -330,6 +677,30 @@ export class ConversationsService {
       HttpStatus.NOT_FOUND,
       'CONVERSATION_NOT_FOUND',
       'The conversation was not found.',
+    );
+  }
+
+  private groupForbiddenException(): ApiException {
+    return new ApiException(
+      HttpStatus.FORBIDDEN,
+      'CONVERSATION_GROUP_PERMISSION_DENIED',
+      'Your group role does not allow this action.',
+    );
+  }
+
+  private memberNotFoundException(): ApiException {
+    return new ApiException(
+      HttpStatus.NOT_FOUND,
+      'CONVERSATION_MEMBER_NOT_FOUND',
+      'The selected group member was not found.',
+    );
+  }
+
+  private ownerProtectedException(): ApiException {
+    return new ApiException(
+      HttpStatus.CONFLICT,
+      'CONVERSATION_OWNER_PROTECTED',
+      'The group owner must transfer ownership before this action.',
     );
   }
 }

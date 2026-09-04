@@ -13,6 +13,7 @@ const NOW = new Date('2026-08-12T12:00:00.000Z');
 const CONVERSATION_ID = '44444444-4444-4444-8444-444444444444';
 const USER_ONE_ID = '11111111-1111-4111-8111-111111111111';
 const USER_TWO_ID = '22222222-2222-4222-8222-222222222222';
+const USER_THREE_ID = '33333333-3333-4333-8333-333333333333';
 
 function socket(
   id: string,
@@ -37,16 +38,41 @@ function createService() {
     conversationId: CONVERSATION_ID,
     participantIds: [USER_ONE_ID, USER_TWO_ID],
   });
+  const findGroupParticipantIds = jest
+    .fn()
+    .mockResolvedValue([USER_ONE_ID, USER_TWO_ID]);
   const isSessionActive = jest.fn().mockResolvedValue(true);
+  const findActiveSessionIds = jest.fn(
+    async (
+      sessions: Array<{ sessionId: string; userId: string }>,
+      now: Date,
+    ) => {
+      const activeSessionIds: string[] = [];
+      for (const session of sessions) {
+        if (await isSessionActive(session.sessionId, session.userId, now)) {
+          activeSessionIds.push(session.sessionId);
+        }
+      }
+      return activeSessionIds;
+    },
+  );
   const now = jest.fn().mockReturnValue(NOW);
   const service = new ChatStateService(
     {
       findAccessibleConversation,
+      findGroupParticipantIds,
     } as unknown as RealtimeConversationsRepository,
-    { isSessionActive } as unknown as AuthRepository,
+    { findActiveSessionIds, isSessionActive } as unknown as AuthRepository,
     { now } as unknown as Clock,
   );
-  return { findAccessibleConversation, isSessionActive, now, service };
+  return {
+    findAccessibleConversation,
+    findGroupParticipantIds,
+    findActiveSessionIds,
+    isSessionActive,
+    now,
+    service,
+  };
 }
 
 async function subscribe(
@@ -508,6 +534,169 @@ describe('ChatStateService', () => {
     expect(findAccessibleConversation).toHaveBeenLastCalledWith(
       CONVERSATION_ID,
       USER_TWO_ID,
+    );
+  });
+
+  it('refreshes cached participant rosters before a newly added member changes presence', async () => {
+    const { findAccessibleConversation, findGroupParticipantIds, service } =
+      createService();
+    const subscriber = socket('one', USER_ONE_ID);
+    const existingMember = socket('two', USER_TWO_ID);
+    service.register(subscriber);
+    service.register(existingMember);
+    await subscribe(service, subscriber);
+    (subscriber.emit as jest.Mock).mockClear();
+
+    findGroupParticipantIds.mockResolvedValue([
+      USER_ONE_ID,
+      USER_TWO_ID,
+      USER_THREE_ID,
+    ]);
+    findAccessibleConversation.mockResolvedValue({
+      conversationId: CONVERSATION_ID,
+      participantIds: [USER_ONE_ID, USER_TWO_ID, USER_THREE_ID],
+    });
+    await service.refreshConversationAccess(CONVERSATION_ID);
+
+    const addedMember = socket('three', USER_THREE_ID);
+    service.register(addedMember);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(subscriber.emit).toHaveBeenCalledWith(PRESENCE_CHANGED_EVENT, {
+      conversationId: CONVERSATION_ID,
+      userId: USER_THREE_ID,
+      status: 'online',
+      occurredAt: NOW.toISOString(),
+    });
+  });
+
+  it('publishes the current presence of a newly visible member who was already connected', async () => {
+    const { findGroupParticipantIds, service } = createService();
+    const subscriber = socket('one', USER_ONE_ID);
+    const existingMember = socket('two', USER_TWO_ID);
+    const addedMember = socket('three', USER_THREE_ID);
+    service.register(subscriber);
+    service.register(existingMember);
+    await subscribe(service, subscriber);
+
+    service.register(addedMember);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    (subscriber.emit as jest.Mock).mockClear();
+    findGroupParticipantIds.mockResolvedValue([
+      USER_ONE_ID,
+      USER_TWO_ID,
+      USER_THREE_ID,
+    ]);
+
+    await service.refreshConversationAccess(CONVERSATION_ID);
+
+    expect(subscriber.emit).toHaveBeenCalledWith(PRESENCE_CHANGED_EVENT, {
+      conversationId: CONVERSATION_ID,
+      userId: USER_THREE_ID,
+      status: 'online',
+      occurredAt: NOW.toISOString(),
+    });
+  });
+
+  it('reuses one access lookup when refreshing the same user multiple devices', async () => {
+    const { findGroupParticipantIds, isSessionActive, service } =
+      createService();
+    const first = socket('one-a', USER_ONE_ID);
+    const second = socket('one-b', USER_ONE_ID);
+    service.register(first);
+    service.register(second);
+    await subscribe(service, first);
+    await subscribe(service, second);
+    findGroupParticipantIds.mockClear();
+    isSessionActive.mockClear();
+
+    await service.refreshConversationAccess(CONVERSATION_ID);
+
+    expect(findGroupParticipantIds).toHaveBeenCalledTimes(1);
+    expect(findGroupParticipantIds).toHaveBeenCalledWith(CONVERSATION_ID);
+    expect(isSessionActive).toHaveBeenCalledTimes(2);
+  });
+
+  it('serializes overlapping access refreshes so an older roster cannot win', async () => {
+    const { findAccessibleConversation, findGroupParticipantIds, service } =
+      createService();
+    const subscriber = socket('one', USER_ONE_ID);
+    service.register(subscriber);
+    await subscribe(service, subscriber);
+    (subscriber.emit as jest.Mock).mockClear();
+    findGroupParticipantIds.mockReset();
+
+    let resolveFirst!: (value: string[]) => void;
+    let resolveSecond!: (value: string[]) => void;
+    const firstLookup = new Promise<string[]>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondLookup = new Promise<string[]>((resolve) => {
+      resolveSecond = resolve;
+    });
+    findGroupParticipantIds
+      .mockImplementationOnce(() => firstLookup)
+      .mockImplementationOnce(() => secondLookup);
+
+    const firstRefresh = service.refreshConversationAccess(CONVERSATION_ID);
+    const secondRefresh = service.refreshConversationAccess(CONVERSATION_ID);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(findGroupParticipantIds).toHaveBeenCalledTimes(1);
+
+    resolveFirst([USER_ONE_ID, USER_TWO_ID]);
+    await firstRefresh;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(findGroupParticipantIds).toHaveBeenCalledTimes(2);
+
+    resolveSecond([USER_ONE_ID, USER_TWO_ID, USER_THREE_ID]);
+    await secondRefresh;
+
+    findAccessibleConversation.mockResolvedValue({
+      conversationId: CONVERSATION_ID,
+      participantIds: [USER_ONE_ID, USER_TWO_ID, USER_THREE_ID],
+    });
+    const addedMember = socket('three', USER_THREE_ID);
+    service.register(addedMember);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(subscriber.emit).toHaveBeenLastCalledWith(PRESENCE_CHANGED_EVENT, {
+      conversationId: CONVERSATION_ID,
+      userId: USER_THREE_ID,
+      status: 'online',
+      occurredAt: NOW.toISOString(),
+    });
+  });
+
+  it('evicts removed subscriptions and typing without a stale stop event', async () => {
+    jest.useFakeTimers();
+    const { findGroupParticipantIds, service } = createService();
+    const removedMember = socket('one', USER_ONE_ID);
+    const remainingMember = socket('two', USER_TWO_ID);
+    service.register(removedMember);
+    service.register(remainingMember);
+    await subscribe(service, removedMember);
+    await subscribe(service, remainingMember);
+    await service.startTyping(
+      removedMember,
+      { conversationId: CONVERSATION_ID },
+      jest.fn(),
+    );
+    (removedMember.emit as jest.Mock).mockClear();
+    (remainingMember.emit as jest.Mock).mockClear();
+
+    findGroupParticipantIds.mockResolvedValue([USER_TWO_ID]);
+    await service.refreshConversationAccess(CONVERSATION_ID);
+
+    await service.startTyping(
+      remainingMember,
+      { conversationId: CONVERSATION_ID },
+      jest.fn(),
+    );
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    expect(removedMember.emit).not.toHaveBeenCalled();
+    expect(remainingMember.emit).not.toHaveBeenCalledWith(
+      TYPING_STOPPED_EVENT,
+      expect.objectContaining({ userId: USER_ONE_ID }),
     );
   });
 });

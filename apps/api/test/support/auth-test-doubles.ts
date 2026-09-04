@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { AuthRepository } from '../../src/auth/auth.repository';
+import {
+  AuthRepository,
+  type AuthSessionIdentity,
+} from '../../src/auth/auth.repository';
 import type {
   AuthSessionRecord,
   AuthSessionRevocationReason,
@@ -352,6 +355,19 @@ export class InMemoryAuthRepository extends AuthRepository {
         !session.revokedAt &&
         session.expiresAt.getTime() > now.getTime(),
     );
+  }
+
+  override async findActiveSessionIds(
+    sessions: readonly AuthSessionIdentity[],
+    now: Date,
+  ): Promise<string[]> {
+    const activeSessionIds: string[] = [];
+    for (const { sessionId, userId } of sessions) {
+      if (await this.isSessionActive(sessionId, userId, now)) {
+        activeSessionIds.push(sessionId);
+      }
+    }
+    return activeSessionIds;
   }
 
   override async findUserById(id: string): Promise<AuthUserRecord | null> {

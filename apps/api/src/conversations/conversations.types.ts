@@ -77,3 +77,104 @@ export interface CreateGroupConversationInput {
 export type CreateGroupConversationResult =
   | { status: 'created'; conversation: GroupConversationRecord }
   | { status: 'participant-not-found' };
+
+interface GroupMutationInputBase {
+  conversationId: string;
+  actorId: string;
+  now: Date;
+}
+
+interface GroupMutationSuccessBase {
+  eventRecipientIds: string[];
+}
+
+interface GroupMutationWithConversationSuccess
+  extends GroupMutationSuccessBase {
+  conversation: GroupConversationRecord;
+}
+
+export interface UpdateGroupInput extends GroupMutationInputBase {
+  name?: string;
+  avatarUrl?: string | null;
+}
+
+export type UpdateGroupResult =
+  | (GroupMutationWithConversationSuccess & {
+      status: 'updated';
+      changed: boolean;
+    })
+  | { status: 'conversation-not-found' | 'forbidden' };
+
+export interface AddGroupMembersInput extends GroupMutationInputBase {
+  participantIds: string[];
+}
+
+export type AddGroupMembersResult =
+  | (GroupMutationWithConversationSuccess & { status: 'members-added' })
+  | {
+      status:
+        | 'conversation-not-found'
+        | 'forbidden'
+        | 'participant-not-found'
+        | 'member-already-exists'
+        | 'group-full';
+    };
+
+export interface RemoveGroupMemberInput extends GroupMutationInputBase {
+  memberId: string;
+}
+
+export type RemoveGroupMemberResult =
+  | (GroupMutationWithConversationSuccess & { status: 'member-removed' })
+  | {
+      status:
+        | 'conversation-not-found'
+        | 'forbidden'
+        | 'member-not-found'
+        | 'owner-protected';
+    };
+
+export interface UpdateGroupMemberRoleInput extends GroupMutationInputBase {
+  memberId: string;
+  role: Exclude<ConversationMemberRoleRecord, 'OWNER'>;
+}
+
+export type UpdateGroupMemberRoleResult =
+  | (GroupMutationWithConversationSuccess & {
+      status: 'role-updated';
+      changed: boolean;
+    })
+  | {
+      status:
+        | 'conversation-not-found'
+        | 'forbidden'
+        | 'member-not-found'
+        | 'owner-protected';
+    };
+
+export interface TransferGroupOwnershipInput extends GroupMutationInputBase {
+  memberId: string;
+}
+
+export type TransferGroupOwnershipResult =
+  | (GroupMutationWithConversationSuccess & {
+      status: 'ownership-transferred';
+      changed: boolean;
+    })
+  | {
+      status: 'conversation-not-found' | 'forbidden' | 'member-not-found';
+    };
+
+export type LeaveGroupInput = GroupMutationInputBase;
+
+export type LeaveGroupResult =
+  | (GroupMutationSuccessBase & { status: 'left' })
+  | {
+      status: 'conversation-not-found' | 'owner-transfer-required';
+    };
+
+export type DeleteGroupInput = GroupMutationInputBase;
+
+export type DeleteGroupResult =
+  | (GroupMutationSuccessBase & { status: 'deleted' })
+  | { status: 'conversation-not-found' | 'forbidden' };
