@@ -12,7 +12,9 @@ export interface ConversationSettingsUpdatedEventRecord {
   userId: string;
   archivedAt: Date | null;
   mutedAt: Date | null;
+  mutedUntil: Date | null;
   pinnedAt: Date | null;
+  favoritedAt: Date | null;
   occurredAt: Date;
 }
 

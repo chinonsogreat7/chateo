@@ -6,6 +6,7 @@ import type {
 } from '../../src/conversations/conversations.types';
 import type { SendTextMessageInput } from '../../src/messages/messages.repository';
 import type {
+  ClearConversationMessagesResult,
   ListMessagesResult,
   MarkConversationReadResult,
   MessagePageCursor,
@@ -38,6 +39,8 @@ interface StoredMemberState {
   unreadCount: number;
   lastReadAt: Date | null;
   receiptVersion: number;
+  clearedAt: Date | null;
+  clearedThroughMessageId: string | null;
 }
 
 interface StoredReceipt {
@@ -62,6 +65,19 @@ function idempotencyKey(senderId: string, clientMessageId: string): string {
 
 function receiptKey(messageId: string, userId: string): string {
   return `${messageId}:${userId}`;
+}
+
+function isAfterClearBoundary(
+  message: Pick<MessageRecord, 'createdAt' | 'id'>,
+  state: Pick<StoredMemberState, 'clearedAt' | 'clearedThroughMessageId'>,
+): boolean {
+  if (!state.clearedAt || !state.clearedThroughMessageId) return true;
+  const timeDifference =
+    message.createdAt.getTime() - state.clearedAt.getTime();
+  return (
+    timeDifference > 0 ||
+    (timeDifference === 0 && message.id > state.clearedThroughMessageId)
+  );
 }
 
 /**
@@ -123,6 +139,8 @@ export class InMemoryMessagingRepository {
         unreadCount: 0,
         lastReadAt: null,
         receiptVersion: 0,
+        clearedAt: null,
+        clearedThroughMessageId: null,
       });
     }
   }
@@ -248,6 +266,22 @@ export class InMemoryMessagingRepository {
       return { status: 'existing', message: this.copyMessage(existing) };
     }
 
+    const newestClearTime = conversation.memberIds.reduce(
+      (latest, memberId) => {
+        const clearedAt = this.requiredMemberState(
+          conversationId,
+          memberId,
+        ).clearedAt;
+        return clearedAt && (!latest || clearedAt > latest)
+          ? clearedAt
+          : latest;
+      },
+      null as Date | null,
+    );
+    const createdAt =
+      newestClearTime && newestClearTime.getTime() >= input.now.getTime()
+        ? new Date(newestClearTime.getTime() + 1)
+        : input.now;
     const message: MessageRecord = {
       id: randomUUID(),
       conversationId,
@@ -255,14 +289,14 @@ export class InMemoryMessagingRepository {
       clientMessageId,
       kind: 'TEXT',
       text: input.text,
-      createdAt: copyDate(input.now),
+      createdAt: copyDate(createdAt),
       participantIds: [...conversation.memberIds],
     };
     this.messages.set(message.id, message);
     this.messageIdsByIdempotencyKey.set(key, message.id);
-    if (input.now.getTime() > conversation.lastActivityAt.getTime()) {
-      conversation.lastActivityAt = copyDate(input.now);
-      conversation.updatedAt = copyDate(input.now);
+    if (createdAt.getTime() > conversation.lastActivityAt.getTime()) {
+      conversation.lastActivityAt = copyDate(createdAt);
+      conversation.updatedAt = copyDate(createdAt);
     }
     for (const memberId of conversation.memberIds) {
       if (memberId === senderId) continue;
@@ -300,8 +334,16 @@ export class InMemoryMessagingRepository {
       return this.listReceiptFrontiers(conversation);
     }
 
+    const state = this.requiredMemberState(
+      normalizedConversationId,
+      normalizedUserId,
+    );
     const messages = [...this.messages.values()]
-      .filter((message) => message.conversationId === normalizedConversationId)
+      .filter(
+        (message) =>
+          message.conversationId === normalizedConversationId &&
+          isAfterClearBoundary(message, state),
+      )
       .sort(
         (left, right) =>
           right.createdAt.getTime() - left.createdAt.getTime() ||
@@ -332,10 +374,12 @@ export class InMemoryMessagingRepository {
     }
 
     const boundary = this.messages.get(throughMessageId);
+    const state = this.requiredMemberState(conversationId, userId);
     if (
       !boundary ||
       boundary.conversationId !== conversationId ||
-      boundary.senderId === userId
+      boundary.senderId === userId ||
+      !isAfterClearBoundary(boundary, state)
     ) {
       return { status: 'conversation-not-found' };
     }
@@ -345,6 +389,7 @@ export class InMemoryMessagingRepository {
         (message) =>
           message.conversationId === conversationId &&
           message.senderId !== userId &&
+          isAfterClearBoundary(message, state) &&
           (message.createdAt.getTime() < boundary.createdAt.getTime() ||
             (message.createdAt.getTime() === boundary.createdAt.getTime() &&
               message.id <= boundary.id)),
@@ -386,13 +431,13 @@ export class InMemoryMessagingRepository {
     }
     const changed = this.receiptFrontierAdvanced(previous, effective);
 
-    const state = this.requiredMemberState(conversationId, userId);
     if (changed) state.receiptVersion += 1;
     if (input.status === 'READ') {
       state.unreadCount = [...this.messages.values()].filter(
         (message) =>
           message.conversationId === conversationId &&
           message.senderId !== userId &&
+          isAfterClearBoundary(message, state) &&
           !this.receipts.get(receiptKey(message.id, userId))?.readAt,
       ).length;
       const readAt = effective.readAt;
@@ -447,7 +492,7 @@ export class InMemoryMessagingRepository {
       normalizedConversationId,
       normalizedUserId,
     );
-    const latestMessage = this.latestMessage(normalizedConversationId);
+    const latestMessage = this.latestMessage(normalizedConversationId, state);
     const lastReadAt = [now, state.lastReadAt, latestMessage?.createdAt]
       .filter((value): value is Date => value !== null && value !== undefined)
       .reduce((latest, candidate) =>
@@ -465,6 +510,43 @@ export class InMemoryMessagingRepository {
     };
   }
 
+  async clearForMember(
+    conversationId: string,
+    userId: string,
+    now: Date,
+  ): Promise<ClearConversationMessagesResult> {
+    const normalizedConversationId = conversationId.toLowerCase();
+    const normalizedUserId = userId.toLowerCase();
+    const conversation = this.conversations.get(normalizedConversationId);
+    if (!conversation?.memberIds.includes(normalizedUserId)) {
+      return { status: 'conversation-not-found' };
+    }
+
+    const state = this.requiredMemberState(
+      normalizedConversationId,
+      normalizedUserId,
+    );
+    const latestMessage = this.latestMessage(normalizedConversationId);
+    const changed = Boolean(
+      latestMessage && isAfterClearBoundary(latestMessage, state),
+    );
+    if (latestMessage && changed) {
+      state.clearedAt = copyDate(latestMessage.createdAt);
+      state.clearedThroughMessageId = latestMessage.id;
+    }
+    state.unreadCount = 0;
+
+    return {
+      status: 'cleared',
+      changed,
+      conversationId: normalizedConversationId,
+      userId: normalizedUserId,
+      clearedAt: state.clearedAt ? copyDate(state.clearedAt) : null,
+      clearedThroughMessageId: state.clearedThroughMessageId,
+      occurredAt: copyDate(now),
+    };
+  }
+
   private requiredMemberState(
     conversationId: string,
     userId: string,
@@ -474,10 +556,17 @@ export class InMemoryMessagingRepository {
     return state;
   }
 
-  private latestMessage(conversationId: string): MessageRecord | null {
+  private latestMessage(
+    conversationId: string,
+    state?: Pick<StoredMemberState, 'clearedAt' | 'clearedThroughMessageId'>,
+  ): MessageRecord | null {
     return (
       [...this.messages.values()]
-        .filter((message) => message.conversationId === conversationId)
+        .filter(
+          (message) =>
+            message.conversationId === conversationId &&
+            (!state || isAfterClearBoundary(message, state)),
+        )
         .sort(
           (left, right) =>
             right.createdAt.getTime() - left.createdAt.getTime() ||
@@ -574,8 +663,8 @@ export class InMemoryMessagingRepository {
     );
     const otherUser = otherUserId ? this.users.get(otherUserId) : undefined;
     if (!otherUser) throw new Error('Conversation participant is missing.');
-    const latestMessage = this.latestMessage(conversation.id);
     const state = this.requiredMemberState(conversation.id, currentUserId);
+    const latestMessage = this.latestMessage(conversation.id, state);
 
     return {
       id: conversation.id,
@@ -591,6 +680,15 @@ export class InMemoryMessagingRepository {
           }
         : null,
       unreadCount: state.unreadCount,
+      settings: {
+        archivedAt: null,
+        mutedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        favoritedAt: null,
+        clearedAt: state.clearedAt ? copyDate(state.clearedAt) : null,
+        clearedThroughMessageId: state.clearedThroughMessageId,
+      },
       lastActivityAt: copyDate(conversation.lastActivityAt),
       createdAt: copyDate(conversation.createdAt),
       updatedAt: copyDate(conversation.updatedAt),

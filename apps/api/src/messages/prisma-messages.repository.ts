@@ -6,6 +6,7 @@ import {
   type SendTextMessageInput,
 } from './messages.repository';
 import type {
+  ClearConversationMessagesResult,
   ListMessagesResult,
   MarkConversationReadResult,
   MessagePageCursor,
@@ -75,38 +76,70 @@ export class PrismaMessagesRepository extends MessagesRepository {
   ): Promise<ListMessagesResult> {
     const normalizedConversationId = conversationId.toLowerCase();
     const normalizedUserId = userId.toLowerCase();
-    const members = await this.prisma.conversationMember.findMany({
-      where: { conversationId: normalizedConversationId },
-      select: { userId: true },
-    });
-    if (!members.some((member) => member.userId === normalizedUserId)) {
-      return { status: 'conversation-not-found' };
-    }
+    return this.prisma.$transaction(
+      async (transaction) => {
+        const members = await transaction.conversationMember.findMany({
+          where: { conversationId: normalizedConversationId },
+          select: {
+            userId: true,
+            clearedAt: true,
+            clearedThroughMessageId: true,
+          },
+        });
+        const membership = members.find(
+          (member) => member.userId === normalizedUserId,
+        );
+        if (!membership) {
+          return { status: 'conversation-not-found' } as const;
+        }
 
-    const messages = await this.prisma.message.findMany({
-      where: {
-        conversationId: normalizedConversationId,
-        ...(cursor
-          ? {
-              OR: [
-                { createdAt: { lt: cursor.createdAt } },
-                { createdAt: cursor.createdAt, id: { lt: cursor.id } },
-              ],
-            }
-          : {}),
+        const messages = await transaction.message.findMany({
+          where: {
+            conversationId: normalizedConversationId,
+            AND: [
+              ...(membership.clearedAt && membership.clearedThroughMessageId
+                ? [
+                    {
+                      OR: [
+                        { createdAt: { gt: membership.clearedAt } },
+                        {
+                          createdAt: membership.clearedAt,
+                          id: { gt: membership.clearedThroughMessageId },
+                        },
+                      ],
+                    },
+                  ]
+                : []),
+              ...(cursor
+                ? [
+                    {
+                      OR: [
+                        { createdAt: { lt: cursor.createdAt } },
+                        {
+                          createdAt: cursor.createdAt,
+                          id: { lt: cursor.id },
+                        },
+                      ],
+                    },
+                  ]
+                : []),
+            ],
+          },
+          select: messageSelect,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          take,
+        });
+        const participantIds = this.uniqueUserIds(members);
+
+        return {
+          status: 'found',
+          messages: messages.map((message) =>
+            this.mapMessage(message, participantIds),
+          ),
+        } as const;
       },
-      select: messageSelect,
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take,
-    });
-    const participantIds = this.uniqueUserIds(members);
-
-    return {
-      status: 'found',
-      messages: messages.map((message) =>
-        this.mapMessage(message, participantIds),
-      ),
-    };
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
   }
 
   async markRead(
@@ -185,6 +218,108 @@ export class PrismaMessagesRepository extends MessagesRepository {
     throw lastError;
   }
 
+  async clearForMember(
+    conversationId: string,
+    userId: string,
+    now: Date,
+  ): Promise<ClearConversationMessagesResult> {
+    const normalizedConversationId = conversationId.toLowerCase();
+    const normalizedUserId = userId.toLowerCase();
+    const maxAttempts = 3;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            const membership = await transaction.conversationMember.findUnique({
+              where: {
+                conversationId_userId: {
+                  conversationId: normalizedConversationId,
+                  userId: normalizedUserId,
+                },
+              },
+              select: {
+                clearedAt: true,
+                clearedThroughMessageId: true,
+                unreadCount: true,
+              },
+            });
+            if (!membership) {
+              return { status: 'conversation-not-found' } as const;
+            }
+
+            const latestMessage = await transaction.message.findFirst({
+              where: { conversationId: normalizedConversationId },
+              select: { id: true, createdAt: true },
+              orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            });
+            const boundaryAdvanced =
+              latestMessage !== null &&
+              this.isAfterBoundary(
+                latestMessage.createdAt,
+                latestMessage.id,
+                membership.clearedAt,
+                membership.clearedThroughMessageId,
+              );
+            const changed = boundaryAdvanced || membership.unreadCount !== 0;
+
+            if (changed) {
+              try {
+                await transaction.conversationMember.update({
+                  where: {
+                    conversationId_userId: {
+                      conversationId: normalizedConversationId,
+                      userId: normalizedUserId,
+                    },
+                  },
+                  data: {
+                    unreadCount: 0,
+                    ...(boundaryAdvanced && latestMessage
+                      ? {
+                          clearedAt: latestMessage.createdAt,
+                          clearedThroughMessageId: latestMessage.id,
+                        }
+                      : {}),
+                  },
+                });
+              } catch (error) {
+                if (this.prismaErrorCode(error) === 'P2025') {
+                  return { status: 'conversation-not-found' } as const;
+                }
+                throw error;
+              }
+            }
+
+            const clearedAt = boundaryAdvanced
+              ? (latestMessage?.createdAt ?? null)
+              : membership.clearedAt;
+            const clearedThroughMessageId = boundaryAdvanced
+              ? (latestMessage?.id ?? null)
+              : membership.clearedThroughMessageId;
+
+            return {
+              status: 'cleared',
+              conversationId: normalizedConversationId,
+              userId: normalizedUserId,
+              changed,
+              clearedAt,
+              clearedThroughMessageId,
+              occurredAt: now,
+            } as const;
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        lastError = error;
+        const retryable = this.prismaErrorCode(error) === 'P2034';
+        if (!retryable || attempt === maxAttempts) throw error;
+      }
+    }
+
+    throw lastError;
+  }
+
   private async sendInTransaction(
     transaction: Prisma.TransactionClient,
     input: SendTextMessageInput,
@@ -193,7 +328,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
       where: { id: input.conversationId },
       select: {
         type: true,
-        members: { select: { userId: true } },
+        members: { select: { userId: true, clearedAt: true } },
       },
     });
     const members = conversation?.members ?? [];
@@ -228,6 +363,20 @@ export class PrismaMessagesRepository extends MessagesRepository {
       return { status: 'conversation-not-found' };
     }
 
+    const newestClearTimestamp = members.reduce<Date | null>(
+      (latest, member) =>
+        member.clearedAt &&
+        (!latest || member.clearedAt.getTime() > latest.getTime())
+          ? member.clearedAt
+          : latest,
+      null,
+    );
+    const messageCreatedAt =
+      newestClearTimestamp &&
+      newestClearTimestamp.getTime() >= input.now.getTime()
+        ? new Date(newestClearTimestamp.getTime() + 1)
+        : input.now;
+
     const message = await transaction.message.create({
       data: {
         conversationId: input.conversationId,
@@ -235,16 +384,19 @@ export class PrismaMessagesRepository extends MessagesRepository {
         clientMessageId: input.clientMessageId,
         kind: MessageKind.TEXT,
         text: input.text,
-        createdAt: input.now,
+        createdAt: messageCreatedAt,
       },
       select: messageSelect,
     });
     await transaction.conversation.updateMany({
       where: {
         id: input.conversationId,
-        lastActivityAt: { lt: input.now },
+        lastActivityAt: { lt: messageCreatedAt },
       },
-      data: { lastActivityAt: input.now, updatedAt: input.now },
+      data: {
+        lastActivityAt: messageCreatedAt,
+        updatedAt: messageCreatedAt,
+      },
     });
     await transaction.conversationMember.updateMany({
       where: {
@@ -372,6 +524,17 @@ export class PrismaMessagesRepository extends MessagesRepository {
           : latest,
       first,
     );
+  }
+
+  private isAfterBoundary(
+    createdAt: Date,
+    id: string,
+    boundaryCreatedAt: Date | null,
+    boundaryId: string | null,
+  ): boolean {
+    if (!boundaryCreatedAt || !boundaryId) return true;
+    const timeDifference = createdAt.getTime() - boundaryCreatedAt.getTime();
+    return timeDifference > 0 || (timeDifference === 0 && id > boundaryId);
   }
 
   private prismaErrorCode(error: unknown): string | undefined {

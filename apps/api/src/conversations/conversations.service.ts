@@ -15,6 +15,7 @@ import type { TransferGroupOwnershipDto } from './dto/transfer-group-ownership.d
 import type { UpdateGroupConversationDto } from './dto/update-group-conversation.dto';
 import type { UpdateGroupMemberRoleDto } from './dto/update-group-member-role.dto';
 import type {
+  ConversationLatestMessageRecord,
   ConversationPageCursor,
   ConversationRecord,
   DirectConversationRecord,
@@ -527,6 +528,14 @@ export class ConversationsService {
     };
   }
 
+  listArchived(
+    userId: string,
+    limit: number,
+    encodedCursor?: string,
+  ): Promise<ConversationListResponseDto> {
+    return this.list(userId, limit, encodedCursor, true);
+  }
+
   async get(
     userId: string,
     conversationId: string,
@@ -547,23 +556,46 @@ export class ConversationsService {
   ): GroupConversationResponseDto;
   private toResponse(record: ConversationRecord): ConversationResponseDto;
   private toResponse(record: ConversationRecord): ConversationResponseDto {
+    const now = this.clock.now();
+    const mutedAt = record.settings?.mutedAt ?? null;
+    const mutedUntil = record.settings?.mutedUntil ?? null;
+    const muted =
+      mutedAt !== null &&
+      (mutedUntil === null || mutedUntil.getTime() > now.getTime());
+    const clearedAt = record.settings?.clearedAt ?? null;
+    const clearedThroughMessageId =
+      record.settings?.clearedThroughMessageId ?? null;
+    const latestMessage =
+      record.latestMessage &&
+      this.isAfterClearBoundary(
+        record.latestMessage,
+        clearedAt,
+        clearedThroughMessageId,
+      )
+        ? record.latestMessage
+        : null;
     const common = {
       id: record.id,
       settings: {
         archived: record.settings?.archivedAt != null,
-        muted: record.settings?.mutedAt != null,
+        muted,
         pinned: record.settings?.pinnedAt != null,
+        favorited: record.settings?.favoritedAt != null,
         archivedAt: record.settings?.archivedAt?.toISOString() ?? null,
-        mutedAt: record.settings?.mutedAt?.toISOString() ?? null,
+        mutedAt: mutedAt?.toISOString() ?? null,
+        mutedUntil: mutedUntil?.toISOString() ?? null,
         pinnedAt: record.settings?.pinnedAt?.toISOString() ?? null,
+        favoritedAt: record.settings?.favoritedAt?.toISOString() ?? null,
+        clearedAt: clearedAt?.toISOString() ?? null,
+        clearedThroughMessageId,
       },
-      latestMessage: record.latestMessage
+      latestMessage: latestMessage
         ? {
-            id: record.latestMessage.id,
-            senderId: record.latestMessage.senderId,
+            id: latestMessage.id,
+            senderId: latestMessage.senderId,
             kind: 'text' as const,
-            preview: this.messagePreview(record.latestMessage.text),
-            createdAt: record.latestMessage.createdAt.toISOString(),
+            preview: this.messagePreview(latestMessage.text),
+            createdAt: latestMessage.createdAt.toISOString(),
           }
         : null,
       unreadCount: record.unreadCount,
@@ -601,6 +633,19 @@ export class ConversationsService {
     return `${codePoints
       .slice(0, MAX_MESSAGE_PREVIEW_CODE_POINTS - 1)
       .join('')}…`;
+  }
+
+  private isAfterClearBoundary(
+    message: ConversationLatestMessageRecord,
+    clearedAt: Date | null,
+    clearedThroughMessageId: string | null,
+  ): boolean {
+    if (!clearedAt || !clearedThroughMessageId) return true;
+    const timeDifference = message.createdAt.getTime() - clearedAt.getTime();
+    return (
+      timeDifference > 0 ||
+      (timeDifference === 0 && message.id > clearedThroughMessageId)
+    );
   }
 
   private encodeCursor(record: ConversationRecord, archived: boolean): string {

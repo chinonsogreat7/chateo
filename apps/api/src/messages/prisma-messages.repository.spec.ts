@@ -41,15 +41,26 @@ function knownRequestError(code: string): Prisma.PrismaClientKnownRequestError {
 }
 
 function createRepository() {
-  const transaction = jest.fn();
   const memberFindMany = jest.fn();
   const conversationFindUnique = jest.fn().mockResolvedValue({
     type: 'DIRECT',
-    members: [{ userId: USER_ID }, { userId: OTHER_USER_ID }],
+    members: [
+      { userId: USER_ID, clearedAt: null },
+      { userId: OTHER_USER_ID, clearedAt: null },
+    ],
   });
   const blockFindFirst = jest.fn().mockResolvedValue(null);
   const messageFindUnique = jest.fn();
   const messageFindMany = jest.fn();
+  const transaction = jest
+    .fn()
+    .mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversationMember: { findMany: memberFindMany },
+          message: { findMany: messageFindMany },
+        }),
+    );
   const prisma = {
     $transaction: transaction,
     conversationMember: { findMany: memberFindMany },
@@ -71,7 +82,10 @@ function createRepository() {
 function sendTransactionState(existing: unknown = null) {
   const conversationFindUnique = jest.fn().mockResolvedValue({
     type: 'DIRECT',
-    members: [{ userId: USER_ID }, { userId: OTHER_USER_ID }],
+    members: [
+      { userId: USER_ID, clearedAt: null },
+      { userId: OTHER_USER_ID, clearedAt: null },
+    ],
   });
   const blockFindFirst = jest.fn().mockResolvedValue(null);
   const messageFindUnique = jest.fn().mockResolvedValue(existing);
@@ -101,7 +115,7 @@ function sendTransactionState(existing: unknown = null) {
 }
 
 describe('PrismaMessagesRepository', () => {
-  it('persists a message and updates activity and recipient unread state atomically', async () => {
+  it('updates activity and unread state without unarchiving recipients', async () => {
     const { repository, transaction } = createRepository();
     const state = sendTransactionState();
     transaction.mockImplementation(
@@ -143,6 +157,41 @@ describe('PrismaMessagesRepository', () => {
         userId: { not: USER_ID },
       },
       data: { unreadCount: { increment: 1 } },
+    });
+  });
+
+  it('places a new message after every member clear timestamp under clock skew', async () => {
+    const { repository, transaction } = createRepository();
+    const state = sendTransactionState();
+    const createdAt = new Date(NOW.getTime() + 1);
+    state.conversationFindUnique.mockResolvedValue({
+      type: 'DIRECT',
+      members: [
+        { userId: USER_ID, clearedAt: NOW },
+        { userId: OTHER_USER_ID, clearedAt: null },
+      ],
+    });
+    state.messageCreate.mockResolvedValue(rawMessage({ createdAt }));
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation(state.client),
+    );
+
+    await expect(repository.sendText(sendInput())).resolves.toMatchObject({
+      status: 'created',
+      message: { createdAt },
+    });
+    expect(state.messageCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ createdAt }),
+      }),
+    );
+    expect(state.conversationUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: CONVERSATION_ID,
+        lastActivityAt: { lt: createdAt },
+      },
+      data: { lastActivityAt: createdAt, updatedAt: createdAt },
     });
   });
 
@@ -263,10 +312,15 @@ describe('PrismaMessagesRepository', () => {
   });
 
   it('uses stable newest-first keyset pagination after membership validation', async () => {
-    const { repository, memberFindMany, messageFindMany } = createRepository();
+    const { repository, transaction, memberFindMany, messageFindMany } =
+      createRepository();
     memberFindMany.mockResolvedValue([
-      { userId: USER_ID },
-      { userId: OTHER_USER_ID },
+      { userId: USER_ID, clearedAt: null, clearedThroughMessageId: null },
+      {
+        userId: OTHER_USER_ID,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      },
     ]);
     messageFindMany.mockResolvedValue([rawMessage()]);
     const cursor = {
@@ -280,9 +334,53 @@ describe('PrismaMessagesRepository', () => {
     expect(messageFindMany).toHaveBeenCalledWith({
       where: {
         conversationId: CONVERSATION_ID,
-        OR: [
-          { createdAt: { lt: cursor.createdAt } },
-          { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+        AND: [
+          {
+            OR: [
+              { createdAt: { lt: cursor.createdAt } },
+              { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+            ],
+          },
+        ],
+      },
+      select: expect.any(Object),
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 51,
+    });
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+  });
+
+  it('only returns messages newer than the requesting member clear boundary', async () => {
+    const { repository, memberFindMany, messageFindMany } = createRepository();
+    memberFindMany.mockResolvedValue([
+      {
+        userId: USER_ID,
+        clearedAt: NOW,
+        clearedThroughMessageId: MESSAGE_ID,
+      },
+      {
+        userId: OTHER_USER_ID,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      },
+    ]);
+    messageFindMany.mockResolvedValue([]);
+
+    await expect(
+      repository.listForMember(CONVERSATION_ID, USER_ID, null, 51),
+    ).resolves.toEqual({ status: 'found', messages: [] });
+    expect(messageFindMany).toHaveBeenCalledWith({
+      where: {
+        conversationId: CONVERSATION_ID,
+        AND: [
+          {
+            OR: [
+              { createdAt: { gt: NOW } },
+              { createdAt: NOW, id: { gt: MESSAGE_ID } },
+            ],
+          },
         ],
       },
       select: expect.any(Object),
@@ -349,5 +447,133 @@ describe('PrismaMessagesRepository', () => {
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     });
+  });
+
+  it('sets only the requesting member clear boundary and resets unread state', async () => {
+    const { repository, transaction } = createRepository();
+    const latestMessageAt = new Date('2026-08-12T15:59:00.000Z');
+    const memberFindUnique = jest.fn().mockResolvedValue({
+      clearedAt: null,
+      clearedThroughMessageId: null,
+      unreadCount: 2,
+    });
+    const memberUpdate = jest.fn().mockResolvedValue({});
+    const messageFindFirst = jest.fn().mockResolvedValue({
+      id: MESSAGE_ID,
+      createdAt: latestMessageAt,
+    });
+    const messageDeleteMany = jest.fn();
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversationMember: {
+            findUnique: memberFindUnique,
+            update: memberUpdate,
+          },
+          message: {
+            findFirst: messageFindFirst,
+            deleteMany: messageDeleteMany,
+          },
+        }),
+    );
+
+    await expect(
+      repository.clearForMember(CONVERSATION_ID, USER_ID, NOW),
+    ).resolves.toEqual({
+      status: 'cleared',
+      conversationId: CONVERSATION_ID,
+      userId: USER_ID,
+      changed: true,
+      clearedAt: latestMessageAt,
+      clearedThroughMessageId: MESSAGE_ID,
+      occurredAt: NOW,
+    });
+    expect(memberUpdate).toHaveBeenCalledWith({
+      where: {
+        conversationId_userId: {
+          conversationId: CONVERSATION_ID,
+          userId: USER_ID,
+        },
+      },
+      data: {
+        clearedAt: latestMessageAt,
+        clearedThroughMessageId: MESSAGE_ID,
+        unreadCount: 0,
+      },
+    });
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    expect(messageDeleteMany).not.toHaveBeenCalled();
+  });
+
+  it('conceals a clear request when the caller is not a member', async () => {
+    const { repository, transaction } = createRepository();
+    const memberFindUnique = jest.fn().mockResolvedValue(null);
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({ conversationMember: { findUnique: memberFindUnique } }),
+    );
+
+    await expect(
+      repository.clearForMember(CONVERSATION_ID, USER_ID, NOW),
+    ).resolves.toEqual({ status: 'conversation-not-found' });
+  });
+
+  it('conceals a membership removed while clear is committing', async () => {
+    const { repository, transaction } = createRepository();
+    const memberFindUnique = jest.fn().mockResolvedValue({
+      clearedAt: null,
+      clearedThroughMessageId: null,
+      unreadCount: 1,
+    });
+    const memberUpdate = jest
+      .fn()
+      .mockRejectedValue(knownRequestError('P2025'));
+    const messageFindFirst = jest.fn().mockResolvedValue({
+      id: MESSAGE_ID,
+      createdAt: NOW,
+    });
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({
+          conversationMember: {
+            findUnique: memberFindUnique,
+            update: memberUpdate,
+          },
+          message: { findFirst: messageFindFirst },
+        }),
+    );
+
+    await expect(
+      repository.clearForMember(CONVERSATION_ID, USER_ID, NOW),
+    ).resolves.toEqual({ status: 'conversation-not-found' });
+  });
+
+  it('retries a clear after a serializable write conflict', async () => {
+    const { repository, transaction } = createRepository();
+    const memberFindUnique = jest.fn().mockResolvedValue({
+      clearedAt: NOW,
+      clearedThroughMessageId: MESSAGE_ID,
+      unreadCount: 0,
+    });
+    const messageFindFirst = jest.fn().mockResolvedValue({
+      id: MESSAGE_ID,
+      createdAt: NOW,
+    });
+    transaction
+      .mockRejectedValueOnce(knownRequestError('P2034'))
+      .mockImplementationOnce(
+        async (operation: (client: unknown) => Promise<unknown>) =>
+          operation({
+            conversationMember: { findUnique: memberFindUnique },
+            message: { findFirst: messageFindFirst },
+          }),
+      );
+
+    await expect(
+      repository.clearForMember(CONVERSATION_ID, USER_ID, NOW),
+    ).resolves.toMatchObject({ status: 'cleared', changed: false });
+    expect(transaction).toHaveBeenCalledTimes(2);
   });
 });

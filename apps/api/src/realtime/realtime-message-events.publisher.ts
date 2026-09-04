@@ -2,11 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { AuthRepository } from '../auth/auth.repository';
 import { Clock } from '../auth/providers/clock';
 import { MessageEventsPublisher } from '../messages/message-events.publisher';
-import type { MessageRecord } from '../messages/messages.types';
+import type {
+  ConversationHistoryClearedRecord,
+  MessageRecord,
+} from '../messages/messages.types';
 import { ChatGateway } from './chat.gateway';
 import { RealtimeConversationsRepository } from './realtime-conversations.repository';
 import {
+  CONVERSATION_HISTORY_CLEARED_EVENT,
   MESSAGE_CREATED_EVENT,
+  type ConversationHistoryClearedEventPayload,
   type MessageCreatedEventPayload,
   type RealtimeSocketData,
   type RealtimeSocketTarget,
@@ -44,16 +49,46 @@ export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
     const participantIds = [
       ...new Set([...message.participantIds, message.senderId]),
     ].filter((userId) => currentParticipantIds.has(userId));
-    const participantIdSet = new Set(participantIds);
-    const sockets = await this.gateway.findSocketsForUsers(participantIds);
     const payload = toMessageCreatedPayload(message);
+    await this.publishToUsers(participantIds, MESSAGE_CREATED_EVENT, payload);
+  }
+
+  async publishHistoryCleared(
+    record: ConversationHistoryClearedRecord,
+  ): Promise<void> {
+    const payload: ConversationHistoryClearedEventPayload = {
+      conversationId: record.conversationId,
+      userId: record.userId,
+      clearedAt: record.clearedAt?.toISOString() ?? null,
+      clearedThroughMessageId: record.clearedThroughMessageId,
+      occurredAt: record.occurredAt.toISOString(),
+    };
+    await this.publishToUsers(
+      [record.userId],
+      CONVERSATION_HISTORY_CLEARED_EVENT,
+      payload,
+    );
+  }
+
+  private async publishToUsers(
+    userIds: string[],
+    event:
+      | typeof MESSAGE_CREATED_EVENT
+      | typeof CONVERSATION_HISTORY_CLEARED_EVENT,
+    payload:
+      | MessageCreatedEventPayload
+      | ConversationHistoryClearedEventPayload,
+  ): Promise<void> {
+    const uniqueUserIds = [...new Set(userIds)];
+    const allowedUserIds = new Set(uniqueUserIds);
+    const sockets = await this.gateway.findSocketsForUsers(uniqueUserIds);
     const now = this.clock.now();
     const candidates: ActiveSocketCandidate[] = [];
     for (const socket of sockets) {
       const data = readSocketData(socket.data);
       if (
         !data ||
-        !participantIdSet.has(data.userId) ||
+        !allowedUserIds.has(data.userId) ||
         data.tokenExpiresAt <= now.getTime()
       ) {
         socket.disconnect(true);
@@ -80,7 +115,7 @@ export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
 
     await Promise.all(
       candidates.map(({ socket, data }) =>
-        this.emitToActiveSocket(socket, data, activeSessionIds, payload),
+        this.emitToActiveSocket(socket, data, activeSessionIds, event, payload),
       ),
     );
   }
@@ -89,14 +124,19 @@ export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
     socket: RealtimeSocketTarget,
     data: RealtimeSocketData,
     activeSessionIds: ReadonlySet<string>,
-    payload: MessageCreatedEventPayload,
+    event:
+      | typeof MESSAGE_CREATED_EVENT
+      | typeof CONVERSATION_HISTORY_CLEARED_EVENT,
+    payload:
+      | MessageCreatedEventPayload
+      | ConversationHistoryClearedEventPayload,
   ): Promise<void> {
     if (!activeSessionIds.has(data.sessionId)) {
       socket.disconnect(true);
       return;
     }
 
-    socket.emit(MESSAGE_CREATED_EVENT, payload);
+    socket.emit(event, payload);
   }
 }
 

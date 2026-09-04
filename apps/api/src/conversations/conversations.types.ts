@@ -24,7 +24,11 @@ interface ConversationRecordBase {
   settings?: {
     archivedAt: Date | null;
     mutedAt: Date | null;
+    mutedUntil: Date | null;
     pinnedAt: Date | null;
+    favoritedAt: Date | null;
+    clearedAt: Date | null;
+    clearedThroughMessageId: string | null;
   };
   latestMessage: ConversationLatestMessageRecord | null;
   unreadCount: number;

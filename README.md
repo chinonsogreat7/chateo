@@ -16,7 +16,8 @@ and the project rubric in this workspace.
 - Privacy-safe matching of phone numbers already present in a user's contacts
 - Registered-user search by display name without exposing phone numbers
 - Idempotent direct-conversation creation with membership-protected list/detail APIs
-- Per-user archive, mute, and pin settings with pinned-first conversation lists, plus idempotent user blocking
+- Per-user archive, timed mute, pin, favorite, and non-destructive clear-history controls, plus idempotent user blocking
+- Dedicated archive, unarchive, and paginated archived-chat APIs for both direct chats and groups
 - Complete group lifecycle APIs for metadata, members, admins, ownership, leaving, and deletion
 - Persistent, idempotent text-message sending and cursor-paginated history
 - Per-user unread counts, durable delivery/read receipts, and latest-message chat-list previews
@@ -28,8 +29,14 @@ and the project rubric in this workspace.
 - Swagger/OpenAPI documentation in non-production environments
 - Development console OTP delivery and production Twilio SMS delivery
 
-Mute is persisted as a per-user preference, but push notification delivery and
-mute-based notification filtering are not implemented yet.
+Mute windows are persisted per user with exact 8-hour, 24-hour, 7-day, or
+indefinite durations. Push notification delivery and mute-based notification
+filtering are not implemented yet, so muting does not suppress messages or
+Socket.IO events.
+
+Archive changes are idempotent and affect only the signed-in member. Dedicated
+archive routes coexist with the legacy conversation-list `archived=true` query
+and conversation-settings `PATCH` route so existing clients keep working.
 
 The SMS integration uses a console adapter in development and a Twilio API-key adapter in production.
 
@@ -67,6 +74,8 @@ choosing its earliest member as owner and creator and assigning a stable
 placeholder name. It refuses to migrate an orphan group with no memberships so
 the data can be repaired explicitly before retrying. A follow-up ownership
 constraint refuses inconsistent historical groups and prevents multiple owners.
+The conversation-controls migration adds per-member mute expiry, favorite, and
+clear-history boundaries; clearing history never deletes shared message rows.
 
 Replace the two placeholder secrets in `apps/api/.env`. Generate independent values with:
 

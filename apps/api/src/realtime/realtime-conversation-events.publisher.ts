@@ -107,11 +107,16 @@ export class RealtimeConversationEventsPublisher extends ConversationEventsPubli
       conversationId: event.conversationId,
       userId: event.userId,
       archived: event.archivedAt !== null,
-      muted: event.mutedAt !== null,
+      muted:
+        event.mutedAt !== null &&
+        (event.mutedUntil === null || event.mutedUntil > event.occurredAt),
       pinned: event.pinnedAt !== null,
+      favorited: event.favoritedAt !== null,
       archivedAt: event.archivedAt?.toISOString() ?? null,
       mutedAt: event.mutedAt?.toISOString() ?? null,
+      mutedUntil: event.mutedUntil?.toISOString() ?? null,
       pinnedAt: event.pinnedAt?.toISOString() ?? null,
+      favoritedAt: event.favoritedAt?.toISOString() ?? null,
       occurredAt: event.occurredAt.toISOString(),
     };
     await this.publishToUsers(

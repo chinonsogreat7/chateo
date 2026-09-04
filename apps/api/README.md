@@ -38,6 +38,7 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 | `POST`   | `/v1/conversations/direct`                                 | Bearer | Create or return a direct conversation            |
 | `POST`   | `/v1/conversations/group`                                  | Bearer | Create a named group conversation                 |
 | `GET`    | `/v1/conversations`                                        | Bearer | List the signed-in user's conversations           |
+| `GET`    | `/v1/conversations/archived`                               | Bearer | List the caller's archived conversations          |
 | `GET`    | `/v1/conversations/:conversationId`                        | Bearer | Open a conversation as a member                   |
 | `PATCH`  | `/v1/conversations/:conversationId`                        | Bearer | Edit group name or avatar                         |
 | `POST`   | `/v1/conversations/:conversationId/members`                | Bearer | Add registered group members                      |
@@ -46,9 +47,16 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 | `POST`   | `/v1/conversations/:conversationId/transfer-ownership`     | Bearer | Transfer group ownership                          |
 | `POST`   | `/v1/conversations/:conversationId/leave`                  | Bearer | Leave a group                                     |
 | `DELETE` | `/v1/conversations/:conversationId`                        | Bearer | Delete an owned group                             |
-| `PATCH`  | `/v1/conversations/:conversationId/settings`               | Bearer | Archive, mute, or pin for the caller              |
+| `PUT`    | `/v1/conversations/:conversationId/archive`                | Bearer | Archive for the caller                            |
+| `DELETE` | `/v1/conversations/:conversationId/archive`                | Bearer | Unarchive for the caller                          |
+| `PATCH`  | `/v1/conversations/:conversationId/settings`               | Bearer | Archive, always mute/unmute, or pin for caller    |
+| `PUT`    | `/v1/conversations/:conversationId/mute`                   | Bearer | Mute for 8 hours, 24 hours, 7 days, or always     |
+| `DELETE` | `/v1/conversations/:conversationId/mute`                   | Bearer | Unmute for the caller                             |
+| `PUT`    | `/v1/conversations/:conversationId/favorite`               | Bearer | Add to the caller's favorites                     |
+| `DELETE` | `/v1/conversations/:conversationId/favorite`               | Bearer | Remove from the caller's favorites                |
 | `POST`   | `/v1/conversations/:conversationId/messages`               | Bearer | Persist or replay an idempotent text message      |
 | `GET`    | `/v1/conversations/:conversationId/messages`               | Bearer | Read newest-first message history                 |
+| `DELETE` | `/v1/conversations/:conversationId/messages`               | Bearer | Clear message history for the caller              |
 | `PUT`    | `/v1/conversations/:conversationId/receipts/delivered`     | Bearer | Advance the caller's durable delivery boundary    |
 | `PUT`    | `/v1/conversations/:conversationId/receipts/read`          | Bearer | Advance the caller's durable read boundary        |
 | `GET`    | `/v1/conversations/:conversationId/receipts`               | Bearer | Reconcile every participant's receipt frontiers   |
@@ -190,9 +198,14 @@ The operation is idempotent: repeated requests, including a reversed request fro
     "archived": false,
     "muted": false,
     "pinned": false,
+    "favorited": false,
     "archivedAt": null,
     "mutedAt": null,
-    "pinnedAt": null
+    "mutedUntil": null,
+    "pinnedAt": null,
+    "favoritedAt": null,
+    "clearedAt": null,
+    "clearedThroughMessageId": null
   },
   "lastActivityAt": "2026-08-12T12:30:00.000Z",
   "createdAt": "2026-08-12T12:30:00.000Z",
@@ -200,27 +213,51 @@ The operation is idempotent: repeated requests, including a reversed request fro
 }
 ```
 
-`GET /v1/conversations` uses opaque cursor pagination.
-It returns active conversations by default; pass `archived=true` to list the
-caller's archived conversations instead. Each item includes the caller's
-archive, mute, and pin state. Pinned conversations sort before unpinned
-conversations within either archive mode; each segment is newest-activity first.
-Pass `pageInfo.nextCursor` unchanged with the same `archived` mode. Cursors are
-bound to that mode, so using one in a different mode—including dropping
-`archived=true` while paging—returns `CONVERSATION_CURSOR_INVALID` rather than
-silently skipping conversations.
+`GET /v1/conversations` uses opaque cursor pagination and returns active
+conversations by default. Use the dedicated
+`GET /v1/conversations/archived?limit=20&cursor=<opaque-cursor>` route for the
+caller's archived conversations. The legacy
+`GET /v1/conversations?archived=true` form remains supported for existing
+clients. Each item includes the caller's archive, effective mute, pin,
+favorite, and clear-history state. Pinned conversations sort before unpinned
+conversations within either archive mode; each segment is newest-activity
+first.
+Pass `pageInfo.nextCursor` unchanged to the same list route and archive mode.
+Cursors are bound to that mode, so using one in a different mode—including
+dropping `archived=true` while paging on the legacy route—returns
+`CONVERSATION_CURSOR_INVALID` rather than silently skipping conversations.
 `GET /v1/conversations/:conversationId` returns `CONVERSATION_NOT_FOUND` for
 both a missing conversation and a non-member, avoiding existence disclosure.
 After messages are sent, `latestMessage` contains a safe 120-code-point preview
 and `unreadCount` is specific to the signed-in user.
 Archived conversations remain archived when a new message arrives until the
-member explicitly restores them with the settings endpoint; their unread count
-continues to advance and is visible through `archived=true`.
+member explicitly restores them. Their unread count continues to advance and
+is visible through the dedicated archived list or the legacy `archived=true`
+query.
 
 ## Conversation settings
 
-Archive, mute, and pin are per-user preferences, so changing them never changes
-another participant's settings:
+Archive, mute, pin, and favorite are per-member preferences, so changing them
+never changes another participant's settings. These controls work identically
+for direct and group conversations.
+
+Use the dedicated archive routes for new clients:
+
+```http
+PUT /v1/conversations/550e8400-e29b-41d4-a716-446655440000/archive
+Authorization: Bearer <access-token>
+```
+
+The `PUT` archives the conversation for the caller. Send `DELETE` to the same
+path to unarchive it. Both operations are idempotent and return the full
+caller-specific `ConversationSettingsResponseDto`, including `archived`,
+`muted`, `pinned`, `favorited`, and all associated timestamps and clear-history
+boundary fields. Repeating archive preserves the original `archivedAt`;
+repeating unarchive keeps `archivedAt: null`. Neither no-op publishes another
+realtime event.
+
+The legacy settings route remains available for archive, pin, and indefinite
+mute updates:
 
 ```http
 PATCH /v1/conversations/550e8400-e29b-41d4-a716-446655440000/settings
@@ -235,12 +272,42 @@ Content-Type: application/json
 ```
 
 Every property is optional, but at least one must be supplied. Each supplied
-value must be a JSON boolean; explicit `null` is rejected. Repeating the same
-update is idempotent, preserves the original transition timestamp, and does not
-publish another realtime settings event.
-Mute is currently a persisted preference exposed through REST and realtime
-updates. Push delivery and mute-based notification filtering are not implemented
-yet, so muting does not suppress messages or Socket.IO events.
+value must be a JSON boolean; explicit `null` is rejected. On this compatibility
+route, `"muted": true` means mute indefinitely and `"muted": false` means
+unmute.
+
+Use the dedicated route when the user chooses a mute duration:
+
+```http
+PUT /v1/conversations/550e8400-e29b-41d4-a716-446655440000/mute
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "duration": "8_hours"
+}
+```
+
+`duration` must be one of `8_hours`, `24_hours`, `7_days`, or `always`. Finite
+windows expire after exactly the selected elapsed duration. A finite response
+contains the expiry in `mutedUntil`; an indefinite mute has `mutedAt` set and
+`mutedUntil: null`. Use
+`DELETE /v1/conversations/:conversationId/mute` to unmute.
+
+Use `PUT /v1/conversations/:conversationId/favorite` to add the conversation to
+the caller's favorites and `DELETE` on the same path to remove it. The response
+sets `favorited` and `favoritedAt` alongside the other caller-specific settings.
+
+Favorite, unmute, always-mute, archive, unarchive, and pin replays are
+idempotent: enabled states preserve their existing transition timestamp,
+disabled states keep it `null`, and no-op replays do not publish a duplicate
+realtime event. Reapplying a finite mute deliberately restarts the selected
+duration from the new request time. The
+`conversation.settings.updated` event includes `mutedUntil`, `favorited`, and
+`favoritedAt`. Treat this event as a refetch hint, not as an ordered state
+update; archive mutations publish it only when the caller's persisted state
+actually changes. Push delivery and mute-based notification filtering are not
+implemented yet, so muting does not suppress messages or Socket.IO events.
 
 ## Blocking users
 
@@ -364,6 +431,29 @@ Items are ordered newest first. Pass `pageInfo.nextCursor` unchanged on the
 same conversation route to load older messages; clients must not inspect or
 construct it.
 
+Clear the caller's current history with:
+
+```http
+DELETE /v1/conversations/550e8400-e29b-41d4-a716-446655440000/messages
+Authorization: Bearer <access-token>
+```
+
+```json
+{
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  "changed": true,
+  "clearedAt": "2026-09-04T12:00:00.000Z",
+  "clearedThroughMessageId": "9b2a35a6-6542-48b1-8232-0ac6476db74b"
+}
+```
+
+This is a per-member visibility boundary, not a delete operation. Other members
+retain the shared messages, and messages sent after the boundary remain visible
+to the caller. Repeating the request without a newer message returns the same
+boundary with `changed: false`. When the boundary changes, the caller's active
+devices receive `conversation.history.cleared` so they can discard matching
+local history and refetch.
+
 `POST /v1/conversations/:conversationId/read` remains available for older
 clients. It marks all messages currently persisted on the server as read for
 the caller, but it does not create participant receipt frontiers or publish a
@@ -445,7 +535,13 @@ socket.on('conversation.created', ({ conversationId, type, occurredAt }) => {
 });
 
 socket.on('conversation.settings.updated', (settings) => {
+  // Includes mutedUntil, favorited, and favoritedAt.
   // Sent only to active devices owned by the user whose settings changed.
+});
+
+socket.on('conversation.history.cleared', (event) => {
+  // Apply event.clearedAt + event.clearedThroughMessageId as one boundary.
+  // Sent only to active devices owned by the user who cleared the history.
 });
 
 socket.on('conversation.members.added', ({ conversationId, memberIds }) => {
@@ -468,9 +564,21 @@ token.
 
 There is intentionally no client-to-server socket event for sending messages or
 writing receipts. REST stays authoritative; socket events are low-latency hints.
-Conversation creation and group-lifecycle writes return after their database
-transaction commits and do not wait for socket delivery, so a delayed realtime
-path cannot turn a successful write into an ambiguous HTTP timeout.
+Conversation creation, settings, clear-history, and group-lifecycle writes
+return after their database transaction commits and do not wait for socket
+delivery, so a delayed realtime path cannot turn a successful write into an
+ambiguous HTTP timeout.
+`conversation.settings.updated` contains the caller's current archive, mute,
+pin, and favorite snapshot, including `mutedUntil`, `favorited`, and
+`favoritedAt`. Treat it as a refetch hint rather than an ordered state update:
+concurrent writes can publish out of commit order, so coalesce events and fetch
+`GET /v1/conversations/:conversationId` before replacing local settings.
+`conversation.history.cleared` is sent only to the clearing user's active
+devices and contains `conversationId`, `userId`, `clearedAt`,
+`clearedThroughMessageId`, and `occurredAt`. Treat the timestamp and message ID
+as one boundary and persist the greatest boundary received. Remove local
+messages at or before it, and ignore any delayed or reordered `message.created`
+event at or before that boundary.
 Group lifecycle writes are also REST-authoritative. The server publishes
 `conversation.metadata.updated`, `conversation.members.added`,
 `conversation.member.removed`, `conversation.member.role.updated`,
@@ -659,7 +767,8 @@ and `MESSAGE_IDEMPOTENCY_CONFLICT`.
 - Discovery and conversation responses use a public user shape that omits phone numbers.
 - Bidirectional block policy is enforced for discovery and direct realtime/message access without exposing which side blocked.
 - Direct-conversation participant pairs are stored in canonical UUID order under a database unique constraint.
-- Conversation archive, mute, and pin state is stored independently for each member.
+- Conversation archive, mute window, pin, favorite, and clear-history boundary are stored independently for each member.
+- Clearing history hides messages only for that member and never deletes shared message rows.
 - Group creation and lifecycle mutations enforce one owner, role permissions, member limits, and inviter-to-invitee block checks atomically.
 - Realtime membership changes refresh cached presence/typing authorization, and message events recheck current membership before delivery.
 - Message send retries are deduplicated by `(senderId, clientMessageId)` before unread counters change.
@@ -735,6 +844,11 @@ The group-lifecycle release also requires
 data, rejects multiple owners immediately, and checks at transaction commit
 that every surviving group has exactly one owner while direct conversations
 have none.
+
+Timed mute, favorites, and per-member clear history require
+`20260904120000_add_conversation_mute_favorite_and_clear`. It stores finite mute
+expiry and a stable `(clearedAt, clearedThroughMessageId)` visibility boundary;
+it does not delete or rewrite existing messages.
 
 Run the real-PostgreSQL integration suite against a dedicated database whose
 name ends in `_integration` (or a dedicated schema beginning with

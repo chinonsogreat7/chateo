@@ -79,12 +79,13 @@ All UUIDs and timestamps below are examples. Actual values and participant
 ordering depend on the accounts, conversation, and server time used for the
 test.
 
-Open **Events**, add each server event below, and select **Listen** for all 14:
+Open **Events**, add each server event below, and select **Listen** for all 15:
 
 | Event                              | When it is received                                                |
 | ---------------------------------- | ------------------------------------------------------------------ |
 | `conversation.created`             | The user is added to a new direct or group conversation            |
-| `conversation.settings.updated`    | Archive, mute, or pin state changes on another user device         |
+| `conversation.settings.updated`    | Archive, mute, pin, or favorite changes for this signed-in user    |
+| `conversation.history.cleared`     | This user's clear boundary changes on another active device        |
 | `conversation.metadata.updated`    | A group name or avatar changes                                     |
 | `conversation.members.added`       | One or more users join a group                                     |
 | `conversation.member.removed`      | A user is removed from or leaves a group                           |
@@ -117,15 +118,64 @@ Open **Events**, add each server event below, and select **Listen** for all 14:
   "archived": true,
   "muted": false,
   "pinned": true,
+  "favorited": true,
   "archivedAt": "2026-09-03T12:00:00.000Z",
   "mutedAt": null,
+  "mutedUntil": null,
   "pinnedAt": "2026-09-03T12:00:00.000Z",
+  "favoritedAt": "2026-09-03T12:00:00.000Z",
   "occurredAt": "2026-09-03T12:00:00.000Z"
 }
 ```
 
 This event is emitted only when the persisted state changes. Repeating an
-identical settings PATCH produces no duplicate event.
+unchanged archive, unarchive, favorite, unmute, or always-mute mutation produces
+no duplicate event. Reapplying a finite mute restarts that duration and
+publishes its new expiry. Finite mutes expose their exact expiry in
+`mutedUntil`; `always` uses `mutedUntil: null`. Archive, mute, and favorite
+settings are per member, work for direct chats and groups, and do not suppress
+Socket.IO delivery.
+Trigger it from an authenticated HTTP request with `PUT` or `DELETE` on
+`{{apiBaseUrl}}/conversations/{{conversationId}}/mute` or `/favorite`. A mute
+`PUT` body is `{ "duration": "8_hours" }`; the other accepted durations are
+`24_hours`, `7_days`, and `always`.
+
+Archive with
+`PUT {{apiBaseUrl}}/conversations/{{conversationId}}/archive` and unarchive with
+`DELETE` on the same path. Both calls are idempotent and return the complete
+caller-specific settings snapshot. List archived conversations with
+`GET {{apiBaseUrl}}/conversations/archived?limit=20`; pass `pageInfo.nextCursor`
+back as the `cursor` query value for the next page. The legacy
+`GET {{apiBaseUrl}}/conversations?archived=true` and
+`PATCH {{apiBaseUrl}}/conversations/{{conversationId}}/settings` forms remain
+supported for existing clients.
+
+Treat this snapshot as a refetch hint, not an ordered state update. Concurrent
+settings writes can publish out of commit order; coalesce the hints and fetch
+`GET {{apiBaseUrl}}/conversations/{{conversationId}}` before replacing local
+settings.
+
+### `conversation.history.cleared`
+
+```json
+{
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  "userId": "956d3268-0f92-4bc1-a2bb-9c4768ee11ee",
+  "clearedAt": "2026-09-04T12:00:00.000Z",
+  "clearedThroughMessageId": "a47d0ec7-fba4-4bdf-9aa4-7639f6ec0f70",
+  "occurredAt": "2026-09-04T12:00:01.000Z"
+}
+```
+
+The event is sent only to active devices owned by the user who cleared the
+history. Treat `clearedAt` and `clearedThroughMessageId` as one boundary,
+persist the greatest boundary received, remove local messages at or before it,
+and ignore a delayed `message.created` event at or before it. Then refetch
+history. The operation does not delete shared messages for other conversation
+members. Trigger it with
+`DELETE {{apiBaseUrl}}/conversations/{{conversationId}}/messages` using that
+user's bearer token; the `200 OK` response includes `conversationId`, `changed`,
+`clearedAt`, and `clearedThroughMessageId`.
 
 ### Group lifecycle events
 

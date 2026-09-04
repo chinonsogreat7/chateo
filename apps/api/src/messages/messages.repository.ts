@@ -1,4 +1,5 @@
 import type {
+  ClearConversationMessagesResult,
   ListMessagesResult,
   MarkConversationReadResult,
   MessagePageCursor,
@@ -30,4 +31,10 @@ export abstract class MessagesRepository {
     userId: string,
     now: Date,
   ): Promise<MarkConversationReadResult>;
+
+  abstract clearForMember(
+    conversationId: string,
+    userId: string,
+    now: Date,
+  ): Promise<ClearConversationMessagesResult>;
 }

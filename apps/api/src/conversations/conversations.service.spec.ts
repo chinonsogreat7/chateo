@@ -194,9 +194,14 @@ describe('ConversationsService', () => {
         archived: false,
         muted: false,
         pinned: false,
+        favorited: false,
         archivedAt: null,
         mutedAt: null,
+        mutedUntil: null,
         pinnedAt: null,
+        favoritedAt: null,
+        clearedAt: null,
+        clearedThroughMessageId: null,
       },
       lastActivityAt: NOW.toISOString(),
       createdAt: NOW.toISOString(),
@@ -262,9 +267,14 @@ describe('ConversationsService', () => {
         archived: false,
         muted: false,
         pinned: false,
+        favorited: false,
         archivedAt: null,
         mutedAt: null,
+        mutedUntil: null,
         pinnedAt: null,
+        favoritedAt: null,
+        clearedAt: null,
+        clearedThroughMessageId: null,
       },
       lastActivityAt: NOW.toISOString(),
       createdAt: NOW.toISOString(),
@@ -679,6 +689,65 @@ describe('ConversationsService', () => {
     expect(result.unreadCount).toBe(3);
   });
 
+  it('hides a latest-message preview at the caller clear boundary', async () => {
+    const { repository, service } = createService();
+    repository.findForUser.mockResolvedValue(
+      conversation({
+        latestMessage: {
+          id: MESSAGE_ID,
+          senderId: PARTICIPANT_ID,
+          kind: 'TEXT',
+          text: 'Hidden only for this member',
+          createdAt: NOW,
+        },
+        settings: {
+          archivedAt: null,
+          mutedAt: null,
+          mutedUntil: null,
+          pinnedAt: null,
+          favoritedAt: null,
+          clearedAt: NOW,
+          clearedThroughMessageId: MESSAGE_ID,
+        },
+      }),
+    );
+
+    await expect(service.get(USER_ID, CONVERSATION_ID)).resolves.toMatchObject({
+      latestMessage: null,
+      settings: {
+        clearedAt: NOW.toISOString(),
+        clearedThroughMessageId: MESSAGE_ID,
+      },
+    });
+  });
+
+  it('reports an expired mute as inactive while preserving its timestamps', async () => {
+    const { repository, service } = createService();
+    const mutedAt = new Date(NOW.getTime() - 60_000);
+    const mutedUntil = new Date(NOW.getTime() - 1);
+    repository.findForUser.mockResolvedValue(
+      conversation({
+        settings: {
+          archivedAt: null,
+          mutedAt,
+          mutedUntil,
+          pinnedAt: null,
+          favoritedAt: null,
+          clearedAt: null,
+          clearedThroughMessageId: null,
+        },
+      }),
+    );
+
+    await expect(service.get(USER_ID, CONVERSATION_ID)).resolves.toMatchObject({
+      settings: {
+        muted: false,
+        mutedAt: mutedAt.toISOString(),
+        mutedUntil: mutedUntil.toISOString(),
+      },
+    });
+  });
+
   it('caps message previews at 120 Unicode code points', async () => {
     const { repository, service } = createService();
     const exactlyAtLimit = '👋'.repeat(120);
@@ -776,7 +845,15 @@ describe('ConversationsService', () => {
   it('preserves pinned cursor state across pages', async () => {
     const { repository, service } = createService();
     const pinned = conversation({
-      settings: { archivedAt: null, mutedAt: null, pinnedAt: NOW },
+      settings: {
+        archivedAt: null,
+        mutedAt: null,
+        mutedUntil: null,
+        pinnedAt: NOW,
+        favoritedAt: null,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      },
     });
     const lookahead = conversation({
       id: '33333333-3333-4333-8333-333333333334',
@@ -801,11 +878,11 @@ describe('ConversationsService', () => {
     );
   });
 
-  it('requests archived conversations separately when the filter is set', async () => {
+  it('forces the archived filter for the dedicated archived list', async () => {
     const { repository, service } = createService();
     repository.listForUser.mockResolvedValue([]);
 
-    await expect(service.list(USER_ID, 20, undefined, true)).resolves.toEqual({
+    await expect(service.listArchived(USER_ID, 20)).resolves.toEqual({
       items: [],
       pageInfo: { nextCursor: null, hasNextPage: false },
     });

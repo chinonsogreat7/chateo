@@ -48,14 +48,41 @@ export class ConversationMemberSettingsDto {
   @ApiProperty()
   pinned!: boolean;
 
+  @ApiProperty()
+  favorited!: boolean;
+
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   archivedAt!: string | null;
 
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   mutedAt!: string | null;
 
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description:
+      'When a finite mute expires. Null while muted indefinitely or unmuted.',
+  })
+  mutedUntil!: string | null;
+
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   pinnedAt!: string | null;
+
+  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  favoritedAt!: string | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description:
+      'Messages at or before this per-user boundary are hidden from history.',
+  })
+  clearedAt!: string | null;
+
+  @ApiProperty({ type: String, format: 'uuid', nullable: true })
+  clearedThroughMessageId!: string | null;
 }
 
 abstract class ConversationResponseBaseDto {

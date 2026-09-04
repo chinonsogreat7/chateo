@@ -42,6 +42,7 @@ import type { ConversationResponseDto } from './dto/conversation-response.dto';
 import { CreateDirectConversationDto } from './dto/create-direct-conversation.dto';
 import { CreateGroupConversationDto } from './dto/create-group-conversation.dto';
 import { GroupMemberParamsDto } from './dto/group-member-params.dto';
+import { ListArchivedConversationsQueryDto } from './dto/list-archived-conversations-query.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
 import { TransferGroupOwnershipDto } from './dto/transfer-group-ownership.dto';
 import { UpdateGroupConversationDto } from './dto/update-group-conversation.dto';
@@ -363,6 +364,23 @@ export class ConversationsController {
       query.limit,
       query.cursor,
       query.archived,
+    );
+  }
+
+  @Get('archived')
+  @ApiOperation({ summary: "List the signed-in user's archived conversations" })
+  @ApiOkResponse({ type: ConversationListResponseDto })
+  @ApiBadRequestResponse({
+    description: 'The archived-conversation cursor or limit is invalid.',
+  })
+  listArchived(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListArchivedConversationsQueryDto,
+  ): Promise<ConversationListResponseDto> {
+    return this.conversationsService.listArchived(
+      user.sub,
+      query.limit,
+      query.cursor,
     );
   }
 

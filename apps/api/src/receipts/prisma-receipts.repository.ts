@@ -144,6 +144,8 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
       },
       select: {
         joinedAt: true,
+        clearedAt: true,
+        clearedThroughMessageId: true,
         lastReadAt: true,
         unreadCount: true,
         receiptVersion: true,
@@ -159,7 +161,22 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
         id: input.throughMessageId,
         conversationId: input.conversationId,
         senderId: { not: input.userId },
-        createdAt: { gte: membership.joinedAt },
+        AND: [
+          { createdAt: { gte: membership.joinedAt } },
+          ...(membership.clearedAt && membership.clearedThroughMessageId
+            ? [
+                {
+                  OR: [
+                    { createdAt: { gt: membership.clearedAt } },
+                    {
+                      createdAt: membership.clearedAt,
+                      id: { gt: membership.clearedThroughMessageId },
+                    },
+                  ],
+                },
+              ]
+            : []),
+        ],
       },
       select: { id: true, createdAt: true },
     });
@@ -172,6 +189,8 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
         input,
         boundary.createdAt,
         membership.joinedAt,
+        membership.clearedAt,
+        membership.clearedThroughMessageId,
       );
     } else {
       await this.markDeliveredRows(
@@ -179,6 +198,8 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
         input,
         boundary.createdAt,
         membership.joinedAt,
+        membership.clearedAt,
+        membership.clearedThroughMessageId,
       );
     }
 
@@ -195,7 +216,22 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
         where: {
           conversationId: input.conversationId,
           senderId: { not: input.userId },
-          createdAt: { gte: membership.joinedAt },
+          AND: [
+            { createdAt: { gte: membership.joinedAt } },
+            ...(membership.clearedAt && membership.clearedThroughMessageId
+              ? [
+                  {
+                    OR: [
+                      { createdAt: { gt: membership.clearedAt } },
+                      {
+                        createdAt: membership.clearedAt,
+                        id: { gt: membership.clearedThroughMessageId },
+                      },
+                    ],
+                  },
+                ]
+              : []),
+          ],
           receipts: {
             none: { userId: input.userId, readAt: { not: null } },
           },
@@ -320,7 +356,19 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
     input: MarkReceiptThroughInput,
     boundaryCreatedAt: Date,
     joinedAt: Date,
+    clearedAt: Date | null,
+    clearedThroughMessageId: string | null,
   ): Promise<ChangedReceiptRow[]> {
+    const clearedBoundary =
+      clearedAt && clearedThroughMessageId
+        ? Prisma.sql`AND (
+          m."created_at" > ${clearedAt}
+          OR (
+            m."created_at" = ${clearedAt}
+            AND m."id" > ${clearedThroughMessageId}::uuid
+          )
+        )`
+        : Prisma.empty;
     return transaction.$queryRaw<ChangedReceiptRow[]>(Prisma.sql`
       INSERT INTO "message_receipts" (
         "message_id", "conversation_id", "user_id", "delivered_at"
@@ -331,6 +379,7 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
       WHERE m."conversation_id" = ${input.conversationId}::uuid
         AND m."sender_id" <> ${input.userId}::uuid
         AND m."created_at" >= ${joinedAt}
+        ${clearedBoundary}
         AND (
           m."created_at" < ${boundaryCreatedAt}
           OR (
@@ -348,7 +397,19 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
     input: MarkReceiptThroughInput,
     boundaryCreatedAt: Date,
     joinedAt: Date,
+    clearedAt: Date | null,
+    clearedThroughMessageId: string | null,
   ): Promise<ChangedReceiptRow[]> {
+    const clearedBoundary =
+      clearedAt && clearedThroughMessageId
+        ? Prisma.sql`AND (
+          m."created_at" > ${clearedAt}
+          OR (
+            m."created_at" = ${clearedAt}
+            AND m."id" > ${clearedThroughMessageId}::uuid
+          )
+        )`
+        : Prisma.empty;
     return transaction.$queryRaw<ChangedReceiptRow[]>(Prisma.sql`
       INSERT INTO "message_receipts" (
         "message_id", "conversation_id", "user_id", "delivered_at", "read_at"
@@ -360,6 +421,7 @@ export class PrismaReceiptsRepository extends ReceiptsRepository {
       WHERE m."conversation_id" = ${input.conversationId}::uuid
         AND m."sender_id" <> ${input.userId}::uuid
         AND m."created_at" >= ${joinedAt}
+        ${clearedBoundary}
         AND (
           m."created_at" < ${boundaryCreatedAt}
           OR (

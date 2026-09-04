@@ -1,5 +1,7 @@
 import { Clock } from '../src/auth/providers/clock';
+import { NoopConversationEventsPublisher } from '../src/conversations/conversation-events.publisher';
 import { PrismaConversationsRepository } from '../src/conversations/prisma-conversations.repository';
+import { ConversationsService } from '../src/conversations/conversations.service';
 import { PrismaService } from '../src/database/prisma.service';
 import { NoopMessageEventsPublisher } from '../src/messages/message-events.publisher';
 import { PrismaMessagesRepository } from '../src/messages/prisma-messages.repository';
@@ -36,6 +38,11 @@ describe('Prisma messaging persistence', () => {
     messagesRepository,
     new FixedClock(),
     new NoopMessageEventsPublisher(),
+  );
+  const conversationsService = new ConversationsService(
+    conversationsRepository,
+    new FixedClock(),
+    new NoopConversationEventsPublisher(),
   );
   let conversationId: string;
 
@@ -82,7 +89,13 @@ describe('Prisma messaging persistence', () => {
     await prisma.message.deleteMany({ where: { conversationId } });
     await prisma.conversationMember.updateMany({
       where: { conversationId },
-      data: { unreadCount: 0, lastReadAt: null },
+      data: {
+        unreadCount: 0,
+        lastReadAt: null,
+        archivedAt: null,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      },
     });
     await prisma.conversation.update({
       where: { id: conversationId },
@@ -166,6 +179,13 @@ describe('Prisma messaging persistence', () => {
     ).resolves.toEqual({ status: 'conversation-not-found' });
     await expect(
       messagesRepository.markRead(
+        conversationId,
+        OUTSIDER_ID,
+        MESSAGE_TIME_ONE,
+      ),
+    ).resolves.toEqual({ status: 'conversation-not-found' });
+    await expect(
+      messagesRepository.clearForMember(
         conversationId,
         OUTSIDER_ID,
         MESSAGE_TIME_ONE,
@@ -276,6 +296,126 @@ describe('Prisma messaging persistence', () => {
       expectedIds.slice(0, 1),
     );
     expect(secondPage.items.map(({ id }) => id)).toEqual(expectedIds.slice(1));
+  });
+
+  it('clears history at a per-member tuple boundary and reveals the next message', async () => {
+    const first = await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_ONE,
+      'Clear boundary one',
+      MESSAGE_TIME_TWO,
+    );
+    const second = await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_TWO,
+      'Clear boundary two',
+      MESSAGE_TIME_TWO,
+    );
+    const boundary = [first, second].sort((left, right) =>
+      right.id.localeCompare(left.id),
+    )[0];
+    if (!boundary) throw new Error('Expected a clear boundary message.');
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(2);
+
+    await expect(
+      messagesRepository.clearForMember(
+        conversationId,
+        RECIPIENT_ID,
+        MESSAGE_TIME_THREE,
+      ),
+    ).resolves.toEqual({
+      status: 'cleared',
+      conversationId,
+      userId: RECIPIENT_ID,
+      changed: true,
+      clearedAt: MESSAGE_TIME_TWO,
+      clearedThroughMessageId: boundary.id,
+      occurredAt: MESSAGE_TIME_THREE,
+    });
+    await expect(
+      prisma.conversationMember.findUniqueOrThrow({
+        where: {
+          conversationId_userId: {
+            conversationId,
+            userId: RECIPIENT_ID,
+          },
+        },
+        select: {
+          clearedAt: true,
+          clearedThroughMessageId: true,
+          unreadCount: true,
+        },
+      }),
+    ).resolves.toEqual({
+      clearedAt: MESSAGE_TIME_TWO,
+      clearedThroughMessageId: boundary.id,
+      unreadCount: 0,
+    });
+    await expect(
+      prisma.message.count({ where: { conversationId } }),
+    ).resolves.toBe(2);
+    await expect(
+      messagesRepository.listForMember(conversationId, RECIPIENT_ID, null, 20),
+    ).resolves.toMatchObject({ status: 'found', messages: [] });
+    await expect(
+      messagesRepository.listForMember(conversationId, SENDER_ID, null, 20),
+    ).resolves.toMatchObject({
+      status: 'found',
+      messages: expect.arrayContaining([
+        expect.objectContaining({ id: first.id }),
+        expect.objectContaining({ id: second.id }),
+      ]),
+    });
+
+    const clearedConversation = await conversationsService.get(
+      RECIPIENT_ID,
+      conversationId,
+    );
+    expect(clearedConversation.latestMessage).toBeNull();
+    expect(clearedConversation.settings).toMatchObject({
+      clearedAt: MESSAGE_TIME_TWO.toISOString(),
+      clearedThroughMessageId: boundary.id,
+    });
+    await expect(
+      conversationsService.get(SENDER_ID, conversationId),
+    ).resolves.toMatchObject({ latestMessage: { id: boundary.id } });
+
+    await expect(
+      messagesRepository.clearForMember(
+        conversationId,
+        RECIPIENT_ID,
+        MESSAGE_TIME_FOUR,
+      ),
+    ).resolves.toMatchObject({ status: 'cleared', changed: false });
+
+    const next = await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_THREE,
+      'Visible after clear',
+      MESSAGE_TIME_ONE,
+    );
+    expect(next.createdAt).toEqual(new Date(MESSAGE_TIME_TWO.getTime() + 1));
+    await expect(
+      messagesRepository.listForMember(conversationId, RECIPIENT_ID, null, 20),
+    ).resolves.toMatchObject({
+      status: 'found',
+      messages: [expect.objectContaining({ id: next.id })],
+    });
+    const senderHistory = await messagesRepository.listForMember(
+      conversationId,
+      SENDER_ID,
+      null,
+      20,
+    );
+    expect(senderHistory.status).toBe('found');
+    if (senderHistory.status !== 'found') {
+      throw new Error('Expected sender history to remain accessible.');
+    }
+    expect(senderHistory.messages).toHaveLength(3);
+    await expect(
+      conversationsService.get(RECIPIENT_ID, conversationId),
+    ).resolves.toMatchObject({ latestMessage: { id: next.id } });
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
   });
 
   it('keeps conversation activity monotonic when an older timestamp is persisted later', async () => {
@@ -397,6 +537,48 @@ describe('Prisma messaging persistence', () => {
       id: conversationId,
       latestMessage: { id: message.id },
       unreadCount: 0,
+    });
+  });
+
+  it('keeps an incoming message archived while advancing its preview and unread count', async () => {
+    await prisma.conversationMember.update({
+      where: {
+        conversationId_userId: {
+          conversationId,
+          userId: RECIPIENT_ID,
+        },
+      },
+      data: { archivedAt: BASE_TIME },
+    });
+
+    const message = await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_ONE,
+      'Still archived',
+      MESSAGE_TIME_ONE,
+    );
+
+    await expect(
+      conversationsService.list(RECIPIENT_ID, 20),
+    ).resolves.toMatchObject({ items: [] });
+    await expect(
+      conversationsService.listArchived(RECIPIENT_ID, 20),
+    ).resolves.toMatchObject({
+      items: [
+        {
+          id: conversationId,
+          latestMessage: {
+            id: message.id,
+            preview: 'Still archived',
+            createdAt: MESSAGE_TIME_ONE.toISOString(),
+          },
+          unreadCount: 1,
+          settings: {
+            archived: true,
+            archivedAt: BASE_TIME.toISOString(),
+          },
+        },
+      ],
     });
   });
 

@@ -85,7 +85,13 @@ describe('Prisma persistent message receipts', () => {
     });
     await prisma.conversationMember.updateMany({
       where: { conversationId: { in: [conversationId, secondConversationId] } },
-      data: { unreadCount: 0, lastReadAt: null, receiptVersion: 0 },
+      data: {
+        unreadCount: 0,
+        lastReadAt: null,
+        receiptVersion: 0,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      },
     });
   });
 
@@ -419,6 +425,77 @@ describe('Prisma persistent message receipts', () => {
       status: 'updated',
       changed: false,
       receipt: { throughMessageId: third.id, version: 2, unreadCount: 0 },
+    });
+    await expect(memberUnreadCount(BOB_ID)).resolves.toBe(0);
+  });
+
+  it('rejects cleared receipt boundaries without reviving unread messages', async () => {
+    const first = await sendMessage(
+      conversationId,
+      ALICE_ID,
+      CLIENT_MESSAGE_ONE,
+      'Cleared receipt one',
+      MESSAGE_TIME_ONE,
+    );
+    const second = await sendMessage(
+      conversationId,
+      ALICE_ID,
+      CLIENT_MESSAGE_TWO,
+      'Cleared receipt two',
+      MESSAGE_TIME_TWO,
+    );
+    await expect(memberUnreadCount(BOB_ID)).resolves.toBe(2);
+
+    await expect(
+      messagesRepository.clearForMember(
+        conversationId,
+        BOB_ID,
+        RECEIPT_TIME_ONE,
+      ),
+    ).resolves.toMatchObject({
+      status: 'cleared',
+      changed: true,
+      clearedAt: MESSAGE_TIME_TWO,
+      clearedThroughMessageId: second.id,
+    });
+    await expect(memberUnreadCount(BOB_ID)).resolves.toBe(0);
+
+    for (const clearedMessage of [first, second]) {
+      await expect(
+        mark(
+          conversationId,
+          BOB_ID,
+          clearedMessage.id,
+          'READ',
+          RECEIPT_TIME_TWO,
+        ),
+      ).resolves.toEqual({ status: 'conversation-not-found' });
+    }
+    await expect(memberUnreadCount(BOB_ID)).resolves.toBe(0);
+    await expect(
+      prisma.messageReceipt.count({
+        where: { conversationId, userId: BOB_ID },
+      }),
+    ).resolves.toBe(0);
+
+    const next = await sendMessage(
+      conversationId,
+      ALICE_ID,
+      CLIENT_MESSAGE_THREE,
+      'Receipt after clear',
+      MESSAGE_TIME_THREE,
+    );
+    await expect(memberUnreadCount(BOB_ID)).resolves.toBe(1);
+    await expect(
+      mark(conversationId, BOB_ID, first.id, 'READ', RECEIPT_TIME_TWO),
+    ).resolves.toEqual({ status: 'conversation-not-found' });
+    await expect(memberUnreadCount(BOB_ID)).resolves.toBe(1);
+    await expect(
+      mark(conversationId, BOB_ID, next.id, 'READ', RECEIPT_TIME_TWO),
+    ).resolves.toMatchObject({
+      status: 'updated',
+      changed: true,
+      receipt: { throughMessageId: next.id, unreadCount: 0 },
     });
     await expect(memberUnreadCount(BOB_ID)).resolves.toBe(0);
   });

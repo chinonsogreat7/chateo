@@ -135,7 +135,9 @@ describe('RealtimeConversationEventsPublisher', () => {
       userId: USER_ONE_ID,
       archivedAt: NOW,
       mutedAt: null,
+      mutedUntil: null,
       pinnedAt: NOW,
+      favoritedAt: NOW,
       occurredAt: NOW,
     });
 
@@ -148,9 +150,12 @@ describe('RealtimeConversationEventsPublisher', () => {
         archived: true,
         muted: false,
         pinned: true,
+        favorited: true,
         archivedAt: NOW.toISOString(),
         mutedAt: null,
+        mutedUntil: null,
         pinnedAt: NOW.toISOString(),
+        favoritedAt: NOW.toISOString(),
         occurredAt: NOW.toISOString(),
       },
     );

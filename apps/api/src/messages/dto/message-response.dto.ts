@@ -49,3 +49,19 @@ export class ConversationReadStateResponseDto {
   @ApiProperty({ minimum: 0, example: 0 })
   unreadCount!: number;
 }
+
+export class ClearConversationMessagesResponseDto {
+  @ApiProperty({ format: 'uuid' })
+  conversationId!: string;
+
+  @ApiProperty({
+    description: 'Whether the stored clear boundary or unread state changed.',
+  })
+  changed!: boolean;
+
+  @ApiProperty({ format: 'date-time', type: String, nullable: true })
+  clearedAt!: string | null;
+
+  @ApiProperty({ format: 'uuid', type: String, nullable: true })
+  clearedThroughMessageId!: string | null;
+}

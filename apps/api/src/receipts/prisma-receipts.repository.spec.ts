@@ -44,6 +44,8 @@ function rawQueryTransactionError(
 function transactionState() {
   const memberFindUnique = jest.fn().mockResolvedValue({
     joinedAt: JOINED_AT,
+    clearedAt: null,
+    clearedThroughMessageId: null,
     lastReadAt: null,
     unreadCount: 3,
     receiptVersion: 0,
@@ -140,7 +142,7 @@ describe('PrismaReceiptsRepository', () => {
         id: MESSAGE_ID,
         conversationId: CONVERSATION_ID,
         senderId: { not: USER_ID },
-        createdAt: { gte: JOINED_AT },
+        AND: [{ createdAt: { gte: JOINED_AT } }],
       },
       select: { id: true, createdAt: true },
     });
@@ -185,7 +187,7 @@ describe('PrismaReceiptsRepository', () => {
       where: {
         conversationId: CONVERSATION_ID,
         senderId: { not: USER_ID },
-        createdAt: { gte: JOINED_AT },
+        AND: [{ createdAt: { gte: JOINED_AT } }],
         receipts: { none: { userId: USER_ID, readAt: { not: null } } },
       },
     });
@@ -203,6 +205,59 @@ describe('PrismaReceiptsRepository', () => {
       },
       select: { receiptVersion: true },
     });
+  });
+
+  it('rejects cleared rows from receipt boundaries, bulk writes, and unread reconciliation', async () => {
+    const { repository, transaction } = createRepository();
+    const state = transactionState();
+    const clearedAt = new Date('2026-08-12T20:00:00.000Z');
+    const clearedThroughMessageId = '22222222-2222-4222-8222-222222222222';
+    state.memberFindUnique.mockResolvedValue({
+      joinedAt: JOINED_AT,
+      clearedAt,
+      clearedThroughMessageId,
+      lastReadAt: null,
+      unreadCount: 3,
+      receiptVersion: 0,
+    });
+    state.receiptFindFirst.mockReset().mockResolvedValue({
+      messageId: MESSAGE_ID,
+      deliveredAt: NOW,
+      readAt: NOW,
+      message: { createdAt: BOUNDARY_AT },
+    });
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation(state.client),
+    );
+
+    await expect(
+      repository.markThrough(input({ status: 'READ' })),
+    ).resolves.toMatchObject({ status: 'updated' });
+
+    const afterClearBoundary = {
+      OR: [
+        { createdAt: { gt: clearedAt } },
+        {
+          createdAt: clearedAt,
+          id: { gt: clearedThroughMessageId },
+        },
+      ],
+    };
+    expect(state.boundaryFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [{ createdAt: { gte: JOINED_AT } }, afterClearBoundary],
+        }),
+      }),
+    );
+    expect(state.messageCount).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        AND: [{ createdAt: { gte: JOINED_AT } }, afterClearBoundary],
+      }),
+    });
+    expect(sqlText(state.queryRaw)).toContain('m."created_at" > ?');
+    expect(sqlText(state.queryRaw)).toContain('m."id" > ?::uuid');
   });
 
   it('preserves the first transition timestamp and suppresses replay events', async () => {

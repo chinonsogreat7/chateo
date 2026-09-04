@@ -15,7 +15,8 @@ export class UpdateConversationSettingsDto {
 
   @ApiPropertyOptional({
     type: Boolean,
-    description: 'Mute or unmute the conversation for the signed-in user.',
+    description:
+      'Mute indefinitely or unmute the conversation. Use the dedicated mute endpoint for a finite duration.',
   })
   @ValidateIf(
     (_object: UpdateConversationSettingsDto, value: unknown) =>

@@ -39,7 +39,11 @@ const conversationWithMembers = {
       role: true,
       archivedAt: true,
       mutedAt: true,
+      mutedUntil: true,
       pinnedAt: true,
+      favoritedAt: true,
+      clearedAt: true,
+      clearedThroughMessageId: true,
       unreadCount: true,
       user: {
         select: {
@@ -1011,7 +1015,11 @@ export class PrismaConversationsRepository extends ConversationsRepository {
       settings: {
         archivedAt: actorMember.archivedAt,
         mutedAt: actorMember.mutedAt,
+        mutedUntil: actorMember.mutedUntil,
         pinnedAt: actorMember.pinnedAt,
+        favoritedAt: actorMember.favoritedAt,
+        clearedAt: actorMember.clearedAt,
+        clearedThroughMessageId: actorMember.clearedThroughMessageId,
       },
       latestMessage: latestMessage
         ? {

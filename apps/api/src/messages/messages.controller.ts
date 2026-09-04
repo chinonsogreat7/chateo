@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -25,6 +26,7 @@ import type { AuthenticatedUser } from '../common/types/authenticated-request';
 import { ListMessagesQueryDto } from './dto/list-messages-query.dto';
 import { MessageConversationParamsDto } from './dto/message-params.dto';
 import {
+  ClearConversationMessagesResponseDto,
   ConversationReadStateResponseDto,
   MessageHistoryResponseDto,
   MessageResponseDto,
@@ -87,6 +89,26 @@ export class MessagesController {
       query.limit,
       query.cursor,
     );
+  }
+
+  @Delete(':conversationId/messages')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Clear the caller's message history for a conversation",
+  })
+  @ApiOkResponse({
+    type: ClearConversationMessagesResponseDto,
+    description:
+      'The current history was hidden for this member. Shared messages were not deleted.',
+  })
+  @ApiNotFoundResponse({
+    description: 'The conversation is missing or the user is not a member.',
+  })
+  clear(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: MessageConversationParamsDto,
+  ): Promise<ClearConversationMessagesResponseDto> {
+    return this.messagesService.clear(user.sub, params.conversationId);
   }
 
   @Post(':conversationId/read')

@@ -1,8 +1,13 @@
 import { ConversationMemberRole } from '@prisma/client';
+import { Clock } from '../src/auth/providers/clock';
 import { PrismaService } from '../src/database/prisma.service';
 import { PrismaBlocksRepository } from '../src/blocks/prisma-blocks.repository';
+import { ConversationSettingsService } from '../src/conversation-settings/conversation-settings.service';
+import { ConversationMuteDuration } from '../src/conversation-settings/dto/mute-conversation.dto';
 import { PrismaConversationSettingsRepository } from '../src/conversation-settings/prisma-conversation-settings.repository';
+import { NoopConversationEventsPublisher } from '../src/conversations/conversation-events.publisher';
 import { PrismaConversationsRepository } from '../src/conversations/prisma-conversations.repository';
+import { ConversationsService } from '../src/conversations/conversations.service';
 import { PrismaDiscoveryRepository } from '../src/discovery/prisma-discovery.repository';
 
 const USER_ONE_ID = '00000000-0000-4000-8000-000000000301';
@@ -23,12 +28,42 @@ const USER_IDS = [
 ];
 const NOW = new Date('2026-08-12T14:00:00.000Z');
 
+class MutableClock extends Clock {
+  constructor(private current: Date) {
+    super();
+  }
+
+  now(): Date {
+    return this.current;
+  }
+
+  set(current: Date): void {
+    this.current = current;
+  }
+}
+
 describe('Prisma direct-conversation concurrency', () => {
   const prisma = new PrismaService();
   const repository = new PrismaConversationsRepository(prisma);
   const discoveryRepository = new PrismaDiscoveryRepository(prisma);
   const blocksRepository = new PrismaBlocksRepository(prisma);
   const settingsRepository = new PrismaConversationSettingsRepository(prisma);
+  const clock = new MutableClock(NOW);
+  const eventsPublisher = new NoopConversationEventsPublisher();
+  const settingsService = new ConversationSettingsService(
+    settingsRepository,
+    clock,
+    eventsPublisher,
+  );
+  const conversationsService = new ConversationsService(
+    repository,
+    clock,
+    eventsPublisher,
+  );
+
+  beforeEach(() => {
+    clock.set(NOW);
+  });
 
   beforeAll(async () => {
     await cleanup();
@@ -299,7 +334,11 @@ describe('Prisma direct-conversation concurrency', () => {
       joinedAt: rejoinedAt,
       archivedAt: null,
       mutedAt: null,
+      mutedUntil: null,
       pinnedAt: null,
+      favoritedAt: null,
+      clearedAt: null,
+      clearedThroughMessageId: null,
       unreadCount: 0,
       lastReadAt: null,
       receiptVersion: 0,
@@ -388,6 +427,100 @@ describe('Prisma direct-conversation concurrency', () => {
     ).resolves.toBe(1);
   });
 
+  it('persists finite and indefinite mutes plus idempotent favorites per member', async () => {
+    const created = await repository.createGroup({
+      creatorId: USER_ONE_ID,
+      name: 'Timed Settings Integration Group',
+      avatarUrl: null,
+      participantIds: [USER_TWO_ID],
+      now: NOW,
+    });
+    if (created.status !== 'created') {
+      throw new Error('Seeded group participants were not found.');
+    }
+
+    clock.set(NOW);
+    const muteExpiry = new Date(NOW.getTime() + 8 * 60 * 60 * 1_000);
+    await expect(
+      settingsService.mute(
+        USER_TWO_ID,
+        created.conversation.id,
+        ConversationMuteDuration.EightHours,
+      ),
+    ).resolves.toMatchObject({
+      conversationId: created.conversation.id,
+      muted: true,
+      mutedAt: NOW.toISOString(),
+      mutedUntil: muteExpiry.toISOString(),
+    });
+    await expect(
+      prisma.conversationMember.findUniqueOrThrow({
+        where: {
+          conversationId_userId: {
+            conversationId: created.conversation.id,
+            userId: USER_TWO_ID,
+          },
+        },
+        select: { mutedAt: true, mutedUntil: true },
+      }),
+    ).resolves.toEqual({ mutedAt: NOW, mutedUntil: muteExpiry });
+    await expect(
+      prisma.conversationMember.findUniqueOrThrow({
+        where: {
+          conversationId_userId: {
+            conversationId: created.conversation.id,
+            userId: USER_ONE_ID,
+          },
+        },
+        select: { mutedAt: true, mutedUntil: true },
+      }),
+    ).resolves.toEqual({ mutedAt: null, mutedUntil: null });
+
+    clock.set(muteExpiry);
+    await expect(
+      conversationsService.get(USER_TWO_ID, created.conversation.id),
+    ).resolves.toMatchObject({ settings: { muted: false } });
+
+    const indefiniteAt = new Date(muteExpiry.getTime() + 1_000);
+    clock.set(indefiniteAt);
+    await expect(
+      settingsService.update(USER_TWO_ID, created.conversation.id, {
+        muted: true,
+      }),
+    ).resolves.toMatchObject({ muted: true, mutedUntil: null });
+    await expect(
+      prisma.conversationMember.findUniqueOrThrow({
+        where: {
+          conversationId_userId: {
+            conversationId: created.conversation.id,
+            userId: USER_TWO_ID,
+          },
+        },
+        select: { mutedAt: true, mutedUntil: true },
+      }),
+    ).resolves.toEqual({ mutedAt: indefiniteAt, mutedUntil: null });
+
+    await expect(
+      settingsService.setFavorite(USER_TWO_ID, created.conversation.id, true),
+    ).resolves.toMatchObject({ favorited: true });
+    const firstFavoriteAt = indefiniteAt;
+    clock.set(new Date(indefiniteAt.getTime() + 1_000));
+    await expect(
+      settingsService.setFavorite(USER_TWO_ID, created.conversation.id, true),
+    ).resolves.toMatchObject({ favorited: true });
+
+    await expect(
+      prisma.conversationMember.findMany({
+        where: { conversationId: created.conversation.id },
+        select: { userId: true, favoritedAt: true },
+        orderBy: { userId: 'asc' },
+      }),
+    ).resolves.toEqual([
+      { userId: USER_ONE_ID, favoritedAt: null },
+      { userId: USER_TWO_ID, favoritedAt: firstFavoriteAt },
+    ]);
+  });
+
   it('persists groups, per-member settings, and bidirectional block policy', async () => {
     const created = await repository.createGroup({
       creatorId: USER_ONE_ID,
@@ -445,7 +578,11 @@ describe('Prisma direct-conversation concurrency', () => {
           settings: {
             archivedAt: NOW,
             mutedAt: NOW,
+            mutedUntil: null,
             pinnedAt: NOW,
+            favoritedAt: null,
+            clearedAt: null,
+            clearedThroughMessageId: null,
           },
         }),
       ]),

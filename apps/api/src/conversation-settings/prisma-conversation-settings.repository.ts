@@ -14,7 +14,11 @@ const settingsSelect = {
   conversationId: true,
   archivedAt: true,
   mutedAt: true,
+  mutedUntil: true,
   pinnedAt: true,
+  favoritedAt: true,
+  clearedAt: true,
+  clearedThroughMessageId: true,
 } satisfies Prisma.ConversationMemberSelect;
 
 type SelectedSettings = Prisma.ConversationMemberGetPayload<{
@@ -24,7 +28,9 @@ type SelectedSettings = Prisma.ConversationMemberGetPayload<{
 interface SettingsUpdateData {
   archivedAt?: Date | null;
   mutedAt?: Date | null;
+  mutedUntil?: Date | null;
   pinnedAt?: Date | null;
+  favoritedAt?: Date | null;
 }
 
 @Injectable()
@@ -117,13 +123,7 @@ export class PrismaConversationSettingsRepository extends ConversationSettingsRe
       current.archivedAt,
       input.now,
     );
-    this.assignTimestamp(
-      data,
-      'mutedAt',
-      input.muted,
-      current.mutedAt,
-      input.now,
-    );
+    this.assignMute(data, current, input);
     this.assignTimestamp(
       data,
       'pinnedAt',
@@ -131,7 +131,45 @@ export class PrismaConversationSettingsRepository extends ConversationSettingsRe
       current.pinnedAt,
       input.now,
     );
+    this.assignTimestamp(
+      data,
+      'favoritedAt',
+      input.favorited,
+      current.favoritedAt,
+      input.now,
+    );
     return data;
+  }
+
+  private assignMute(
+    data: SettingsUpdateData,
+    current: SelectedSettings,
+    input: UpdateConversationSettingsInput,
+  ): void {
+    if (input.muted === undefined) return;
+    if (!input.muted) {
+      if (current.mutedAt !== null) data.mutedAt = null;
+      if (current.mutedUntil !== null) data.mutedUntil = null;
+      return;
+    }
+
+    const mutedUntil = input.mutedUntil ?? null;
+    const expiryChanged = !this.sameTimestamp(current.mutedUntil, mutedUntil);
+    const currentlyActive =
+      current.mutedAt !== null &&
+      (current.mutedUntil === null || current.mutedUntil > input.now);
+    if (
+      current.mutedAt === null ||
+      !currentlyActive ||
+      (mutedUntil !== null && expiryChanged)
+    ) {
+      data.mutedAt = input.now;
+    }
+    if (expiryChanged) data.mutedUntil = mutedUntil;
+  }
+
+  private sameTimestamp(left: Date | null, right: Date | null): boolean {
+    return left?.getTime() === right?.getTime();
   }
 
   private assignTimestamp(
@@ -154,7 +192,11 @@ export class PrismaConversationSettingsRepository extends ConversationSettingsRe
       conversationId: settings.conversationId,
       archivedAt: settings.archivedAt,
       mutedAt: settings.mutedAt,
+      mutedUntil: settings.mutedUntil,
       pinnedAt: settings.pinnedAt,
+      favoritedAt: settings.favoritedAt,
+      clearedAt: settings.clearedAt,
+      clearedThroughMessageId: settings.clearedThroughMessageId,
     };
   }
 

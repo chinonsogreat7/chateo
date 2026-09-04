@@ -5,6 +5,7 @@ import { ChatGateway } from './chat.gateway';
 import { RealtimeConversationsRepository } from './realtime-conversations.repository';
 import { RealtimeMessageEventsPublisher } from './realtime-message-events.publisher';
 import {
+  CONVERSATION_HISTORY_CLEARED_EVENT,
   MESSAGE_CREATED_EVENT,
   type RealtimeSocketData,
   type RealtimeSocketTarget,
@@ -78,6 +79,50 @@ function createPublisher(sockets: RealtimeSocketTarget[]) {
 }
 
 describe('RealtimeMessageEventsPublisher', () => {
+  it('emits a clear boundary only to the clearing user active devices', async () => {
+    const ownerDevice = target({
+      userId: USER_ONE_ID,
+      sessionId: 'session-one',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const unrelatedDevice = target({
+      userId: USER_TWO_ID,
+      sessionId: 'session-two',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const {
+      findAccessibleConversation,
+      findSocketsForUsers,
+      isSessionActive,
+      publisher,
+    } = createPublisher([ownerDevice, unrelatedDevice]);
+    isSessionActive.mockResolvedValue(true);
+
+    await publisher.publishHistoryCleared({
+      conversationId: CONVERSATION_ID,
+      userId: USER_ONE_ID,
+      changed: true,
+      clearedAt: NOW,
+      clearedThroughMessageId: '33333333-3333-4333-8333-333333333333',
+      occurredAt: NOW,
+    });
+
+    expect(findSocketsForUsers).toHaveBeenCalledWith([USER_ONE_ID]);
+    expect(ownerDevice.emit).toHaveBeenCalledWith(
+      CONVERSATION_HISTORY_CLEARED_EVENT,
+      {
+        conversationId: CONVERSATION_ID,
+        userId: USER_ONE_ID,
+        clearedAt: NOW.toISOString(),
+        clearedThroughMessageId: '33333333-3333-4333-8333-333333333333',
+        occurredAt: NOW.toISOString(),
+      },
+    );
+    expect(unrelatedDevice.emit).not.toHaveBeenCalled();
+    expect(unrelatedDevice.disconnect).toHaveBeenCalledWith(true);
+    expect(findAccessibleConversation).not.toHaveBeenCalled();
+  });
+
   it('emits a public message.created payload to every active participant socket', async () => {
     const first = target({
       userId: USER_ONE_ID,

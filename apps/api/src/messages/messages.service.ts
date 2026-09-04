@@ -4,12 +4,17 @@ import { ApiException } from '../common/errors/api.exception';
 import { MessageEventsPublisher } from './message-events.publisher';
 import { MessagesRepository } from './messages.repository';
 import type {
+  ClearConversationMessagesResponseDto,
   ConversationReadStateResponseDto,
   MessageHistoryResponseDto,
   MessageResponseDto,
 } from './dto/message-response.dto';
 import type { SendMessageDto } from './dto/send-message.dto';
-import type { MessagePageCursor, MessageRecord } from './messages.types';
+import type {
+  ConversationHistoryClearedRecord,
+  MessagePageCursor,
+  MessageRecord,
+} from './messages.types';
 
 interface SerializedMessageCursor {
   v: 1;
@@ -56,14 +61,7 @@ export class MessagesService {
       );
     }
     if (result.status === 'created') {
-      try {
-        await this.eventsPublisher.publishCreated(result.message);
-      } catch (error) {
-        this.logger.error(
-          `Failed to publish message.created for ${result.message.id}`,
-          error instanceof Error ? error.stack : undefined,
-        );
-      }
+      this.publishCreatedBestEffort(result.message);
     }
 
     return this.toResponse(result.message);
@@ -118,6 +116,83 @@ export class MessagesService {
       lastReadAt: result.state.lastReadAt.toISOString(),
       unreadCount: result.state.unreadCount,
     };
+  }
+
+  async clear(
+    userId: string,
+    conversationId: string,
+  ): Promise<ClearConversationMessagesResponseDto> {
+    const result = await this.repository.clearForMember(
+      conversationId.toLowerCase(),
+      userId.toLowerCase(),
+      this.clock.now(),
+    );
+    if (result.status === 'conversation-not-found') {
+      throw this.conversationNotFoundException();
+    }
+
+    if (result.changed) {
+      this.publishHistoryClearedBestEffort({
+        conversationId: result.conversationId,
+        userId: result.userId,
+        changed: result.changed,
+        clearedAt: result.clearedAt,
+        clearedThroughMessageId: result.clearedThroughMessageId,
+        occurredAt: result.occurredAt,
+      });
+    }
+
+    return {
+      conversationId: result.conversationId,
+      changed: result.changed,
+      clearedAt: result.clearedAt?.toISOString() ?? null,
+      clearedThroughMessageId: result.clearedThroughMessageId,
+    };
+  }
+
+  private publishCreatedBestEffort(message: MessageRecord): void {
+    try {
+      void this.eventsPublisher
+        .publishCreated(message)
+        .catch((error: unknown) => {
+          this.logPublishError('message.created', message.id, error);
+        });
+    } catch (error) {
+      this.logPublishError('message.created', message.id, error);
+    }
+  }
+
+  private publishHistoryClearedBestEffort(
+    record: ConversationHistoryClearedRecord,
+  ): void {
+    try {
+      void this.eventsPublisher
+        .publishHistoryCleared(record)
+        .catch((error: unknown) => {
+          this.logPublishError(
+            'conversation.history.cleared',
+            record.conversationId,
+            error,
+          );
+        });
+    } catch (error) {
+      this.logPublishError(
+        'conversation.history.cleared',
+        record.conversationId,
+        error,
+      );
+    }
+  }
+
+  private logPublishError(
+    event: string,
+    subject: string,
+    error: unknown,
+  ): void {
+    this.logger.error(
+      `Failed to publish ${event} for ${subject}`,
+      error instanceof Error ? error.stack : undefined,
+    );
   }
 
   private toResponse(message: MessageRecord): MessageResponseDto {

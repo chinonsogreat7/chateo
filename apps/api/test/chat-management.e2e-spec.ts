@@ -20,9 +20,12 @@ import type { AuthenticatedRequest } from '../src/common/types/authenticated-req
 import { ConversationSettingsController } from '../src/conversation-settings/conversation-settings.controller';
 import { ConversationSettingsRepository } from '../src/conversation-settings/conversation-settings.repository';
 import { ConversationSettingsService } from '../src/conversation-settings/conversation-settings.service';
+import { ConversationMuteDuration } from '../src/conversation-settings/dto/mute-conversation.dto';
 import { ConversationEventsPublisher } from '../src/conversations/conversation-events.publisher';
 import { ConversationsController } from '../src/conversations/conversations.controller';
 import { ConversationsService } from '../src/conversations/conversations.service';
+import { MessagesController } from '../src/messages/messages.controller';
+import { MessagesService } from '../src/messages/messages.service';
 
 const NOW = new Date('2026-09-03T12:00:00.000Z');
 const USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -62,9 +65,14 @@ const GROUP_RESPONSE = {
     archived: false,
     muted: false,
     pinned: false,
+    favorited: false,
     archivedAt: null,
     mutedAt: null,
+    mutedUntil: null,
     pinnedAt: null,
+    favoritedAt: null,
+    clearedAt: null,
+    clearedThroughMessageId: null,
   },
   lastActivityAt: NOW.toISOString(),
   createdAt: NOW.toISOString(),
@@ -83,6 +91,10 @@ interface ConversationsServiceDouble {
   transferGroupOwnership: jest.Mock;
   leaveGroup: jest.Mock;
   deleteGroup: jest.Mock;
+}
+
+interface MessagesServiceDouble {
+  clear: jest.Mock;
 }
 
 @Injectable()
@@ -110,6 +122,7 @@ describe('Chat management API (e2e, in memory)', () => {
   let blocks: jest.Mocked<BlocksRepository>;
   let settings: jest.Mocked<ConversationSettingsRepository>;
   let conversationsService: ConversationsServiceDouble;
+  let messagesService: MessagesServiceDouble;
 
   beforeEach(async () => {
     blocks = {
@@ -145,7 +158,11 @@ describe('Chat management API (e2e, in memory)', () => {
           conversationId: CONVERSATION_ID,
           archivedAt: NOW,
           mutedAt: null,
+          mutedUntil: null,
           pinnedAt: NOW,
+          favoritedAt: null,
+          clearedAt: null,
+          clearedThroughMessageId: null,
         },
       }),
     };
@@ -162,6 +179,14 @@ describe('Chat management API (e2e, in memory)', () => {
       leaveGroup: jest.fn().mockResolvedValue(undefined),
       deleteGroup: jest.fn().mockResolvedValue(undefined),
     };
+    messagesService = {
+      clear: jest.fn().mockResolvedValue({
+        conversationId: CONVERSATION_ID,
+        changed: true,
+        clearedAt: NOW.toISOString(),
+        clearedThroughMessageId: TARGET_ID,
+      }),
+    };
     const events: jest.Mocked<ConversationEventsPublisher> = {
       publishCreated: jest.fn().mockResolvedValue(undefined),
       publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
@@ -174,6 +199,7 @@ describe('Chat management API (e2e, in memory)', () => {
         BlocksController,
         ConversationSettingsController,
         ConversationsController,
+        MessagesController,
       ],
       providers: [
         BlocksService,
@@ -181,6 +207,10 @@ describe('Chat management API (e2e, in memory)', () => {
         {
           provide: ConversationsService,
           useValue: conversationsService as unknown as ConversationsService,
+        },
+        {
+          provide: MessagesService,
+          useValue: messagesService as unknown as MessagesService,
         },
         NoStoreInterceptor,
         { provide: BlocksRepository, useValue: blocks },
@@ -214,6 +244,31 @@ describe('Chat management API (e2e, in memory)', () => {
     await request(app.getHttpServer())
       .patch(`/v1/conversations/${CONVERSATION_ID}/settings`)
       .send({ pinned: true })
+      .expect(401);
+    await request(app.getHttpServer())
+      .get('/v1/conversations/archived')
+      .expect(401);
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/archive`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/archive`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/mute`)
+      .send({ duration: ConversationMuteDuration.EightHours })
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/mute`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/favorite`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/favorite`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/messages`)
       .expect(401);
     await request(app.getHttpServer())
       .post('/v1/conversations/group')
@@ -282,9 +337,14 @@ describe('Chat management API (e2e, in memory)', () => {
       archived: true,
       muted: false,
       pinned: true,
+      favorited: false,
       archivedAt: NOW.toISOString(),
       mutedAt: null,
+      mutedUntil: null,
       pinnedAt: NOW.toISOString(),
+      favoritedAt: null,
+      clearedAt: null,
+      clearedThroughMessageId: null,
     });
 
     const invalid = await request(app.getHttpServer())
@@ -295,6 +355,176 @@ describe('Chat management API (e2e, in memory)', () => {
     expect(invalid.body).toMatchObject({
       code: 'CONVERSATION_SETTINGS_UPDATE_EMPTY',
     });
+  });
+
+  it.each([
+    [ConversationMuteDuration.EightHours, 8 * 60 * 60 * 1_000],
+    [ConversationMuteDuration.TwentyFourHours, 24 * 60 * 60 * 1_000],
+    [ConversationMuteDuration.SevenDays, 7 * 24 * 60 * 60 * 1_000],
+    [ConversationMuteDuration.Always, null],
+  ] as const)('mutes a conversation for %s', async (duration, durationMs) => {
+    const mutedUntil =
+      durationMs === null ? null : new Date(NOW.getTime() + durationMs);
+    settings.updateForMember.mockResolvedValueOnce({
+      status: 'updated',
+      changed: true,
+      settings: {
+        conversationId: CONVERSATION_ID,
+        archivedAt: null,
+        mutedAt: NOW,
+        mutedUntil,
+        pinnedAt: null,
+        favoritedAt: null,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/mute`)
+      .set('Authorization', 'Bearer classroom-token')
+      .send({ duration })
+      .expect(HttpStatus.OK)
+      .expect('Cache-Control', 'no-store');
+
+    expect(response.body).toEqual({
+      conversationId: CONVERSATION_ID,
+      archived: false,
+      muted: true,
+      pinned: false,
+      favorited: false,
+      archivedAt: null,
+      mutedAt: NOW.toISOString(),
+      mutedUntil: mutedUntil?.toISOString() ?? null,
+      pinnedAt: null,
+      favoritedAt: null,
+      clearedAt: null,
+      clearedThroughMessageId: null,
+    });
+    expect(settings.updateForMember).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      userId: USER_ID,
+      muted: true,
+      mutedUntil,
+      now: NOW,
+    });
+  });
+
+  it('rejects unsupported mute durations', async () => {
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/mute`)
+      .set('Authorization', 'Bearer classroom-token')
+      .send({ duration: 'one_month' })
+      .expect(HttpStatus.BAD_REQUEST);
+
+    expect(settings.updateForMember).not.toHaveBeenCalled();
+  });
+
+  it('unmutes and toggles favorites through explicit action endpoints', async () => {
+    settings.updateForMember
+      .mockResolvedValueOnce({
+        status: 'updated',
+        changed: true,
+        settings: {
+          conversationId: CONVERSATION_ID,
+          archivedAt: null,
+          mutedAt: null,
+          mutedUntil: null,
+          pinnedAt: null,
+          favoritedAt: null,
+          clearedAt: null,
+          clearedThroughMessageId: null,
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 'updated',
+        changed: true,
+        settings: {
+          conversationId: CONVERSATION_ID,
+          archivedAt: null,
+          mutedAt: null,
+          mutedUntil: null,
+          pinnedAt: null,
+          favoritedAt: NOW,
+          clearedAt: null,
+          clearedThroughMessageId: null,
+        },
+      })
+      .mockResolvedValueOnce({
+        status: 'updated',
+        changed: true,
+        settings: {
+          conversationId: CONVERSATION_ID,
+          archivedAt: null,
+          mutedAt: null,
+          mutedUntil: null,
+          pinnedAt: null,
+          favoritedAt: null,
+          clearedAt: null,
+          clearedThroughMessageId: null,
+        },
+      });
+
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/mute`)
+      .set('Authorization', 'Bearer classroom-token')
+      .expect(HttpStatus.OK);
+    const favorite = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/favorite`)
+      .set('Authorization', 'Bearer classroom-token')
+      .expect(HttpStatus.OK);
+    const unfavorite = await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/favorite`)
+      .set('Authorization', 'Bearer classroom-token')
+      .expect(HttpStatus.OK);
+
+    expect(favorite.body).toMatchObject({
+      conversationId: CONVERSATION_ID,
+      favorited: true,
+      favoritedAt: NOW.toISOString(),
+    });
+    expect(unfavorite.body).toMatchObject({
+      conversationId: CONVERSATION_ID,
+      favorited: false,
+      favoritedAt: null,
+    });
+    expect(settings.updateForMember).toHaveBeenNthCalledWith(1, {
+      conversationId: CONVERSATION_ID,
+      userId: USER_ID,
+      muted: false,
+      now: NOW,
+    });
+    expect(settings.updateForMember).toHaveBeenNthCalledWith(2, {
+      conversationId: CONVERSATION_ID,
+      userId: USER_ID,
+      favorited: true,
+      now: NOW,
+    });
+    expect(settings.updateForMember).toHaveBeenNthCalledWith(3, {
+      conversationId: CONVERSATION_ID,
+      userId: USER_ID,
+      favorited: false,
+      now: NOW,
+    });
+  });
+
+  it('returns the caller-specific clear-chat boundary', async () => {
+    const response = await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', 'Bearer classroom-token')
+      .expect(HttpStatus.OK)
+      .expect('Cache-Control', 'no-store');
+
+    expect(response.body).toEqual({
+      conversationId: CONVERSATION_ID,
+      changed: true,
+      clearedAt: NOW.toISOString(),
+      clearedThroughMessageId: TARGET_ID,
+    });
+    expect(messagesService.clear).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+    );
   });
 
   it('creates a validated group with owner and member roles', async () => {
@@ -318,7 +548,12 @@ describe('Chat management API (e2e, in memory)', () => {
         { id: SECOND_TARGET_ID, role: 'member' },
       ],
       role: 'owner',
-      settings: { archived: false, muted: false, pinned: false },
+      settings: {
+        archived: false,
+        muted: false,
+        pinned: false,
+        favorited: false,
+      },
     });
     expect(conversationsService.createGroup).toHaveBeenCalledWith(USER_ID, {
       name: 'Study Group',

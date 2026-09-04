@@ -45,6 +45,7 @@ import { RealtimeConversationEventsPublisher } from '../src/realtime/realtime-co
 import { RealtimeReceiptEventsPublisher } from '../src/realtime/realtime-receipt-events.publisher';
 import {
   CONVERSATION_CREATED_EVENT,
+  CONVERSATION_HISTORY_CLEARED_EVENT,
   CONVERSATION_SETTINGS_UPDATED_EVENT,
   MESSAGE_CREATED_EVENT,
   PRESENCE_CHANGED_EVENT,
@@ -62,6 +63,7 @@ import {
   TYPING_STOP_COMMAND,
   TYPING_STOPPED_EVENT,
   type ConversationCreatedEventPayload,
+  type ConversationHistoryClearedEventPayload,
   type ConversationSettingsUpdatedEventPayload,
   type MessageCreatedEventPayload,
   type PresenceChangedEventPayload,
@@ -115,6 +117,24 @@ interface ReceiptFrontiersBody {
     delivered: { messageId: string; at: string } | null;
     read: { messageId: string; at: string } | null;
   }>;
+}
+
+interface ClearConversationMessagesBody {
+  conversationId: string;
+  changed: boolean;
+  clearedAt: string | null;
+  clearedThroughMessageId: string | null;
+}
+
+interface StoredConversationSettings {
+  conversationId: string;
+  archivedAt: Date | null;
+  mutedAt: Date | null;
+  mutedUntil: Date | null;
+  pinnedAt: Date | null;
+  favoritedAt: Date | null;
+  clearedAt: Date | null;
+  clearedThroughMessageId: string | null;
 }
 
 interface SocketErrorWithData extends Error {
@@ -272,6 +292,7 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
   let clock: ManualClock;
   let authRepository: InMemoryAuthRepository;
   let messagingRepository: InMemoryMessagingRepository;
+  let settingsByMember: Map<string, StoredConversationSettings>;
   let chatGateway: ChatGateway;
   let aliceToken: string;
   let aliceSecondToken: string;
@@ -284,6 +305,7 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
     clock = new ManualClock(initialTime);
     authRepository = new InMemoryAuthRepository();
     messagingRepository = new InMemoryMessagingRepository();
+    settingsByMember = new Map();
     sockets = [];
 
     const alice = user(ALICE_ID, ALICE_PHONE, 'Alice Johnson', initialTime);
@@ -388,17 +410,71 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
           useValue: {
             updateForMember: jest
               .fn()
-              .mockImplementation((input: UpdateConversationSettingsInput) =>
-                Promise.resolve({
-                  status: 'updated',
-                  changed: true,
-                  settings: {
+              .mockImplementation(
+                async (input: UpdateConversationSettingsInput) => {
+                  const access =
+                    await messagingRepository.findAccessibleConversation(
+                      input.conversationId,
+                      input.userId,
+                    );
+                  if (!access) return { status: 'conversation-not-found' };
+
+                  const key = `${input.conversationId}:${input.userId}`;
+                  const previous = settingsByMember.get(key) ?? {
                     conversationId: input.conversationId,
-                    archivedAt: input.archived ? input.now : null,
-                    mutedAt: input.muted ? input.now : null,
-                    pinnedAt: input.pinned ? input.now : null,
-                  },
-                }),
+                    archivedAt: null,
+                    mutedAt: null,
+                    mutedUntil: null,
+                    pinnedAt: null,
+                    favoritedAt: null,
+                    clearedAt: null,
+                    clearedThroughMessageId: null,
+                  };
+                  const settings: StoredConversationSettings = {
+                    ...previous,
+                    archivedAt:
+                      input.archived === undefined
+                        ? previous.archivedAt
+                        : input.archived
+                          ? input.now
+                          : null,
+                    mutedAt:
+                      input.muted === undefined
+                        ? previous.mutedAt
+                        : input.muted
+                          ? input.now
+                          : null,
+                    mutedUntil:
+                      input.muted === undefined
+                        ? previous.mutedUntil
+                        : input.muted
+                          ? (input.mutedUntil ?? null)
+                          : null,
+                    pinnedAt:
+                      input.pinned === undefined
+                        ? previous.pinnedAt
+                        : input.pinned
+                          ? input.now
+                          : null,
+                    favoritedAt:
+                      input.favorited === undefined
+                        ? previous.favoritedAt
+                        : input.favorited
+                          ? input.now
+                          : null,
+                  };
+                  const changed = Object.entries(settings).some(
+                    ([field, value]) => {
+                      const oldValue =
+                        previous[field as keyof StoredConversationSettings];
+                      return value instanceof Date && oldValue instanceof Date
+                        ? value.getTime() !== oldValue.getTime()
+                        : value !== oldValue;
+                    },
+                  );
+                  settingsByMember.set(key, settings);
+                  return { status: 'updated', changed, settings };
+                },
               ),
           },
         },
@@ -500,6 +576,16 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       .get(`/v1/conversations/${CONVERSATION_ID}/messages`)
       .expect(HttpStatus.UNAUTHORIZED);
     await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/mute`)
+      .send({ duration: '8_hours' })
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/favorite`)
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
       .post(`/v1/conversations/${CONVERSATION_ID}/read`)
       .expect(HttpStatus.UNAUTHORIZED);
     await request(app.getHttpServer())
@@ -594,13 +680,111 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       archived: true,
       muted: false,
       pinned: true,
+      favorited: false,
       archivedAt: clock.now().toISOString(),
       mutedAt: null,
+      mutedUntil: null,
       pinnedAt: clock.now().toISOString(),
+      favoritedAt: null,
       occurredAt: clock.now().toISOString(),
     };
     expect(aliceFirstEvents).toEqual([expectedEvent]);
     expect(aliceSecondEvents).toEqual([expectedEvent]);
+    expect(bobEvents).toEqual([]);
+  });
+
+  it('publishes timed mute and favorite actions only to the updating user devices', async () => {
+    const aliceFirstSocket = await connectSocket(aliceToken);
+    const aliceSecondSocket = await connectSocket(aliceSecondToken);
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 3);
+
+    const aliceFirstEvents: ConversationSettingsUpdatedEventPayload[] = [];
+    const aliceSecondEvents: ConversationSettingsUpdatedEventPayload[] = [];
+    const bobEvents: ConversationSettingsUpdatedEventPayload[] = [];
+    aliceFirstSocket.on(CONVERSATION_SETTINGS_UPDATED_EVENT, (payload) =>
+      aliceFirstEvents.push(payload as ConversationSettingsUpdatedEventPayload),
+    );
+    aliceSecondSocket.on(CONVERSATION_SETTINGS_UPDATED_EVENT, (payload) =>
+      aliceSecondEvents.push(
+        payload as ConversationSettingsUpdatedEventPayload,
+      ),
+    );
+    bobSocket.on(CONVERSATION_SETTINGS_UPDATED_EVENT, (payload) =>
+      bobEvents.push(payload as ConversationSettingsUpdatedEventPayload),
+    );
+
+    const now = clock.now();
+    const mutedUntil = new Date(now.getTime() + 8 * 60 * 60 * 1_000);
+    const muteResponse = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/mute`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ duration: '8_hours' })
+      .expect(HttpStatus.OK);
+    await waitUntil(
+      () => aliceFirstEvents.length === 1 && aliceSecondEvents.length === 1,
+      'Expected the timed mute event on both user sockets.',
+    );
+
+    expect(muteResponse.body).toEqual({
+      conversationId: CONVERSATION_ID,
+      archived: false,
+      muted: true,
+      pinned: false,
+      favorited: false,
+      archivedAt: null,
+      mutedAt: now.toISOString(),
+      mutedUntil: mutedUntil.toISOString(),
+      pinnedAt: null,
+      favoritedAt: null,
+      clearedAt: null,
+      clearedThroughMessageId: null,
+    });
+    const expectedMuteEvent: ConversationSettingsUpdatedEventPayload = {
+      conversationId: CONVERSATION_ID,
+      userId: ALICE_ID,
+      archived: false,
+      muted: true,
+      pinned: false,
+      favorited: false,
+      archivedAt: null,
+      mutedAt: now.toISOString(),
+      mutedUntil: mutedUntil.toISOString(),
+      pinnedAt: null,
+      favoritedAt: null,
+      occurredAt: now.toISOString(),
+    };
+    expect(aliceFirstEvents).toEqual([expectedMuteEvent]);
+    expect(aliceSecondEvents).toEqual([expectedMuteEvent]);
+    expect(bobEvents).toEqual([]);
+
+    const favoriteResponse = await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/favorite`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    await waitUntil(
+      () => aliceFirstEvents.length === 2 && aliceSecondEvents.length === 2,
+      'Expected the favorite event on both user sockets.',
+    );
+
+    expect(favoriteResponse.body).toEqual({
+      ...muteResponse.body,
+      favorited: true,
+      favoritedAt: now.toISOString(),
+    });
+    const expectedFavoriteEvent: ConversationSettingsUpdatedEventPayload = {
+      ...expectedMuteEvent,
+      favorited: true,
+      favoritedAt: now.toISOString(),
+    };
+    expect(aliceFirstEvents).toEqual([
+      expectedMuteEvent,
+      expectedFavoriteEvent,
+    ]);
+    expect(aliceSecondEvents).toEqual([
+      expectedMuteEvent,
+      expectedFavoriteEvent,
+    ]);
     expect(bobEvents).toEqual([]);
   });
 
@@ -865,6 +1049,103 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
     expect(bobEvents).toEqual([created]);
     expect(JSON.stringify(bobEvents)).not.toContain('phoneNumber');
     expect(messagingRepository.messageCount).toBe(1);
+  });
+
+  it('clears history only for the caller and publishes the clear boundary only to that user devices', async () => {
+    const clearedMessage = await sendMessage(
+      bobToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'Visible until Alice clears it',
+    );
+    const aliceFirstSocket = await connectSocket(aliceToken);
+    const aliceSecondSocket = await connectSocket(aliceSecondToken);
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID], 3);
+
+    const aliceFirstEvents: ConversationHistoryClearedEventPayload[] = [];
+    const aliceSecondEvents: ConversationHistoryClearedEventPayload[] = [];
+    const bobEvents: ConversationHistoryClearedEventPayload[] = [];
+    aliceFirstSocket.on(CONVERSATION_HISTORY_CLEARED_EVENT, (payload) =>
+      aliceFirstEvents.push(payload as ConversationHistoryClearedEventPayload),
+    );
+    aliceSecondSocket.on(CONVERSATION_HISTORY_CLEARED_EVENT, (payload) =>
+      aliceSecondEvents.push(payload as ConversationHistoryClearedEventPayload),
+    );
+    bobSocket.on(CONVERSATION_HISTORY_CLEARED_EVENT, (payload) =>
+      bobEvents.push(payload as ConversationHistoryClearedEventPayload),
+    );
+
+    const clearResponse = await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    const cleared = clearResponse.body as ClearConversationMessagesBody;
+    await waitUntil(
+      () => aliceFirstEvents.length === 1 && aliceSecondEvents.length === 1,
+      'Expected conversation.history.cleared on both clearing-user sockets.',
+    );
+
+    expect(cleared).toEqual({
+      conversationId: CONVERSATION_ID,
+      changed: true,
+      clearedAt: clearedMessage.createdAt,
+      clearedThroughMessageId: clearedMessage.id,
+    });
+    const expectedEvent: ConversationHistoryClearedEventPayload = {
+      conversationId: CONVERSATION_ID,
+      userId: ALICE_ID,
+      clearedAt: clearedMessage.createdAt,
+      clearedThroughMessageId: clearedMessage.id,
+      occurredAt: clock.now().toISOString(),
+    };
+    expect(aliceFirstEvents).toEqual([expectedEvent]);
+    expect(aliceSecondEvents).toEqual([expectedEvent]);
+    expect(bobEvents).toEqual([]);
+
+    const aliceHistoryResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    const bobHistoryResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    expect((aliceHistoryResponse.body as MessageHistoryBody).items).toEqual([]);
+    expect(
+      (bobHistoryResponse.body as MessageHistoryBody).items.map(
+        (message) => message.id,
+      ),
+    ).toEqual([clearedMessage.id]);
+
+    const replayResponse = await request(app.getHttpServer())
+      .delete(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(replayResponse.body as ClearConversationMessagesBody).toEqual({
+      ...cleared,
+      changed: false,
+    });
+    await delay(50);
+    expect(aliceFirstEvents).toEqual([expectedEvent]);
+    expect(aliceSecondEvents).toEqual([expectedEvent]);
+    expect(bobEvents).toEqual([]);
+
+    const afterClear = await sendMessage(
+      bobToken,
+      CONVERSATION_ID,
+      SECOND_CLIENT_MESSAGE_ID,
+      'Visible after the clear boundary',
+    );
+    const aliceNewHistoryResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(
+      (aliceNewHistoryResponse.body as MessageHistoryBody).items.map(
+        (message) => message.id,
+      ),
+    ).toEqual([afterClear.id]);
   });
 
   it('persists a monotonic delivery frontier and emits exactly once to every participant device', async () => {

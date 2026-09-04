@@ -4,6 +4,11 @@ import type {
   ConversationRecord,
   CreateDirectConversationResult,
 } from '../../src/conversations/conversations.types';
+import type { UpdateConversationSettingsInput } from '../../src/conversation-settings/conversation-settings.repository';
+import type {
+  ConversationSettingsRecord,
+  UpdateConversationSettingsResult,
+} from '../../src/conversation-settings/conversation-settings.types';
 import type {
   ContactMatchRecord,
   MatchContactsRepositoryInput,
@@ -38,10 +43,32 @@ function copyUser(user: SeedUser): SeedUser {
   };
 }
 
+function copyNullableDate(value: Date | null): Date | null {
+  return value ? copyDate(value) : null;
+}
+
+function copySettings(
+  settings: ConversationSettingsRecord,
+): ConversationSettingsRecord {
+  return {
+    ...settings,
+    archivedAt: copyNullableDate(settings.archivedAt),
+    mutedAt: copyNullableDate(settings.mutedAt),
+    mutedUntil: copyNullableDate(settings.mutedUntil),
+    pinnedAt: copyNullableDate(settings.pinnedAt),
+    favoritedAt: copyNullableDate(settings.favoritedAt),
+    clearedAt: copyNullableDate(settings.clearedAt),
+  };
+}
+
 export class InMemoryDiscoveryConversationsRepository {
   private readonly users = new Map<string, SeedUser>();
   private readonly conversations = new Map<string, StoredConversation>();
   private readonly conversationIdsByPair = new Map<string, string>();
+  private readonly settingsByMember = new Map<
+    string,
+    ConversationSettingsRecord
+  >();
 
   get conversationCount(): number {
     return this.conversations.size;
@@ -142,6 +169,14 @@ export class InMemoryDiscoveryConversationsRepository {
     };
     this.conversations.set(conversation.id, conversation);
     this.conversationIdsByPair.set(pair, conversation.id);
+    this.settingsByMember.set(
+      this.memberKey(conversation.id, directUserOneId),
+      this.initialSettings(conversation.id),
+    );
+    this.settingsByMember.set(
+      this.memberKey(conversation.id, directUserTwoId),
+      this.initialSettings(conversation.id),
+    );
     return {
       status: 'created',
       conversation: this.toConversation(conversation, userId),
@@ -152,20 +187,33 @@ export class InMemoryDiscoveryConversationsRepository {
     userId: string,
     cursor: ConversationPageCursor | null,
     take: number,
+    archived = false,
   ): Promise<ConversationRecord[]> {
     return [...this.conversations.values()]
       .filter(
         (conversation) =>
-          conversation.directUserOneId === userId ||
-          conversation.directUserTwoId === userId,
+          (conversation.directUserOneId === userId ||
+            conversation.directUserTwoId === userId) &&
+          (this.requiredSettings(conversation.id, userId).archivedAt !==
+            null) ===
+            archived,
       )
-      .sort(
-        (left, right) =>
+      .sort((left, right) => {
+        const leftPinned =
+          this.requiredSettings(left.id, userId).pinnedAt !== null;
+        const rightPinned =
+          this.requiredSettings(right.id, userId).pinnedAt !== null;
+        return (
+          Number(rightPinned) - Number(leftPinned) ||
           right.lastActivityAt.getTime() - left.lastActivityAt.getTime() ||
-          right.id.localeCompare(left.id),
-      )
+          right.id.localeCompare(left.id)
+        );
+      })
       .filter((conversation) => {
         if (!cursor) return true;
+        const pinned =
+          this.requiredSettings(conversation.id, userId).pinnedAt !== null;
+        if (cursor.pinned !== pinned) return cursor.pinned && !pinned;
         const timeComparison =
           conversation.lastActivityAt.getTime() -
           cursor.lastActivityAt.getTime();
@@ -176,6 +224,55 @@ export class InMemoryDiscoveryConversationsRepository {
       })
       .slice(0, take)
       .map((conversation) => this.toConversation(conversation, userId));
+  }
+
+  async updateForMember(
+    input: UpdateConversationSettingsInput,
+  ): Promise<UpdateConversationSettingsResult> {
+    const conversationId = input.conversationId.toLowerCase();
+    const userId = input.userId.toLowerCase();
+    const conversation = this.conversations.get(conversationId);
+    if (
+      !conversation ||
+      (conversation.directUserOneId !== userId &&
+        conversation.directUserTwoId !== userId)
+    ) {
+      return { status: 'conversation-not-found' };
+    }
+
+    const current = this.requiredSettings(conversationId, userId);
+    const next = copySettings(current);
+    if (input.archived !== undefined) {
+      next.archivedAt = input.archived
+        ? (next.archivedAt ?? copyDate(input.now))
+        : null;
+    }
+    if (input.muted !== undefined) {
+      next.mutedAt = input.muted ? copyDate(input.now) : null;
+      next.mutedUntil = input.muted
+        ? copyNullableDate(input.mutedUntil ?? null)
+        : null;
+    }
+    if (input.pinned !== undefined) {
+      next.pinnedAt = input.pinned
+        ? (next.pinnedAt ?? copyDate(input.now))
+        : null;
+    }
+    if (input.favorited !== undefined) {
+      next.favoritedAt = input.favorited
+        ? (next.favoritedAt ?? copyDate(input.now))
+        : null;
+    }
+
+    const changed = !this.sameSettings(current, next);
+    if (changed) {
+      this.settingsByMember.set(this.memberKey(conversationId, userId), next);
+    }
+    return {
+      status: 'updated',
+      changed,
+      settings: copySettings(changed ? next : current),
+    };
   }
 
   async findForUser(
@@ -214,9 +311,55 @@ export class InMemoryDiscoveryConversationsRepository {
       },
       latestMessage: null,
       unreadCount: 0,
+      settings: copySettings(
+        this.requiredSettings(conversation.id, currentUserId),
+      ),
       lastActivityAt: copyDate(conversation.lastActivityAt),
       createdAt: copyDate(conversation.createdAt),
       updatedAt: copyDate(conversation.updatedAt),
     };
+  }
+
+  private memberKey(conversationId: string, userId: string): string {
+    return `${conversationId.toLowerCase()}:${userId.toLowerCase()}`;
+  }
+
+  private initialSettings(conversationId: string): ConversationSettingsRecord {
+    return {
+      conversationId,
+      archivedAt: null,
+      mutedAt: null,
+      mutedUntil: null,
+      pinnedAt: null,
+      favoritedAt: null,
+      clearedAt: null,
+      clearedThroughMessageId: null,
+    };
+  }
+
+  private requiredSettings(
+    conversationId: string,
+    userId: string,
+  ): ConversationSettingsRecord {
+    const settings = this.settingsByMember.get(
+      this.memberKey(conversationId, userId),
+    );
+    if (!settings) throw new Error('Conversation member settings are missing.');
+    return settings;
+  }
+
+  private sameSettings(
+    left: ConversationSettingsRecord,
+    right: ConversationSettingsRecord,
+  ): boolean {
+    return (
+      left.archivedAt?.getTime() === right.archivedAt?.getTime() &&
+      left.mutedAt?.getTime() === right.mutedAt?.getTime() &&
+      left.mutedUntil?.getTime() === right.mutedUntil?.getTime() &&
+      left.pinnedAt?.getTime() === right.pinnedAt?.getTime() &&
+      left.favoritedAt?.getTime() === right.favoritedAt?.getTime() &&
+      left.clearedAt?.getTime() === right.clearedAt?.getTime() &&
+      left.clearedThroughMessageId === right.clearedThroughMessageId
+    );
   }
 }

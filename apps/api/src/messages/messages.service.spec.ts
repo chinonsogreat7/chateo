@@ -32,10 +32,12 @@ function createService() {
     sendText: jest.fn(),
     listForMember: jest.fn(),
     markRead: jest.fn(),
+    clearForMember: jest.fn(),
   };
   const clock: Clock = { now: jest.fn().mockReturnValue(NOW) };
   const eventsPublisher: jest.Mocked<MessageEventsPublisher> = {
     publishCreated: jest.fn().mockResolvedValue(undefined),
+    publishHistoryCleared: jest.fn().mockResolvedValue(undefined),
   };
   return {
     repository,
@@ -126,6 +128,55 @@ describe('MessagesService', () => {
         text: 'Hello!',
       }),
     ).resolves.toMatchObject({ id: MESSAGE_ID });
+    await Promise.resolve();
+    expect(logSpy).toHaveBeenCalledWith(
+      `Failed to publish message.created for ${MESSAGE_ID}`,
+      expect.any(String),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('does not wait for realtime publication before returning a committed message', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.sendText.mockResolvedValue({
+      status: 'created',
+      message: message(),
+    });
+    let finishPublishing: (() => void) | undefined;
+    eventsPublisher.publishCreated.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishPublishing = resolve;
+      }),
+    );
+
+    await expect(
+      service.send(USER_ID, CONVERSATION_ID, {
+        clientMessageId: CLIENT_MESSAGE_ID,
+        text: 'Hello!',
+      }),
+    ).resolves.toMatchObject({ id: MESSAGE_ID });
+
+    expect(eventsPublisher.publishCreated).toHaveBeenCalledTimes(1);
+    finishPublishing?.();
+  });
+
+  it('contains a synchronous realtime publisher failure', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    const logSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    repository.sendText.mockResolvedValue({
+      status: 'created',
+      message: message(),
+    });
+    eventsPublisher.publishCreated.mockImplementation(() => {
+      throw new Error('publisher initialization failed');
+    });
+
+    await expect(
+      service.send(USER_ID, CONVERSATION_ID, {
+        clientMessageId: CLIENT_MESSAGE_ID,
+        text: 'Hello!',
+      }),
+    ).resolves.toMatchObject({ id: MESSAGE_ID });
     expect(logSpy).toHaveBeenCalledWith(
       `Failed to publish message.created for ${MESSAGE_ID}`,
       expect.any(String),
@@ -150,7 +201,7 @@ describe('MessagesService', () => {
     expect(eventsPublisher.publishCreated).not.toHaveBeenCalled();
   });
 
-  it('uses the same not-found error for inaccessible send, history, and read operations', async () => {
+  it('uses the same not-found error for inaccessible send, history, read, and clear operations', async () => {
     const { repository, service } = createService();
     repository.sendText.mockResolvedValue({
       status: 'conversation-not-found',
@@ -159,6 +210,9 @@ describe('MessagesService', () => {
       status: 'conversation-not-found',
     });
     repository.markRead.mockResolvedValue({
+      status: 'conversation-not-found',
+    });
+    repository.clearForMember.mockResolvedValue({
       status: 'conversation-not-found',
     });
 
@@ -177,6 +231,11 @@ describe('MessagesService', () => {
     );
     await expectApiError(
       service.markRead(USER_ID, CONVERSATION_ID),
+      HttpStatus.NOT_FOUND,
+      'CONVERSATION_NOT_FOUND',
+    );
+    await expectApiError(
+      service.clear(USER_ID, CONVERSATION_ID),
       HttpStatus.NOT_FOUND,
       'CONVERSATION_NOT_FOUND',
     );
@@ -264,5 +323,38 @@ describe('MessagesService', () => {
       USER_ID,
       NOW,
     );
+  });
+
+  it('clears only the requesting member history through the persisted boundary', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.clearForMember.mockResolvedValue({
+      status: 'cleared',
+      conversationId: CONVERSATION_ID,
+      userId: USER_ID,
+      changed: true,
+      clearedAt: NOW,
+      clearedThroughMessageId: MESSAGE_ID,
+      occurredAt: NOW,
+    });
+
+    await expect(service.clear(USER_ID, CONVERSATION_ID)).resolves.toEqual({
+      conversationId: CONVERSATION_ID,
+      changed: true,
+      clearedAt: NOW.toISOString(),
+      clearedThroughMessageId: MESSAGE_ID,
+    });
+    expect(repository.clearForMember).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      USER_ID,
+      NOW,
+    );
+    expect(eventsPublisher.publishHistoryCleared).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      userId: USER_ID,
+      changed: true,
+      clearedAt: NOW,
+      clearedThroughMessageId: MESSAGE_ID,
+      occurredAt: NOW,
+    });
   });
 });

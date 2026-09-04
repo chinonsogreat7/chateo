@@ -21,6 +21,15 @@ export interface MessageReadStateRecord {
   unreadCount: number;
 }
 
+export interface ConversationHistoryClearedRecord {
+  conversationId: string;
+  userId: string;
+  changed: boolean;
+  clearedAt: Date | null;
+  clearedThroughMessageId: string | null;
+  occurredAt: Date;
+}
+
 export type SendTextMessageResult =
   | { status: 'created' | 'existing'; message: MessageRecord }
   | { status: 'conversation-not-found' }
@@ -32,4 +41,8 @@ export type ListMessagesResult =
 
 export type MarkConversationReadResult =
   | { status: 'updated'; state: MessageReadStateRecord }
+  | { status: 'conversation-not-found' };
+
+export type ClearConversationMessagesResult =
+  | ({ status: 'cleared' } & ConversationHistoryClearedRecord)
   | { status: 'conversation-not-found' };

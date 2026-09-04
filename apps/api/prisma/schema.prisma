@@ -87,19 +87,23 @@ model Conversation {
 }
 
 model ConversationMember {
-  conversationId  String           @map("conversation_id") @db.Uuid
-  userId          String           @map("user_id") @db.Uuid
-  joinedAt        DateTime         @default(now()) @map("joined_at") @db.Timestamptz(3)
-  role            ConversationMemberRole @default(MEMBER)
-  archivedAt      DateTime?        @map("archived_at") @db.Timestamptz(3)
-  mutedAt         DateTime?        @map("muted_at") @db.Timestamptz(3)
-  pinnedAt        DateTime?        @map("pinned_at") @db.Timestamptz(3)
-  unreadCount     Int              @default(0) @map("unread_count")
-  lastReadAt      DateTime?        @map("last_read_at") @db.Timestamptz(3)
-  receiptVersion  Int              @default(0) @map("receipt_version")
-  conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  messageReceipts MessageReceipt[]
+  conversationId          String                 @map("conversation_id") @db.Uuid
+  userId                  String                 @map("user_id") @db.Uuid
+  joinedAt                DateTime               @default(now()) @map("joined_at") @db.Timestamptz(3)
+  role                    ConversationMemberRole @default(MEMBER)
+  archivedAt              DateTime?              @map("archived_at") @db.Timestamptz(3)
+  mutedAt                 DateTime?              @map("muted_at") @db.Timestamptz(3)
+  mutedUntil              DateTime?              @map("muted_until") @db.Timestamptz(3)
+  pinnedAt                DateTime?              @map("pinned_at") @db.Timestamptz(3)
+  favoritedAt             DateTime?              @map("favorited_at") @db.Timestamptz(3)
+  clearedAt               DateTime?              @map("cleared_at") @db.Timestamptz(3)
+  clearedThroughMessageId String?                @map("cleared_through_message_id") @db.Uuid
+  unreadCount             Int                    @default(0) @map("unread_count")
+  lastReadAt              DateTime?              @map("last_read_at") @db.Timestamptz(3)
+  receiptVersion          Int                    @default(0) @map("receipt_version")
+  conversation            Conversation           @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user                    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageReceipts         MessageReceipt[]
 
   @@id([conversationId, userId])
   @@index([userId, conversationId])

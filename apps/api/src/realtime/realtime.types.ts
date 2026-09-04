@@ -2,6 +2,8 @@ import type { Socket } from 'socket.io';
 
 export const CHAT_NAMESPACE = '/chat';
 export const MESSAGE_CREATED_EVENT = 'message.created';
+export const CONVERSATION_HISTORY_CLEARED_EVENT =
+  'conversation.history.cleared';
 export const CONVERSATION_CREATED_EVENT = 'conversation.created';
 export const CONVERSATION_SETTINGS_UPDATED_EVENT =
   'conversation.settings.updated';
@@ -135,6 +137,9 @@ export interface ChatServerToClientEvents {
   ): void;
   [CONVERSATION_DELETED_EVENT](payload: ConversationDeletedEventPayload): void;
   [MESSAGE_CREATED_EVENT](payload: MessageCreatedEventPayload): void;
+  [CONVERSATION_HISTORY_CLEARED_EVENT](
+    payload: ConversationHistoryClearedEventPayload,
+  ): void;
   [RECEIPT_DELIVERED_EVENT](payload: ReceiptUpdatedEventPayload): void;
   [RECEIPT_READ_EVENT](payload: ReceiptUpdatedEventPayload): void;
   [PRESENCE_CHANGED_EVENT](payload: PresenceChangedEventPayload): void;
@@ -154,9 +159,12 @@ export interface ConversationSettingsUpdatedEventPayload {
   archived: boolean;
   muted: boolean;
   pinned: boolean;
+  favorited: boolean;
   archivedAt: string | null;
   mutedAt: string | null;
+  mutedUntil: string | null;
   pinnedAt: string | null;
+  favoritedAt: string | null;
   occurredAt: string;
 }
 
@@ -212,6 +220,14 @@ export interface MessageCreatedEventPayload {
   kind: 'text';
   text: string;
   createdAt: string;
+}
+
+export interface ConversationHistoryClearedEventPayload {
+  conversationId: string;
+  userId: string;
+  clearedAt: string | null;
+  clearedThroughMessageId: string | null;
+  occurredAt: string;
 }
 
 export interface ReceiptUpdatedEventPayload {
