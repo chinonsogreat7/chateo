@@ -28,8 +28,8 @@ export class ConversationLatestMessageDto {
   @ApiProperty({ format: 'uuid' })
   senderId!: string;
 
-  @ApiProperty({ enum: ['text'], example: 'text' })
-  kind!: 'text';
+  @ApiProperty({ enum: ['text', 'image', 'audio'], example: 'text' })
+  kind!: 'text' | 'image' | 'audio';
 
   @ApiProperty({ example: 'Hello!' })
   preview!: string;

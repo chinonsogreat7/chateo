@@ -260,10 +260,19 @@ describe('Discovery and direct conversations API (e2e, in memory)', () => {
       .get('/v1/conversations/archived')
       .expect(HttpStatus.UNAUTHORIZED);
     await request(app.getHttpServer())
+      .get('/v1/conversations/favorites')
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
       .put(`/v1/conversations/${UNKNOWN_ID}/archive`)
       .expect(HttpStatus.UNAUTHORIZED);
     await request(app.getHttpServer())
       .delete(`/v1/conversations/${UNKNOWN_ID}/archive`)
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${UNKNOWN_ID}/pin`)
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${UNKNOWN_ID}/pin`)
       .expect(HttpStatus.UNAUTHORIZED);
   });
 
@@ -633,6 +642,216 @@ describe('Discovery and direct conversations API (e2e, in memory)', () => {
     });
   });
 
+  it('lists only the caller favorites with isolated active and archived cursors', async () => {
+    const withBob = await request(app.getHttpServer())
+      .post('/v1/conversations/direct')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ participantId: BOB_ID })
+      .expect(HttpStatus.OK);
+    clock.advanceSeconds(1);
+    const withCarol = await request(app.getHttpServer())
+      .post('/v1/conversations/direct')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ participantId: CAROL_ID })
+      .expect(HttpStatus.OK);
+    const expectedIds = [
+      withCarol.body.id as string,
+      withBob.body.id as string,
+    ];
+
+    const ordinaryPage = await request(app.getHttpServer())
+      .get('/v1/conversations')
+      .query({ limit: 1 })
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    const ordinaryCursor = ordinaryPage.body.pageInfo.nextCursor as string;
+    expect(ordinaryCursor).toEqual(expect.any(String));
+
+    for (const conversationId of expectedIds) {
+      await request(app.getHttpServer())
+        .put(`/v1/conversations/${conversationId}/favorite`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .expect(HttpStatus.OK);
+    }
+
+    const bobFavorites = await request(app.getHttpServer())
+      .get('/v1/conversations/favorites')
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    expect(bobFavorites.body).toEqual({
+      items: [],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    });
+
+    const firstPage = await request(app.getHttpServer())
+      .get('/v1/conversations/favorites')
+      .query({ limit: 1 })
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK)
+      .expect('Cache-Control', 'no-store');
+    expect(firstPage.body).toMatchObject({
+      items: [
+        {
+          id: expectedIds[0],
+          settings: { archived: false, favorited: true },
+        },
+      ],
+      pageInfo: { hasNextPage: true, nextCursor: expect.any(String) },
+    });
+    const favoriteCursor = firstPage.body.pageInfo.nextCursor as string;
+
+    const secondPage = await request(app.getHttpServer())
+      .get('/v1/conversations/favorites')
+      .query({ limit: 1, cursor: favoriteCursor })
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(secondPage.body).toMatchObject({
+      items: [
+        {
+          id: expectedIds[1],
+          settings: { archived: false, favorited: true },
+        },
+      ],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    });
+
+    for (const response of [
+      await request(app.getHttpServer())
+        .get('/v1/conversations/favorites')
+        .query({ cursor: ordinaryCursor })
+        .set('Authorization', `Bearer ${aliceToken}`),
+      await request(app.getHttpServer())
+        .get('/v1/conversations')
+        .query({ cursor: favoriteCursor })
+        .set('Authorization', `Bearer ${aliceToken}`),
+      await request(app.getHttpServer())
+        .get('/v1/conversations/favorites')
+        .query({ archived: true, cursor: favoriteCursor })
+        .set('Authorization', `Bearer ${aliceToken}`),
+    ]) {
+      expect(response.status).toBe(HttpStatus.BAD_REQUEST);
+      expect(response.body as ApiErrorBody).toMatchObject({
+        code: 'CONVERSATION_CURSOR_INVALID',
+      });
+    }
+
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${expectedIds[0]}/archive`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+
+    const activeFavorites = await request(app.getHttpServer())
+      .get('/v1/conversations/favorites')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(activeFavorites.body).toMatchObject({
+      items: [
+        {
+          id: expectedIds[1],
+          settings: { archived: false, favorited: true },
+        },
+      ],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    });
+
+    const archivedFavorites = await request(app.getHttpServer())
+      .get('/v1/conversations/favorites')
+      .query({ archived: true })
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(archivedFavorites.body).toMatchObject({
+      items: [
+        {
+          id: expectedIds[0],
+          settings: { archived: true, favorited: true },
+        },
+      ],
+      pageInfo: { hasNextPage: false, nextCursor: null },
+    });
+
+    await request(app.getHttpServer())
+      .delete(`/v1/conversations/${expectedIds[1]}/favorite`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    const emptyActiveFavorites = await request(app.getHttpServer())
+      .get('/v1/conversations/favorites')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(emptyActiveFavorites.body.items).toEqual([]);
+  });
+
+  it('pins and unpins a conversation idempotently for only the caller', async () => {
+    const created = await request(app.getHttpServer())
+      .post('/v1/conversations/direct')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ participantId: BOB_ID })
+      .expect(HttpStatus.OK);
+    const conversationId = (created.body as ConversationBody).id;
+    clock.advanceSeconds(60);
+    const pinnedAt = clock.now().toISOString();
+    events.publishSettingsUpdated.mockClear();
+
+    const pinned = await request(app.getHttpServer())
+      .put(`/v1/conversations/${conversationId}/pin`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK)
+      .expect('Cache-Control', 'no-store');
+    expect(pinned.body).toEqual({
+      conversationId,
+      archived: false,
+      muted: false,
+      pinned: true,
+      favorited: false,
+      archivedAt: null,
+      mutedAt: null,
+      mutedUntil: null,
+      pinnedAt,
+      favoritedAt: null,
+      clearedAt: null,
+      clearedThroughMessageId: null,
+    });
+
+    clock.advanceSeconds(60);
+    const repeatedPin = await request(app.getHttpServer())
+      .put(`/v1/conversations/${conversationId}/pin`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(repeatedPin.body).toEqual(pinned.body);
+
+    const bobConversation = await request(app.getHttpServer())
+      .get(`/v1/conversations/${conversationId}`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    expect(bobConversation.body.settings).toMatchObject({
+      pinned: false,
+      pinnedAt: null,
+    });
+
+    const unpinned = await request(app.getHttpServer())
+      .delete(`/v1/conversations/${conversationId}/pin`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(unpinned.body).toEqual({
+      ...pinned.body,
+      pinned: false,
+      pinnedAt: null,
+    });
+    const repeatedUnpin = await request(app.getHttpServer())
+      .delete(`/v1/conversations/${conversationId}/pin`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(HttpStatus.OK);
+    expect(repeatedUnpin.body).toEqual(unpinned.body);
+    expect(events.publishSettingsUpdated).toHaveBeenCalledTimes(2);
+
+    const inaccessible = await request(app.getHttpServer())
+      .put(`/v1/conversations/${conversationId}/pin`)
+      .set('Authorization', `Bearer ${carolToken}`)
+      .expect(HttpStatus.NOT_FOUND);
+    expect(inaccessible.body as ApiErrorBody).toMatchObject({
+      code: 'CONVERSATION_NOT_FOUND',
+    });
+  });
+
   it('returns stable validation and domain errors for unsafe requests', async () => {
     const invalidContactResponse = await request(app.getHttpServer())
       .post('/v1/contacts/match')
@@ -696,11 +915,29 @@ describe('Discovery and direct conversations API (e2e, in memory)', () => {
           .set('Authorization', `Bearer ${aliceToken}`),
       () =>
         request(app.getHttpServer())
+          .get('/v1/conversations/favorites')
+          .query({ limit: 51 })
+          .set('Authorization', `Bearer ${aliceToken}`),
+      () =>
+        request(app.getHttpServer())
+          .get('/v1/conversations/favorites')
+          .query({ archived: 'sometimes' })
+          .set('Authorization', `Bearer ${aliceToken}`),
+      () =>
+        request(app.getHttpServer())
           .put('/v1/conversations/not-a-uuid/archive')
           .set('Authorization', `Bearer ${aliceToken}`),
       () =>
         request(app.getHttpServer())
           .delete('/v1/conversations/not-a-uuid/archive')
+          .set('Authorization', `Bearer ${aliceToken}`),
+      () =>
+        request(app.getHttpServer())
+          .put('/v1/conversations/not-a-uuid/pin')
+          .set('Authorization', `Bearer ${aliceToken}`),
+      () =>
+        request(app.getHttpServer())
+          .delete('/v1/conversations/not-a-uuid/pin')
           .set('Authorization', `Bearer ${aliceToken}`),
       () =>
         request(app.getHttpServer())

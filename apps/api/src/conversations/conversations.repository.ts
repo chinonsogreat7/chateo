@@ -58,6 +58,7 @@ export abstract class ConversationsRepository {
     cursor: ConversationPageCursor | null,
     take: number,
     archived?: boolean,
+    favoritedOnly?: boolean,
   ): Promise<ConversationRecord[]>;
 
   abstract findForUser(

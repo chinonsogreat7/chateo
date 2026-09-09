@@ -89,7 +89,6 @@ export interface CompleteVerificationResult {
 
 export interface UpdateProfileInput {
   displayName?: string;
-  avatarUrl?: string | null;
 }
 
 export interface RequestMetadata {

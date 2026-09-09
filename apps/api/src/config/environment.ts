@@ -62,6 +62,78 @@ const environmentSchema = Joi.object({
     .min(1)
     .max(20)
     .default(5),
+  MEDIA_UPLOADS_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
+  CLOUDINARY_CLOUD_NAME: Joi.when('MEDIA_UPLOADS_ENABLED', {
+    is: true,
+    then: Joi.string()
+      .trim()
+      .pattern(/^[A-Za-z0-9_-]+$/)
+      .required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  CLOUDINARY_API_KEY: Joi.when('MEDIA_UPLOADS_ENABLED', {
+    is: true,
+    then: Joi.string().trim().min(1).required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  CLOUDINARY_API_SECRET: Joi.when('MEDIA_UPLOADS_ENABLED', {
+    is: true,
+    then: Joi.string().min(16).required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET: Joi.when('MEDIA_UPLOADS_ENABLED', {
+    is: true,
+    then: Joi.string()
+      .trim()
+      .max(255)
+      .pattern(/^[A-Za-z0-9_-]+$/)
+      .required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET: Joi.string()
+    .trim()
+    .max(255)
+    .pattern(/^[A-Za-z0-9_-]+$/)
+    .allow('')
+    .optional(),
+  CLOUDINARY_UPLOAD_FOLDER: Joi.string()
+    .trim()
+    .max(180)
+    .pattern(/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/)
+    .default('chateo'),
+  MEDIA_UPLOAD_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(3600)
+    .default(600),
+  MEDIA_MAX_PROFILE_AVATAR_BYTES: Joi.number()
+    .integer()
+    .min(1024)
+    .max(5242880)
+    .default(5242880),
+  MEDIA_MAX_PROFILE_AVATAR_DIMENSION: Joi.number()
+    .integer()
+    .min(256)
+    .max(4096)
+    .default(2048),
+  MEDIA_MAX_PROFILE_AVATAR_PIXELS: Joi.number()
+    .integer()
+    .min(65536)
+    .max(16777216)
+    .default(4194304),
+  MEDIA_MAX_CHAT_AUDIO_BYTES: Joi.number()
+    .integer()
+    .min(1024)
+    .max(20971520)
+    .default(20971520),
+  MEDIA_MAX_CHAT_AUDIO_DURATION_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(900000)
+    .default(900000),
   CORS_ORIGINS: Joi.string().allow('').default(''),
   TRUST_PROXY: Joi.string().allow('').default('loopback'),
 }).unknown(true);

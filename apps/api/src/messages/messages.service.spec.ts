@@ -11,6 +11,7 @@ const OTHER_USER_ID = '22222222-2222-4222-8222-222222222222';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
 const CLIENT_MESSAGE_ID = '55555555-5555-4555-8555-555555555555';
+const ATTACHMENT_ID = '66666666-6666-4666-8666-666666666666';
 const NOW = new Date('2026-08-12T16:00:00.000Z');
 
 function message(overrides: Partial<MessageRecord> = {}): MessageRecord {
@@ -21,6 +22,7 @@ function message(overrides: Partial<MessageRecord> = {}): MessageRecord {
     senderId: USER_ID,
     kind: 'TEXT',
     text: 'Hello!',
+    attachments: [],
     createdAt: NOW,
     participantIds: [USER_ID, OTHER_USER_ID],
     ...overrides,
@@ -29,6 +31,7 @@ function message(overrides: Partial<MessageRecord> = {}): MessageRecord {
 
 function createService() {
   const repository: jest.Mocked<MessagesRepository> = {
+    send: jest.fn(),
     sendText: jest.fn(),
     listForMember: jest.fn(),
     markRead: jest.fn(),
@@ -66,7 +69,7 @@ async function expectApiError(
 describe('MessagesService', () => {
   it('returns a newly created text message and publishes it once', async () => {
     const { repository, eventsPublisher, service } = createService();
-    repository.sendText.mockResolvedValue({
+    repository.send.mockResolvedValue({
       status: 'created',
       message: message(),
     });
@@ -83,13 +86,15 @@ describe('MessagesService', () => {
       senderId: USER_ID,
       kind: 'text',
       text: 'Hello!',
+      attachments: [],
       createdAt: NOW.toISOString(),
     });
-    expect(repository.sendText).toHaveBeenCalledWith({
+    expect(repository.send).toHaveBeenCalledWith({
       conversationId: CONVERSATION_ID,
       senderId: USER_ID,
       clientMessageId: CLIENT_MESSAGE_ID,
       text: 'Hello!',
+      attachmentMediaIds: [],
       now: NOW,
     });
     expect(eventsPublisher.publishCreated).toHaveBeenCalledWith(message());
@@ -97,7 +102,7 @@ describe('MessagesService', () => {
 
   it('returns an idempotent replay without publishing a duplicate event', async () => {
     const { repository, eventsPublisher, service } = createService();
-    repository.sendText.mockResolvedValue({
+    repository.send.mockResolvedValue({
       status: 'existing',
       message: message(),
     });
@@ -111,10 +116,98 @@ describe('MessagesService', () => {
     expect(eventsPublisher.publishCreated).not.toHaveBeenCalled();
   });
 
+  it('returns and publishes an image message with ordered attachment metadata', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    const imageMessage = message({
+      kind: 'IMAGE',
+      text: null,
+      attachments: [
+        {
+          mediaId: ATTACHMENT_ID,
+          type: 'image',
+          contentType: 'image/jpeg',
+          sizeBytes: 245000,
+          width: 640,
+          height: 480,
+          url: 'https://res.cloudinary.com/demo/image/upload/photo.jpg',
+        },
+      ],
+    });
+    repository.send.mockResolvedValue({
+      status: 'created',
+      message: imageMessage,
+    });
+
+    await expect(
+      service.send(USER_ID.toUpperCase(), CONVERSATION_ID.toUpperCase(), {
+        clientMessageId: CLIENT_MESSAGE_ID.toUpperCase(),
+        attachmentMediaIds: [ATTACHMENT_ID.toUpperCase()],
+      }),
+    ).resolves.toEqual({
+      id: MESSAGE_ID,
+      conversationId: CONVERSATION_ID,
+      clientMessageId: CLIENT_MESSAGE_ID,
+      senderId: USER_ID,
+      kind: 'image',
+      text: null,
+      attachments: imageMessage.attachments,
+      createdAt: NOW.toISOString(),
+    });
+    expect(repository.send).toHaveBeenCalledWith({
+      conversationId: CONVERSATION_ID,
+      senderId: USER_ID,
+      clientMessageId: CLIENT_MESSAGE_ID,
+      text: null,
+      attachmentMediaIds: [ATTACHMENT_ID],
+      now: NOW,
+    });
+    expect(eventsPublisher.publishCreated).toHaveBeenCalledWith(imageMessage);
+  });
+
+  it('returns and publishes an audio message with recording metadata', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    const audioMessage = message({
+      kind: 'AUDIO',
+      text: 'Voice note',
+      attachments: [
+        {
+          mediaId: ATTACHMENT_ID,
+          type: 'audio',
+          contentType: 'audio/m4a',
+          sizeBytes: 512000,
+          durationMs: 32000,
+          url: 'https://res.cloudinary.com/demo/video/upload/voice.m4a',
+        },
+      ],
+    });
+    repository.send.mockResolvedValue({
+      status: 'created',
+      message: audioMessage,
+    });
+
+    await expect(
+      service.send(USER_ID, CONVERSATION_ID, {
+        clientMessageId: CLIENT_MESSAGE_ID,
+        text: '  Voice note  ',
+        attachmentMediaIds: [ATTACHMENT_ID],
+      }),
+    ).resolves.toEqual({
+      id: MESSAGE_ID,
+      conversationId: CONVERSATION_ID,
+      clientMessageId: CLIENT_MESSAGE_ID,
+      senderId: USER_ID,
+      kind: 'audio',
+      text: 'Voice note',
+      attachments: audioMessage.attachments,
+      createdAt: NOW.toISOString(),
+    });
+    expect(eventsPublisher.publishCreated).toHaveBeenCalledWith(audioMessage);
+  });
+
   it('keeps the committed 200 response when realtime publishing fails', async () => {
     const { repository, eventsPublisher, service } = createService();
     const logSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
-    repository.sendText.mockResolvedValue({
+    repository.send.mockResolvedValue({
       status: 'created',
       message: message(),
     });
@@ -138,7 +231,7 @@ describe('MessagesService', () => {
 
   it('does not wait for realtime publication before returning a committed message', async () => {
     const { repository, eventsPublisher, service } = createService();
-    repository.sendText.mockResolvedValue({
+    repository.send.mockResolvedValue({
       status: 'created',
       message: message(),
     });
@@ -163,7 +256,7 @@ describe('MessagesService', () => {
   it('contains a synchronous realtime publisher failure', async () => {
     const { repository, eventsPublisher, service } = createService();
     const logSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
-    repository.sendText.mockResolvedValue({
+    repository.send.mockResolvedValue({
       status: 'created',
       message: message(),
     });
@@ -186,7 +279,7 @@ describe('MessagesService', () => {
 
   it('rejects reuse of an idempotency key with different data', async () => {
     const { repository, eventsPublisher, service } = createService();
-    repository.sendText.mockResolvedValue({
+    repository.send.mockResolvedValue({
       status: 'idempotency-conflict',
     });
 
@@ -201,9 +294,24 @@ describe('MessagesService', () => {
     expect(eventsPublisher.publishCreated).not.toHaveBeenCalled();
   });
 
+  it('returns one generic conflict when an attachment cannot be claimed', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.send.mockResolvedValue({ status: 'attachment-unavailable' });
+
+    await expectApiError(
+      service.send(USER_ID, CONVERSATION_ID, {
+        clientMessageId: CLIENT_MESSAGE_ID,
+        attachmentMediaIds: [ATTACHMENT_ID],
+      }),
+      HttpStatus.CONFLICT,
+      'MESSAGE_ATTACHMENT_UNAVAILABLE',
+    );
+    expect(eventsPublisher.publishCreated).not.toHaveBeenCalled();
+  });
+
   it('uses the same not-found error for inaccessible send, history, read, and clear operations', async () => {
     const { repository, service } = createService();
-    repository.sendText.mockResolvedValue({
+    repository.send.mockResolvedValue({
       status: 'conversation-not-found',
     });
     repository.listForMember.mockResolvedValue({

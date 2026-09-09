@@ -387,7 +387,6 @@ export class InMemoryAuthRepository extends AuthRepository {
       user.displayName = input.displayName;
       if (!user.profileCompletedAt) user.profileCompletedAt = copyDate(now);
     }
-    if (input.avatarUrl !== undefined) user.avatarUrl = input.avatarUrl;
     user.updatedAt = copyDate(now);
     return copyUser(user);
   }

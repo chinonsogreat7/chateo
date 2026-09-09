@@ -97,6 +97,14 @@ export class ConversationSettingsService {
     return this.updateForMember(userId, conversationId, { favorited });
   }
 
+  setPinned(
+    userId: string,
+    conversationId: string,
+    pinned: boolean,
+  ): Promise<ConversationSettingsResponseDto> {
+    return this.updateForMember(userId, conversationId, { pinned });
+  }
+
   private async updateForMember(
     userId: string,
     conversationId: string,

@@ -643,6 +643,65 @@ describe('PrismaConversationsRepository', () => {
     );
   });
 
+  it('filters favorite conversations before paginating both pinned segments', async () => {
+    const { repository, findMany } = createRepository();
+    findMany.mockResolvedValue([]);
+
+    await repository.listForUser(USER_ID, null, 21, false, true);
+
+    expect(findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          members: {
+            some: {
+              userId: USER_ID,
+              archivedAt: null,
+              pinnedAt: { not: null },
+              favoritedAt: { not: null },
+            },
+          },
+        }),
+      }),
+    );
+    expect(findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          members: {
+            some: {
+              userId: USER_ID,
+              archivedAt: null,
+              pinnedAt: null,
+              favoritedAt: { not: null },
+            },
+          },
+        }),
+      }),
+    );
+  });
+
+  it('combines the archived and favorite membership filters', async () => {
+    const { repository, findMany } = createRepository();
+    findMany.mockResolvedValue([]);
+
+    await repository.listForUser(USER_ID, null, 21, true, true);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          members: {
+            some: expect.objectContaining({
+              userId: USER_ID,
+              archivedAt: { not: null },
+              favoritedAt: { not: null },
+            }),
+          },
+        }),
+      }),
+    );
+  });
+
   it('scopes detail reads to a member and selects no phone numbers', async () => {
     const { repository, findFirst } = createRepository();
     findFirst.mockResolvedValue(

@@ -14,8 +14,8 @@ export interface GroupConversationParticipantRecord
 export interface ConversationLatestMessageRecord {
   id: string;
   senderId: string;
-  kind: 'TEXT';
-  text: string;
+  kind: 'TEXT' | 'IMAGE' | 'AUDIO';
+  text: string | null;
   createdAt: Date;
 }
 

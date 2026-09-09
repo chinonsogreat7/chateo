@@ -29,6 +29,7 @@ function createController() {
     unmute: jest.fn().mockResolvedValue(RESPONSE),
     setFavorite: jest.fn().mockResolvedValue(RESPONSE),
     setArchived: jest.fn().mockResolvedValue(RESPONSE),
+    setPinned: jest.fn().mockResolvedValue(RESPONSE),
   } as unknown as jest.Mocked<ConversationSettingsService>;
   return {
     service,
@@ -94,6 +95,25 @@ describe('ConversationSettingsController', () => {
         controller[method](USER, { conversationId: CONVERSATION_ID }),
       ).resolves.toBe(RESPONSE);
       expect(service.setFavorite).toHaveBeenCalledWith(
+        USER.sub,
+        CONVERSATION_ID,
+        enabled,
+      );
+    },
+  );
+
+  it.each([
+    ['pin', true],
+    ['unpin', false],
+  ] as const)(
+    'delegates %s to the signed-in member settings',
+    async (method, enabled) => {
+      const { controller, service } = createController();
+
+      await expect(
+        controller[method](USER, { conversationId: CONVERSATION_ID }),
+      ).resolves.toBe(RESPONSE);
+      expect(service.setPinned).toHaveBeenCalledWith(
         USER.sub,
         CONVERSATION_ID,
         enabled,

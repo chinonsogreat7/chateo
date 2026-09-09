@@ -188,6 +188,7 @@ export class InMemoryDiscoveryConversationsRepository {
     cursor: ConversationPageCursor | null,
     take: number,
     archived = false,
+    favoritedOnly = false,
   ): Promise<ConversationRecord[]> {
     return [...this.conversations.values()]
       .filter(
@@ -196,7 +197,10 @@ export class InMemoryDiscoveryConversationsRepository {
             conversation.directUserTwoId === userId) &&
           (this.requiredSettings(conversation.id, userId).archivedAt !==
             null) ===
-            archived,
+            archived &&
+          (!favoritedOnly ||
+            this.requiredSettings(conversation.id, userId).favoritedAt !==
+              null),
       )
       .sort((left, right) => {
         const leftPinned =

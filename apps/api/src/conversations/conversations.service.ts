@@ -30,6 +30,15 @@ interface SerializedCursor {
   id: string;
 }
 
+interface SerializedFavoriteCursor {
+  v: 3;
+  scope: 'favorites';
+  pinned: boolean;
+  archived: boolean;
+  lastActivityAt: string;
+  id: string;
+}
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -536,6 +545,40 @@ export class ConversationsService {
     return this.list(userId, limit, encodedCursor, true);
   }
 
+  async listFavorites(
+    userId: string,
+    limit: number,
+    encodedCursor?: string,
+    archived?: boolean,
+  ): Promise<ConversationListResponseDto> {
+    const archivedFilter = archived ?? false;
+    const cursor =
+      encodedCursor === undefined
+        ? null
+        : this.decodeFavoriteCursor(encodedCursor, archivedFilter);
+    const records = await this.repository.listForUser(
+      userId,
+      cursor,
+      limit + 1,
+      archivedFilter,
+      true,
+    );
+    const hasNextPage = records.length > limit;
+    const pageRecords = records.slice(0, limit);
+    const lastRecord = pageRecords.at(-1);
+
+    return {
+      items: pageRecords.map((record) => this.toResponse(record)),
+      pageInfo: {
+        nextCursor:
+          hasNextPage && lastRecord
+            ? this.encodeFavoriteCursor(lastRecord, archivedFilter)
+            : null,
+        hasNextPage,
+      },
+    };
+  }
+
   async get(
     userId: string,
     conversationId: string,
@@ -593,8 +636,11 @@ export class ConversationsService {
         ? {
             id: latestMessage.id,
             senderId: latestMessage.senderId,
-            kind: 'text' as const,
-            preview: this.messagePreview(latestMessage.text),
+            kind: latestMessage.kind.toLowerCase() as
+              | 'text'
+              | 'image'
+              | 'audio',
+            preview: this.messagePreview(latestMessage),
             createdAt: latestMessage.createdAt.toISOString(),
           }
         : null,
@@ -627,7 +673,14 @@ export class ConversationsService {
     };
   }
 
-  private messagePreview(text: string): string {
+  private messagePreview(message: ConversationLatestMessageRecord): string {
+    const text =
+      message.text ||
+      (message.kind === 'IMAGE'
+        ? 'Photo'
+        : message.kind === 'AUDIO'
+          ? 'Voice message'
+          : '');
     const codePoints = Array.from(text);
     if (codePoints.length <= MAX_MESSAGE_PREVIEW_CODE_POINTS) return text;
     return `${codePoints
@@ -704,11 +757,87 @@ export class ConversationsService {
     }
   }
 
+  private encodeFavoriteCursor(
+    record: ConversationRecord,
+    archived: boolean,
+  ): string {
+    const cursor: SerializedFavoriteCursor = {
+      v: 3,
+      scope: 'favorites',
+      pinned: record.settings?.pinnedAt != null,
+      archived,
+      lastActivityAt: record.lastActivityAt.toISOString(),
+      id: record.id,
+    };
+    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+  }
+
+  private decodeFavoriteCursor(
+    value: string,
+    archived: boolean,
+  ): ConversationPageCursor {
+    try {
+      if (
+        value.length === 0 ||
+        value.length > MAX_CURSOR_LENGTH ||
+        !CURSOR_PATTERN.test(value)
+      ) {
+        throw new Error('Invalid cursor encoding.');
+      }
+
+      const decoded: unknown = JSON.parse(
+        Buffer.from(value, 'base64url').toString('utf8'),
+      );
+      if (!this.isSerializedFavoriteCursor(decoded)) {
+        throw new Error('Invalid cursor payload.');
+      }
+      if (decoded.archived !== archived) {
+        throw new Error('Cursor filter mismatch.');
+      }
+
+      const lastActivityAt = new Date(decoded.lastActivityAt);
+      if (
+        Number.isNaN(lastActivityAt.getTime()) ||
+        lastActivityAt.toISOString() !== decoded.lastActivityAt
+      ) {
+        throw new Error('Invalid cursor timestamp.');
+      }
+      return {
+        pinned: decoded.pinned,
+        archived: decoded.archived,
+        lastActivityAt,
+        id: decoded.id,
+      };
+    } catch {
+      throw new ApiException(
+        HttpStatus.BAD_REQUEST,
+        'CONVERSATION_CURSOR_INVALID',
+        'The conversation cursor is invalid.',
+      );
+    }
+  }
+
   private isSerializedCursor(value: unknown): value is SerializedCursor {
     if (typeof value !== 'object' || value === null) return false;
     const candidate = value as Partial<SerializedCursor>;
     return (
       candidate.v === 2 &&
+      typeof candidate.pinned === 'boolean' &&
+      typeof candidate.archived === 'boolean' &&
+      typeof candidate.lastActivityAt === 'string' &&
+      typeof candidate.id === 'string' &&
+      UUID_PATTERN.test(candidate.id)
+    );
+  }
+
+  private isSerializedFavoriteCursor(
+    value: unknown,
+  ): value is SerializedFavoriteCursor {
+    if (typeof value !== 'object' || value === null) return false;
+    const candidate = value as Partial<SerializedFavoriteCursor>;
+    return (
+      candidate.v === 3 &&
+      candidate.scope === 'favorites' &&
       typeof candidate.pinned === 'boolean' &&
       typeof candidate.archived === 'boolean' &&
       typeof candidate.lastActivityAt === 'string' &&

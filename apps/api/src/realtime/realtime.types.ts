@@ -217,10 +217,35 @@ export interface MessageCreatedEventPayload {
   conversationId: string;
   clientMessageId: string;
   senderId: string;
-  kind: 'text';
-  text: string;
+  kind: 'text' | 'image' | 'audio';
+  text: string | null;
+  attachments: MessageCreatedAttachmentPayload[];
   createdAt: string;
 }
+
+interface MessageCreatedAttachmentPayloadBase {
+  mediaId: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
+}
+
+export interface MessageCreatedImageAttachmentPayload
+  extends MessageCreatedAttachmentPayloadBase {
+  type: 'image';
+  width: number;
+  height: number;
+}
+
+export interface MessageCreatedAudioAttachmentPayload
+  extends MessageCreatedAttachmentPayloadBase {
+  type: 'audio';
+  durationMs: number;
+}
+
+export type MessageCreatedAttachmentPayload =
+  | MessageCreatedImageAttachmentPayload
+  | MessageCreatedAudioAttachmentPayload;
 
 export interface ConversationHistoryClearedEventPayload {
   conversationId: string;

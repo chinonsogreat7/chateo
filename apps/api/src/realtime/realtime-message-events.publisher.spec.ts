@@ -24,6 +24,7 @@ function message(overrides: Partial<MessageRecord> = {}): MessageRecord {
     senderId: USER_ONE_ID,
     kind: 'TEXT',
     text: 'Hello from another device',
+    attachments: [],
     createdAt: NOW,
     participantIds: [USER_ONE_ID, USER_TWO_ID],
     ...overrides,
@@ -157,6 +158,7 @@ describe('RealtimeMessageEventsPublisher', () => {
       senderId: USER_ONE_ID,
       kind: 'text',
       text: 'Hello from another device',
+      attachments: [],
       createdAt: NOW.toISOString(),
     };
     expect(first.emit).toHaveBeenCalledWith(
@@ -184,6 +186,73 @@ describe('RealtimeMessageEventsPublisher', () => {
       USER_TWO_ID,
       USER_ONE_ID,
     ]);
+  });
+
+  it('emits image metadata without internal routing fields', async () => {
+    const recipient = target({
+      userId: USER_TWO_ID,
+      sessionId: 'session-two',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { isSessionActive, publisher } = createPublisher([recipient]);
+    isSessionActive.mockResolvedValue(true);
+    const attachment = {
+      mediaId: '66666666-6666-4666-8666-666666666666',
+      type: 'image' as const,
+      contentType: 'image/jpeg',
+      sizeBytes: 245000,
+      width: 640,
+      height: 480,
+      url: 'https://res.cloudinary.com/demo/image/upload/photo.jpg',
+    };
+
+    await publisher.publishCreated(
+      message({ kind: 'IMAGE', text: null, attachments: [attachment] }),
+    );
+
+    expect(recipient.emit).toHaveBeenCalledWith(
+      MESSAGE_CREATED_EVENT,
+      expect.objectContaining({
+        kind: 'image',
+        text: null,
+        attachments: [attachment],
+      }),
+    );
+    const payload = (recipient.emit as jest.Mock).mock.calls[0]?.[1];
+    expect(payload).not.toHaveProperty('participantIds');
+  });
+
+  it('emits audio recording metadata without internal routing fields', async () => {
+    const recipient = target({
+      userId: USER_TWO_ID,
+      sessionId: 'session-two',
+      tokenExpiresAt: NOW.getTime() + 60_000,
+    });
+    const { isSessionActive, publisher } = createPublisher([recipient]);
+    isSessionActive.mockResolvedValue(true);
+    const attachment = {
+      mediaId: '66666666-6666-4666-8666-666666666666',
+      type: 'audio' as const,
+      contentType: 'audio/m4a',
+      sizeBytes: 512000,
+      durationMs: 32000,
+      url: 'https://res.cloudinary.com/demo/video/upload/voice.m4a',
+    };
+
+    await publisher.publishCreated(
+      message({ kind: 'AUDIO', text: null, attachments: [attachment] }),
+    );
+
+    expect(recipient.emit).toHaveBeenCalledWith(
+      MESSAGE_CREATED_EVENT,
+      expect.objectContaining({
+        kind: 'audio',
+        text: null,
+        attachments: [attachment],
+      }),
+    );
+    const payload = (recipient.emit as jest.Mock).mock.calls[0]?.[1];
+    expect(payload).not.toHaveProperty('participantIds');
   });
 
   it('reuses one current-access lookup across a user multiple devices', async () => {

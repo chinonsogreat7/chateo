@@ -3,21 +3,31 @@ import type {
   ListMessagesResult,
   MarkConversationReadResult,
   MessagePageCursor,
-  SendTextMessageResult,
+  SendMessageResult,
 } from './messages.types';
 
-export interface SendTextMessageInput {
+export interface SendMessageInput {
   conversationId: string;
   senderId: string;
   clientMessageId: string;
-  text: string;
+  text: string | null;
+  attachmentMediaIds: string[];
   now: Date;
 }
 
+export type SendTextMessageInput = Omit<
+  SendMessageInput,
+  'text' | 'attachmentMediaIds'
+> & {
+  text: string;
+};
+
 export abstract class MessagesRepository {
-  abstract sendText(
-    input: SendTextMessageInput,
-  ): Promise<SendTextMessageResult>;
+  abstract send(input: SendMessageInput): Promise<SendMessageResult>;
+
+  sendText(input: SendTextMessageInput): Promise<SendMessageResult> {
+    return this.send({ ...input, attachmentMediaIds: [] });
+  }
 
   abstract listForMember(
     conversationId: string,

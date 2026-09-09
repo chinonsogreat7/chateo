@@ -1,5 +1,53 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiExtraModels, ApiProperty, getSchemaPath } from '@nestjs/swagger';
 
+export class MessageAttachmentResponseDto {
+  @ApiProperty({ format: 'uuid' })
+  mediaId!: string;
+
+  @ApiProperty({ enum: ['image'] })
+  type!: 'image';
+
+  @ApiProperty({ example: 'image/jpeg' })
+  contentType!: string;
+
+  @ApiProperty({ minimum: 1 })
+  sizeBytes!: number;
+
+  @ApiProperty({ minimum: 1 })
+  width!: number;
+
+  @ApiProperty({ minimum: 1 })
+  height!: number;
+
+  @ApiProperty({ format: 'uri' })
+  url!: string;
+}
+
+export class AudioMessageAttachmentResponseDto {
+  @ApiProperty({ format: 'uuid' })
+  mediaId!: string;
+
+  @ApiProperty({ enum: ['audio'] })
+  type!: 'audio';
+
+  @ApiProperty({ example: 'audio/m4a' })
+  contentType!: string;
+
+  @ApiProperty({ minimum: 1, maximum: 20 * 1024 * 1024 })
+  sizeBytes!: number;
+
+  @ApiProperty({
+    minimum: 1,
+    maximum: 900000,
+    description: 'Audio recording duration in milliseconds.',
+  })
+  durationMs!: number;
+
+  @ApiProperty({ format: 'uri' })
+  url!: string;
+}
+
+@ApiExtraModels(MessageAttachmentResponseDto, AudioMessageAttachmentResponseDto)
 export class MessageResponseDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
@@ -13,11 +61,35 @@ export class MessageResponseDto {
   @ApiProperty({ format: 'uuid' })
   senderId!: string;
 
-  @ApiProperty({ enum: ['text'], example: 'text' })
-  kind!: 'text';
+  @ApiProperty({ enum: ['text', 'image', 'audio'], example: 'text' })
+  kind!: 'text' | 'image' | 'audio';
 
-  @ApiProperty({ example: 'Hello! Are you free to chat?' })
-  text!: string;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'Hello! Are you free to chat?',
+  })
+  text!: string | null;
+
+  @ApiProperty({
+    type: 'array',
+    items: {
+      oneOf: [
+        { $ref: getSchemaPath(MessageAttachmentResponseDto) },
+        { $ref: getSchemaPath(AudioMessageAttachmentResponseDto) },
+      ],
+      discriminator: {
+        propertyName: 'type',
+        mapping: {
+          image: getSchemaPath(MessageAttachmentResponseDto),
+          audio: getSchemaPath(AudioMessageAttachmentResponseDto),
+        },
+      },
+    },
+  })
+  attachments!: Array<
+    MessageAttachmentResponseDto | AudioMessageAttachmentResponseDto
+  >;
 
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;

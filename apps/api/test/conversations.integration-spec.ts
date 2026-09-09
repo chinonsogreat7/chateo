@@ -8,6 +8,7 @@ import { PrismaConversationSettingsRepository } from '../src/conversation-settin
 import { NoopConversationEventsPublisher } from '../src/conversations/conversation-events.publisher';
 import { PrismaConversationsRepository } from '../src/conversations/prisma-conversations.repository';
 import { ConversationsService } from '../src/conversations/conversations.service';
+import type { GroupConversationRecord } from '../src/conversations/conversations.types';
 import { PrismaDiscoveryRepository } from '../src/discovery/prisma-discovery.repository';
 
 const USER_ONE_ID = '00000000-0000-4000-8000-000000000301';
@@ -519,6 +520,90 @@ describe('Prisma direct-conversation concurrency', () => {
       { userId: USER_ONE_ID, favoritedAt: null },
       { userId: USER_TWO_ID, favoritedAt: firstFavoriteAt },
     ]);
+  });
+
+  it('filters and paginates active and archived favorites before applying the page boundary', async () => {
+    const groupNames = [
+      'Pinned Favorite',
+      'Older Favorite',
+      'Newer Favorite',
+      'Archived Favorite',
+      'Not Favorite',
+    ];
+    const conversations: GroupConversationRecord[] = [];
+    for (const [index, name] of groupNames.entries()) {
+      const created = await repository.createGroup({
+        creatorId: USER_ONE_ID,
+        name,
+        avatarUrl: null,
+        participantIds: [USER_TWO_ID],
+        now: new Date(NOW.getTime() + (index + 1) * 1_000),
+      });
+      if (created.status !== 'created') {
+        throw new Error('Seeded group participants were not found.');
+      }
+      conversations.push(created.conversation);
+    }
+
+    const [pinned, older, newer, archived, notFavorite] = conversations;
+    if (!pinned || !older || !newer || !archived || !notFavorite) {
+      throw new Error('Expected every favorites fixture to be created.');
+    }
+
+    clock.set(new Date(NOW.getTime() + 10_000));
+    for (const conversation of [pinned, older, newer, archived]) {
+      await settingsService.setFavorite(USER_ONE_ID, conversation.id, true);
+    }
+    await settingsService.setPinned(USER_ONE_ID, pinned.id, true);
+    await settingsService.setArchived(USER_ONE_ID, archived.id, true);
+
+    const firstPage = await conversationsService.listFavorites(USER_ONE_ID, 2);
+    expect(firstPage.items.map((conversation) => conversation.id)).toEqual([
+      pinned.id,
+      newer.id,
+    ]);
+    expect(firstPage.pageInfo).toMatchObject({
+      hasNextPage: true,
+      nextCursor: expect.any(String),
+    });
+
+    const secondPage = await conversationsService.listFavorites(
+      USER_ONE_ID,
+      2,
+      firstPage.pageInfo.nextCursor ?? undefined,
+    );
+    expect(secondPage.items.map((conversation) => conversation.id)).toEqual([
+      older.id,
+    ]);
+    expect(secondPage.pageInfo).toEqual({
+      hasNextPage: false,
+      nextCursor: null,
+    });
+
+    const archivedPage = await conversationsService.listFavorites(
+      USER_ONE_ID,
+      20,
+      undefined,
+      true,
+    );
+    expect(archivedPage.items.map((conversation) => conversation.id)).toEqual([
+      archived.id,
+    ]);
+    expect(
+      [...firstPage.items, ...secondPage.items, ...archivedPage.items].some(
+        (conversation) => conversation.id === notFavorite.id,
+      ),
+    ).toBe(false);
+
+    const otherMemberFavorites = await conversationsService.listFavorites(
+      USER_TWO_ID,
+      50,
+    );
+    expect(
+      otherMemberFavorites.items.some((conversation) =>
+        conversations.some((created) => created.id === conversation.id),
+      ),
+    ).toBe(false);
   });
 
   it('persists groups, per-member settings, and bidirectional block policy', async () => {
