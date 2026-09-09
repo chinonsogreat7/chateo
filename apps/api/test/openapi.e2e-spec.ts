@@ -70,6 +70,7 @@ describe('Conversation settings and clear-chat OpenAPI contract', () => {
           security: [{ bearer: [] }],
           responses: expect.objectContaining({
             '200': expect.any(Object),
+            '400': expect.any(Object),
             '404': expect.any(Object),
           }),
         }),
@@ -86,7 +87,7 @@ describe('Conversation settings and clear-chat OpenAPI contract', () => {
     });
   });
 
-  it('documents the add-to-favorites and remove-from-favorites actions', () => {
+  it('documents the favorites list and add/remove actions', () => {
     const path = document.paths['/v1/conversations/{conversationId}/favorite'];
 
     for (const operation of [path?.put, path?.delete]) {
@@ -95,6 +96,75 @@ describe('Conversation settings and clear-chat OpenAPI contract', () => {
           security: [{ bearer: [] }],
           responses: expect.objectContaining({
             '200': expect.any(Object),
+            '400': expect.any(Object),
+            '404': expect.any(Object),
+          }),
+        }),
+      );
+    }
+
+    expect(document.paths['/v1/conversations/favorites']?.get).toEqual(
+      expect.objectContaining({
+        security: [{ bearer: [] }],
+        parameters: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'archived',
+            in: 'query',
+            schema: expect.objectContaining({
+              type: 'boolean',
+              default: false,
+            }),
+          }),
+          expect.objectContaining({
+            name: 'limit',
+            in: 'query',
+            schema: expect.objectContaining({
+              type: 'integer',
+              minimum: 1,
+              maximum: 50,
+              default: 20,
+            }),
+          }),
+          expect.objectContaining({
+            name: 'cursor',
+            in: 'query',
+            schema: expect.objectContaining({ type: 'string' }),
+          }),
+        ]),
+        responses: expect.objectContaining({
+          '200': expect.objectContaining({
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/ConversationListResponseDto',
+                },
+              },
+            },
+          }),
+          '400': expect.any(Object),
+        }),
+      }),
+    );
+  });
+
+  it('documents dedicated pin and unpin actions', () => {
+    const path = document.paths['/v1/conversations/{conversationId}/pin'];
+
+    for (const operation of [path?.put, path?.delete]) {
+      expect(operation).toEqual(
+        expect.objectContaining({
+          security: [{ bearer: [] }],
+          responses: expect.objectContaining({
+            '200': expect.objectContaining({
+              content: {
+                'application/json': {
+                  schema: {
+                    $ref: '#/components/schemas/ConversationSettingsResponseDto',
+                  },
+                },
+              },
+            }),
+            '400': expect.any(Object),
             '404': expect.any(Object),
           }),
         }),

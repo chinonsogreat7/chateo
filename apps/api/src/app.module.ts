@@ -11,6 +11,7 @@ import { DatabaseModule } from './database/database.module';
 import { DiscoveryModule } from './discovery/discovery.module';
 import { HealthModule } from './health/health.module';
 import { MessagesModule } from './messages/messages.module';
+import { MediaModule } from './media/media.module';
 import { ReceiptsModule } from './receipts/receipts.module';
 import { UsersModule } from './users/users.module';
 
@@ -32,6 +33,7 @@ import { UsersModule } from './users/users.module';
     ConversationsModule,
     ConversationSettingsModule,
     MessagesModule,
+    MediaModule,
     ReceiptsModule,
     HealthModule,
   ],

@@ -1,18 +1,52 @@
 import { Injectable } from '@nestjs/common';
-import { MessageKind, Prisma } from '@prisma/client';
+import { MediaPurpose, MediaStatus, MessageKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import {
   MessagesRepository,
-  type SendTextMessageInput,
+  type SendMessageInput,
 } from './messages.repository';
 import type {
   ClearConversationMessagesResult,
   ListMessagesResult,
   MarkConversationReadResult,
+  MessageAttachmentRecord,
   MessagePageCursor,
   MessageRecord,
-  SendTextMessageResult,
+  SendMessageResult,
 } from './messages.types';
+
+const IMAGE_ATTACHMENT_FORMATS = ['jpg', 'jpeg', 'png', 'webp'] as const;
+const IMAGE_ATTACHMENT_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+] as const;
+const MAX_AUDIO_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_AUDIO_ATTACHMENT_DURATION_MS = 900_000;
+const AUDIO_ATTACHMENT_FORMAT_BY_MIME_TYPE: Readonly<Record<string, string>> = {
+  'audio/aac': 'aac',
+  'audio/mp4': 'm4a',
+  'audio/m4a': 'm4a',
+  'audio/x-m4a': 'm4a',
+  'audio/mpeg': 'mp3',
+  'audio/ogg': 'ogg',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+};
+
+type AttachmentMessageKind = Extract<MessageKind, 'IMAGE' | 'AUDIO'>;
+
+interface AttachmentMetadata {
+  resourceType: string;
+  deliveryType: string;
+  format: string | null;
+  mimeType: string;
+  byteSize: number;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  secureUrl: string | null;
+}
 
 const messageSelect = {
   id: true,
@@ -22,11 +56,59 @@ const messageSelect = {
   kind: true,
   text: true,
   createdAt: true,
+  attachments: {
+    orderBy: { position: 'asc' as const },
+    select: {
+      mediaAssetId: true,
+      position: true,
+      mediaAsset: {
+        select: {
+          resourceType: true,
+          deliveryType: true,
+          format: true,
+          mimeType: true,
+          byteSize: true,
+          width: true,
+          height: true,
+          durationMs: true,
+          secureUrl: true,
+        },
+      },
+    },
+  },
 } satisfies Prisma.MessageSelect;
 
 type SelectedMessage = Prisma.MessageGetPayload<{
   select: typeof messageSelect;
 }>;
+
+const attachmentAssetSelect = {
+  id: true,
+  cloudinaryAssetId: true,
+  resourceType: true,
+  deliveryType: true,
+  format: true,
+  mimeType: true,
+  byteSize: true,
+  width: true,
+  height: true,
+  durationMs: true,
+  secureUrl: true,
+  completedAt: true,
+  messageClaimedAt: true,
+  deletedAt: true,
+} satisfies Prisma.MediaAssetSelect;
+
+type SelectedAttachmentAsset = Prisma.MediaAssetGetPayload<{
+  select: typeof attachmentAssetSelect;
+}>;
+
+class AttachmentClaimUnavailableError extends Error {
+  constructor() {
+    super('One or more message attachments could not be claimed.');
+    this.name = AttachmentClaimUnavailableError.name;
+  }
+}
 
 @Injectable()
 export class PrismaMessagesRepository extends MessagesRepository {
@@ -34,12 +116,15 @@ export class PrismaMessagesRepository extends MessagesRepository {
     super();
   }
 
-  async sendText(input: SendTextMessageInput): Promise<SendTextMessageResult> {
-    const normalizedInput: SendTextMessageInput = {
+  async send(input: SendMessageInput): Promise<SendMessageResult> {
+    const normalizedInput: SendMessageInput = {
       ...input,
       conversationId: input.conversationId.toLowerCase(),
       senderId: input.senderId.toLowerCase(),
       clientMessageId: input.clientMessageId.toLowerCase(),
+      attachmentMediaIds: input.attachmentMediaIds.map((mediaId) =>
+        mediaId.toLowerCase(),
+      ),
     };
     const maxAttempts = 3;
     let lastError: unknown;
@@ -53,11 +138,24 @@ export class PrismaMessagesRepository extends MessagesRepository {
         );
       } catch (error) {
         lastError = error;
+        if (error instanceof AttachmentClaimUnavailableError) {
+          return { status: 'attachment-unavailable' };
+        }
         const code = this.prismaErrorCode(error);
 
-        if (code === 'P2002') {
+        if (code === 'P2002' || code === 'P2003') {
           const winner = await this.readConcurrentWinner(normalizedInput);
           if (winner) return winner;
+          if (
+            normalizedInput.attachmentMediaIds.length > 0 &&
+            !(await this.attachmentsAvailable(
+              this.prisma,
+              normalizedInput.senderId,
+              normalizedInput.attachmentMediaIds,
+            ))
+          ) {
+            return { status: 'attachment-unavailable' };
+          }
         }
 
         const retryable = code === 'P2034' || code === 'P2002';
@@ -322,8 +420,8 @@ export class PrismaMessagesRepository extends MessagesRepository {
 
   private async sendInTransaction(
     transaction: Prisma.TransactionClient,
-    input: SendTextMessageInput,
-  ): Promise<SendTextMessageResult> {
+    input: SendMessageInput,
+  ): Promise<SendMessageResult> {
     const conversation = await transaction.conversation.findUnique({
       where: { id: input.conversationId },
       select: {
@@ -377,14 +475,50 @@ export class PrismaMessagesRepository extends MessagesRepository {
         ? new Date(newestClearTimestamp.getTime() + 1)
         : input.now;
 
+    let messageKind: MessageKind = MessageKind.TEXT;
+    if (input.attachmentMediaIds.length > 0) {
+      const attachmentKind = await this.determineAttachmentKind(
+        transaction,
+        input.senderId,
+        input.attachmentMediaIds,
+      );
+      if (!attachmentKind) {
+        throw new AttachmentClaimUnavailableError();
+      }
+      messageKind = attachmentKind;
+
+      const claimed = await transaction.mediaAsset.updateMany({
+        where: this.availableAttachmentsWhere(
+          input.senderId,
+          input.attachmentMediaIds,
+          attachmentKind,
+        ),
+        data: { messageClaimedAt: messageCreatedAt },
+      });
+      if (claimed.count !== input.attachmentMediaIds.length) {
+        // Throwing (instead of returning) is intentional: Prisma must roll the
+        // transaction back if updateMany claimed only part of the requested set.
+        throw new AttachmentClaimUnavailableError();
+      }
+    }
+
     const message = await transaction.message.create({
       data: {
         conversationId: input.conversationId,
         senderId: input.senderId,
         clientMessageId: input.clientMessageId,
-        kind: MessageKind.TEXT,
+        kind: messageKind,
         text: input.text,
         createdAt: messageCreatedAt,
+        ...(input.attachmentMediaIds.length > 0
+          ? {
+              attachments: {
+                create: input.attachmentMediaIds.map(
+                  (mediaAssetId, position) => ({ mediaAssetId, position }),
+                ),
+              },
+            }
+          : {}),
       },
       select: messageSelect,
     });
@@ -413,8 +547,8 @@ export class PrismaMessagesRepository extends MessagesRepository {
   }
 
   private async readConcurrentWinner(
-    input: SendTextMessageInput,
-  ): Promise<SendTextMessageResult | null> {
+    input: SendMessageInput,
+  ): Promise<SendMessageResult | null> {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: input.conversationId },
       select: {
@@ -440,28 +574,27 @@ export class PrismaMessagesRepository extends MessagesRepository {
       return this.resolveExisting(winner, input, this.uniqueUserIds(members));
     }
 
-    if (
-      conversation?.type === 'DIRECT' &&
-      (await this.hasBlockBetweenDirectParticipants(
-        this.prisma,
-        input.senderId,
-        members,
-      ))
-    ) {
-      return { status: 'conversation-not-found' };
-    }
     return null;
   }
 
   private resolveExisting(
     message: SelectedMessage,
-    input: SendTextMessageInput,
+    input: SendMessageInput,
     participantIds: string[],
-  ): SendTextMessageResult {
+  ): SendMessageResult {
+    const kindMatchesRequest =
+      input.attachmentMediaIds.length === 0
+        ? message.kind === MessageKind.TEXT
+        : message.kind === MessageKind.IMAGE ||
+          message.kind === MessageKind.AUDIO;
     if (
       message.conversationId !== input.conversationId ||
-      message.kind !== MessageKind.TEXT ||
-      message.text !== input.text
+      !kindMatchesRequest ||
+      message.text !== input.text ||
+      !this.sameOrderedIds(
+        message.attachments.map((attachment) => attachment.mediaAssetId),
+        input.attachmentMediaIds,
+      )
     ) {
       return { status: 'idempotency-conflict' };
     }
@@ -475,16 +608,246 @@ export class PrismaMessagesRepository extends MessagesRepository {
     message: SelectedMessage,
     participantIds: string[],
   ): MessageRecord {
+    if (
+      (message.kind === MessageKind.TEXT && message.attachments.length !== 0) ||
+      (message.kind === MessageKind.IMAGE &&
+        message.attachments.length === 0) ||
+      (message.kind === MessageKind.AUDIO && message.attachments.length !== 1)
+    ) {
+      throw new Error('Persisted message attachment count is invalid.');
+    }
+
     return {
       id: message.id,
       conversationId: message.conversationId,
       clientMessageId: message.clientMessageId,
       senderId: message.senderId,
-      kind: 'TEXT',
+      kind: message.kind,
       text: message.text,
+      attachments: message.attachments.map((attachment) =>
+        this.mapAttachment(message.kind, attachment),
+      ),
       createdAt: message.createdAt,
       participantIds,
     };
+  }
+
+  private sameOrderedIds(left: string[], right: string[]): boolean {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => value === right[index])
+    );
+  }
+
+  private async attachmentsAvailable(
+    client: Pick<Prisma.TransactionClient, 'mediaAsset'>,
+    senderId: string,
+    mediaIds: string[],
+  ): Promise<boolean> {
+    return (
+      (await this.determineAttachmentKind(client, senderId, mediaIds)) !== null
+    );
+  }
+
+  private availableAttachmentsWhere(
+    senderId: string,
+    mediaIds: string[],
+    kind: AttachmentMessageKind,
+  ): Prisma.MediaAssetWhereInput {
+    return {
+      id: { in: mediaIds },
+      ownerId: senderId,
+      purpose: MediaPurpose.MESSAGE_ATTACHMENT,
+      status: MediaStatus.READY,
+      deliveryType: 'upload',
+      cloudinaryAssetId: { not: null },
+      secureUrl: { not: null },
+      completedAt: { not: null },
+      messageClaimedAt: null,
+      deletedAt: null,
+      messageAttachments: { none: {} },
+      ...(kind === MessageKind.IMAGE
+        ? {
+            resourceType: 'image',
+            format: { in: [...IMAGE_ATTACHMENT_FORMATS] },
+            mimeType: { in: [...IMAGE_ATTACHMENT_MIME_TYPES] },
+            byteSize: { gt: 0 },
+            width: { gt: 0 },
+            height: { gt: 0 },
+          }
+        : {
+            resourceType: 'video',
+            byteSize: { gt: 0, lte: MAX_AUDIO_ATTACHMENT_BYTES },
+            width: null,
+            height: null,
+            durationMs: {
+              gt: 0,
+              lte: MAX_AUDIO_ATTACHMENT_DURATION_MS,
+            },
+            OR: Object.entries(AUDIO_ATTACHMENT_FORMAT_BY_MIME_TYPE).map(
+              ([mimeType, format]) => ({ mimeType, format }),
+            ),
+          }),
+    };
+  }
+
+  private async determineAttachmentKind(
+    client: Pick<Prisma.TransactionClient, 'mediaAsset'>,
+    senderId: string,
+    mediaIds: string[],
+  ): Promise<AttachmentMessageKind | null> {
+    if (
+      mediaIds.length === 0 ||
+      mediaIds.length > 10 ||
+      new Set(mediaIds).size !== mediaIds.length
+    ) {
+      return null;
+    }
+
+    const assets = await client.mediaAsset.findMany({
+      where: {
+        id: { in: mediaIds },
+        ownerId: senderId,
+        purpose: MediaPurpose.MESSAGE_ATTACHMENT,
+        status: MediaStatus.READY,
+        deliveryType: 'upload',
+        cloudinaryAssetId: { not: null },
+        byteSize: { gt: 0 },
+        secureUrl: { not: null },
+        completedAt: { not: null },
+        messageClaimedAt: null,
+        deletedAt: null,
+        messageAttachments: { none: {} },
+      },
+      select: attachmentAssetSelect,
+    });
+    if (assets.length !== mediaIds.length) return null;
+
+    const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+    const orderedAssets = mediaIds.map((mediaId) => assetsById.get(mediaId));
+    if (orderedAssets.some((asset) => asset === undefined)) return null;
+    const verifiedAssets = orderedAssets as SelectedAttachmentAsset[];
+
+    if (verifiedAssets.every((asset) => this.isValidImageAsset(asset))) {
+      return MessageKind.IMAGE;
+    }
+    if (
+      verifiedAssets.length === 1 &&
+      this.isValidAudioAsset(verifiedAssets[0]!)
+    ) {
+      return MessageKind.AUDIO;
+    }
+    return null;
+  }
+
+  private mapAttachment(
+    kind: MessageKind,
+    attachment: SelectedMessage['attachments'][number],
+  ): MessageAttachmentRecord {
+    const media = attachment.mediaAsset;
+    if (kind === MessageKind.IMAGE && this.isValidImageMetadata(media)) {
+      return {
+        mediaId: attachment.mediaAssetId,
+        type: 'image',
+        contentType: media.mimeType,
+        sizeBytes: media.byteSize,
+        width: media.width,
+        height: media.height,
+        url: media.secureUrl,
+      };
+    }
+    if (kind === MessageKind.AUDIO && this.isValidAudioMetadata(media)) {
+      return {
+        mediaId: attachment.mediaAssetId,
+        type: 'audio',
+        contentType: media.mimeType,
+        sizeBytes: media.byteSize,
+        durationMs: media.durationMs,
+        url: media.secureUrl,
+      };
+    }
+    throw new Error('Persisted message attachment metadata is invalid.');
+  }
+
+  private isValidImageAsset(asset: SelectedAttachmentAsset): boolean {
+    return (
+      this.isCommonAvailableAsset(asset) && this.isValidImageMetadata(asset)
+    );
+  }
+
+  private isValidAudioAsset(asset: SelectedAttachmentAsset): boolean {
+    return (
+      this.isCommonAvailableAsset(asset) && this.isValidAudioMetadata(asset)
+    );
+  }
+
+  private isCommonAvailableAsset(asset: SelectedAttachmentAsset): boolean {
+    return (
+      Boolean(asset.cloudinaryAssetId) &&
+      asset.deliveryType === 'upload' &&
+      asset.byteSize > 0 &&
+      this.isHttpsUrl(asset.secureUrl) &&
+      asset.completedAt !== null &&
+      asset.messageClaimedAt === null &&
+      asset.deletedAt === null
+    );
+  }
+
+  private isValidImageMetadata(
+    media: AttachmentMetadata,
+  ): media is AttachmentMetadata & {
+    width: number;
+    height: number;
+    secureUrl: string;
+  } {
+    return (
+      media.resourceType === 'image' &&
+      media.deliveryType === 'upload' &&
+      media.format !== null &&
+      IMAGE_ATTACHMENT_FORMATS.includes(
+        media.format as (typeof IMAGE_ATTACHMENT_FORMATS)[number],
+      ) &&
+      IMAGE_ATTACHMENT_MIME_TYPES.includes(
+        media.mimeType as (typeof IMAGE_ATTACHMENT_MIME_TYPES)[number],
+      ) &&
+      media.byteSize > 0 &&
+      media.width !== null &&
+      media.width > 0 &&
+      media.height !== null &&
+      media.height > 0 &&
+      this.isHttpsUrl(media.secureUrl)
+    );
+  }
+
+  private isValidAudioMetadata(
+    media: AttachmentMetadata,
+  ): media is AttachmentMetadata & {
+    durationMs: number;
+    secureUrl: string;
+  } {
+    return (
+      media.resourceType === 'video' &&
+      media.deliveryType === 'upload' &&
+      media.format !== null &&
+      AUDIO_ATTACHMENT_FORMAT_BY_MIME_TYPE[media.mimeType] === media.format &&
+      media.byteSize > 0 &&
+      media.byteSize <= MAX_AUDIO_ATTACHMENT_BYTES &&
+      media.width === null &&
+      media.height === null &&
+      media.durationMs !== null &&
+      media.durationMs > 0 &&
+      media.durationMs <= MAX_AUDIO_ATTACHMENT_DURATION_MS &&
+      this.isHttpsUrl(media.secureUrl)
+    );
+  }
+
+  private isHttpsUrl(value: string | null): value is string {
+    if (!value) return false;
+    try {
+      return new URL(value).protocol === 'https:';
+    } catch {
+      return false;
+    }
   }
 
   private uniqueUserIds(members: Array<{ userId: string }>): string[] {

@@ -785,6 +785,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     cursor: ConversationPageCursor | null,
     take: number,
     archived = false,
+    favoritedOnly = false,
   ): Promise<ConversationRecord[]> {
     const normalizedUserId = userId.toLowerCase();
     if (!cursor || cursor.pinned) {
@@ -794,6 +795,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
         take,
         archived,
         true,
+        favoritedOnly,
       );
       if (pinnedConversations.length === take) {
         return pinnedConversations.map((conversation) =>
@@ -807,6 +809,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
         take - pinnedConversations.length,
         archived,
         false,
+        favoritedOnly,
       );
       return [...pinnedConversations, ...unpinnedConversations].map(
         (conversation) => this.mapConversation(conversation, normalizedUserId),
@@ -819,6 +822,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
       take,
       archived,
       false,
+      favoritedOnly,
     );
     return conversations.map((conversation) =>
       this.mapConversation(conversation, normalizedUserId),
@@ -831,6 +835,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     take: number,
     archived: boolean,
     pinned: boolean,
+    favoritedOnly: boolean,
   ): Promise<ConversationWithMembers[]> {
     return this.prisma.conversation.findMany({
       where: {
@@ -839,6 +844,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
             userId,
             archivedAt: archived ? { not: null } : null,
             pinnedAt: pinned ? { not: null } : null,
+            ...(favoritedOnly ? { favoritedAt: { not: null } } : {}),
           },
         },
         ...(cursor

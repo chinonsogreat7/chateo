@@ -14,7 +14,7 @@ Phone number → Verification code → Name → Optional photo → App
 | Verification Code | Verify a one-time code, enforce expiry and cumulative attempts, and create a persistent session.     |
 | Resend Code       | Enforce the server cooldown, invalidate the prior challenge, and preserve the failed-attempt budget. |
 | Name              | `PATCH /v1/me` sets `displayName` and completes the required profile step.                           |
-| Upload a Photo    | `avatarUrl` is optional; binary media upload will be added with the media service.                   |
+| Upload a Photo    | Authorize a signed Cloudinary upload, verify it, then select its `mediaId` as the profile avatar.    |
 
 The Figma file currently shows four code boxes. Development/course mode defaults to four digits and the OTP response includes `codeLength` so the client can render dynamically. Production configuration requires at least six digits.
 
@@ -29,7 +29,11 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 | `POST`   | `/v1/auth/refresh`                                         | Public | Rotate a refresh token                            |
 | `POST`   | `/v1/auth/logout`                                          | Public | Revoke a refresh session; always idempotent       |
 | `GET`    | `/v1/me`                                                   | Bearer | Read the signed-in profile                        |
-| `PATCH`  | `/v1/me`                                                   | Bearer | Set the name and optional avatar URL              |
+| `PATCH`  | `/v1/me`                                                   | Bearer | Set the display name                              |
+| `PUT`    | `/v1/me/avatar`                                            | Bearer | Select a verified profile-avatar upload           |
+| `DELETE` | `/v1/me/avatar`                                            | Bearer | Remove the profile avatar idempotently            |
+| `POST`   | `/v1/media/uploads`                                        | Bearer | Create/replay a signed Cloudinary media upload    |
+| `POST`   | `/v1/media/uploads/:mediaId/complete`                      | Bearer | Verify the Cloudinary object and mark it ready    |
 | `GET`    | `/v1/me/blocks`                                            | Bearer | List users blocked by the caller                  |
 | `PUT`    | `/v1/me/blocks/:userId`                                    | Bearer | Block a user idempotently                         |
 | `DELETE` | `/v1/me/blocks/:userId`                                    | Bearer | Unblock a user idempotently                       |
@@ -39,6 +43,7 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 | `POST`   | `/v1/conversations/group`                                  | Bearer | Create a named group conversation                 |
 | `GET`    | `/v1/conversations`                                        | Bearer | List the signed-in user's conversations           |
 | `GET`    | `/v1/conversations/archived`                               | Bearer | List the caller's archived conversations          |
+| `GET`    | `/v1/conversations/favorites`                              | Bearer | List the caller's active or archived favorites    |
 | `GET`    | `/v1/conversations/:conversationId`                        | Bearer | Open a conversation as a member                   |
 | `PATCH`  | `/v1/conversations/:conversationId`                        | Bearer | Edit group name or avatar                         |
 | `POST`   | `/v1/conversations/:conversationId/members`                | Bearer | Add registered group members                      |
@@ -54,7 +59,9 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 | `DELETE` | `/v1/conversations/:conversationId/mute`                   | Bearer | Unmute for the caller                             |
 | `PUT`    | `/v1/conversations/:conversationId/favorite`               | Bearer | Add to the caller's favorites                     |
 | `DELETE` | `/v1/conversations/:conversationId/favorite`               | Bearer | Remove from the caller's favorites                |
-| `POST`   | `/v1/conversations/:conversationId/messages`               | Bearer | Persist or replay an idempotent text message      |
+| `PUT`    | `/v1/conversations/:conversationId/pin`                    | Bearer | Pin for the caller                                |
+| `DELETE` | `/v1/conversations/:conversationId/pin`                    | Bearer | Unpin for the caller                              |
+| `POST`   | `/v1/conversations/:conversationId/messages`               | Bearer | Persist/replay a text, image, or audio message    |
 | `GET`    | `/v1/conversations/:conversationId/messages`               | Bearer | Read newest-first message history                 |
 | `DELETE` | `/v1/conversations/:conversationId/messages`               | Bearer | Clear message history for the caller              |
 | `PUT`    | `/v1/conversations/:conversationId/receipts/delivered`     | Bearer | Advance the caller's durable delivery boundary    |
@@ -118,7 +125,155 @@ Content-Type: application/json
 }
 ```
 
-The avatar is optional. The current `avatarUrl` field is a bridge for the upcoming media service; clients should not invent URLs.
+The avatar is optional. `PATCH /v1/me` no longer accepts `avatarUrl`; profile
+images must pass through the verified media lifecycle below.
+
+### Upload an image or audio recording
+
+Create a **signed (not unsigned)** Cloudinary upload preset before enabling this
+feature. The currently named `CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET` is shared
+by profile-avatar and chat-image uploads. Allow JPEG, PNG, and WebP, give the
+preset a maximum file size of
+`5242880` bytes (5 MiB), and allow the API's request-supplied public ID. Put its
+name in `CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET`, configure the other
+Cloudinary variables below, and then set `MEDIA_UPLOADS_ENABLED=true`. The API
+includes the preset in the signature, so a client cannot remove it or
+substitute a weaker preset.
+
+Audio recordings use a separate signed preset named by
+`CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET`. Configure it for AAC, M4A, MP3, OGG, and
+WAV with a 20 MiB maximum. This variable may stay empty on an image-only
+deployment; attempting to authorize an audio upload then returns a temporary
+service-unavailable response. Cloudinary classifies audio as its `video`
+resource type, so audio upload and cleanup URLs use `/video/` even though this
+API exposes the asset as `type: "audio"`.
+
+The API signs metadata but never receives the media bytes. Start with an
+authenticated JSON request:
+
+```http
+POST /v1/media/uploads
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "clientUploadId": "7d444840-9dc0-41d1-b245-5ffdce74fad2",
+  "purpose": "profile_avatar",
+  "contentType": "image/jpeg",
+  "sizeBytes": 245000,
+  "originalFilename": "profile-photo.jpg"
+}
+```
+
+`clientUploadId` is an owner-scoped idempotency key. Retrying the same request
+returns the same media record and upload target; reusing it for different
+metadata returns `409 MEDIA_UPLOAD_IDEMPOTENCY_CONFLICT`. An optional lowercase
+64-character `contentSha256` may strengthen that fingerprint, but it is
+client-declared metadata and is not presented as server-verified content.
+
+The `201` response contains a pending `media` object and an `upload` object:
+
+```json
+{
+  "media": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "purpose": "profile_avatar",
+    "type": "image",
+    "status": "pending",
+    "contentType": "image/jpeg",
+    "sizeBytes": 245000,
+    "originalFilename": "profile-photo.jpg",
+    "width": null,
+    "height": null,
+    "durationMs": null,
+    "secureUrl": null,
+    "createdAt": "2026-09-06T10:00:00.000Z",
+    "expiresAt": "2026-09-06T10:10:00.000Z",
+    "completedAt": null
+  },
+  "upload": {
+    "url": "https://api.cloudinary.com/v1_1/CLOUD_NAME/image/upload",
+    "method": "POST",
+    "expiresAt": "2026-09-06T10:10:00.000Z",
+    "fields": {
+      "api_key": "CLOUDINARY_API_KEY",
+      "timestamp": "1788688800",
+      "signature": "SERVER_GENERATED_SHA256_SIGNATURE",
+      "public_id": "chateo/profile-avatars/550e8400-e29b-41d4-a716-446655440000",
+      "context": "media_id=550e8400-e29b-41d4-a716-446655440000|upload_fingerprint=...",
+      "type": "upload",
+      "overwrite": "false",
+      "allowed_formats": "jpg,jpeg,png,webp",
+      "upload_preset": "chateo_profile_avatars",
+      "transformation": "c_limit,h_2048,w_2048/q_auto"
+    }
+  }
+}
+```
+
+Create multipart `FormData` in the mobile app, append the binary as `file`,
+append every `upload.fields` entry exactly as returned, and `POST` it directly
+to `upload.url`. Do not send the bearer token to Cloudinary. The Cloudinary API
+secret is never returned to the client.
+
+After Cloudinary accepts the file, ask the API to verify it:
+
+```http
+POST /v1/media/uploads/550e8400-e29b-41d4-a716-446655440000/complete
+Authorization: Bearer <access-token>
+```
+
+Completion independently reads Cloudinary metadata and checks the server-owned
+public ID, signed context, resource and delivery types, stored byte size,
+allowlisted format, and HTTPS URL. Images must also satisfy their dimension and
+pixel limits; audio must have a positive verified duration no greater than 15
+minutes. Because Cloudinary may normalize an upload, a pending record reports
+the client-declared input size while a ready record reports Cloudinary's
+verified stored size. Completion is idempotent after the media reaches `ready`.
+A missing object remains retryable; expired or mismatched uploads are marked
+failed. A database-backed cleanup worker waits for Cloudinary's one-hour signed
+upload window plus a five-minute safety margin, deletes any resulting object
+using its Cloudinary resource type, and retries transient cleanup failures.
+
+Finally select the ready media record:
+
+```http
+PUT /v1/me/avatar
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "mediaId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+Only the owner can select a ready `profile_avatar`; missing and foreign media
+share the same `404` response. The operation returns the normal user response,
+whose `avatarUrl` is now the verified Cloudinary HTTPS URL. Remove it with
+`DELETE /v1/me/avatar`, which is idempotent and returns `204`.
+
+For a chat image, use the same create-upload and completion flow with
+`"purpose": "message_attachment"`. The returned Cloudinary public ID uses the
+`message-images` folder. Do not select it with `PUT /v1/me/avatar`; reference
+its ready media ID when sending a message as described below.
+
+This image slice accepts JPEG, PNG, and WebP images up to 5 MiB. Its signed
+incoming transformation limits the stored image to 2048 pixels on either axis,
+and completion additionally enforces a 4,194,304-pixel ceiling.
+
+For a voice note, use `purpose: "message_attachment"` with an accepted audio
+MIME type: `audio/aac`, `audio/mp4`, `audio/m4a`, `audio/x-m4a`, `audio/mpeg`,
+`audio/ogg`, `audio/wav`, or `audio/x-wav`. The signed target uses the
+`message-audio` folder and `/video/upload`. The declared and verified stored
+size may not exceed 20 MiB, and the verified duration must be between one
+millisecond and 900,000 milliseconds. Audio can never be selected as a profile
+avatar. Group avatars and general video or document attachments remain later
+slices.
+
+This classroom slice uses Cloudinary's `upload` delivery type, so a copied
+asset URL is publicly reachable. Before treating chat media as private in
+production, move it to authenticated delivery and generate short-lived signed
+read URLs instead of persisting permanent public URLs.
 
 ## User discovery and contacts
 
@@ -226,6 +381,12 @@ Pass `pageInfo.nextCursor` unchanged to the same list route and archive mode.
 Cursors are bound to that mode, so using one in a different mode—including
 dropping `archived=true` while paging on the legacy route—returns
 `CONVERSATION_CURSOR_INVALID` rather than silently skipping conversations.
+Use
+`GET /v1/conversations/favorites?archived=false&limit=20&cursor=<opaque-cursor>`
+for active favorites; omit `archived` for the same default, or set it to `true`
+for archived favorites. Favorites cursors are bound to both this route and its
+archive mode. Reusing one on the ordinary conversation list, or changing
+`archived` between favorites pages, returns `CONVERSATION_CURSOR_INVALID`.
 `GET /v1/conversations/:conversationId` returns `CONVERSATION_NOT_FOUND` for
 both a missing conversation and a non-member, avoiding existence disclosure.
 After messages are sent, `latestMessage` contains a safe 120-code-point preview
@@ -297,12 +458,20 @@ contains the expiry in `mutedUntil`; an indefinite mute has `mutedAt` set and
 Use `PUT /v1/conversations/:conversationId/favorite` to add the conversation to
 the caller's favorites and `DELETE` on the same path to remove it. The response
 sets `favorited` and `favoritedAt` alongside the other caller-specific settings.
+List active favorites with `GET /v1/conversations/favorites`; use
+`archived=true` to list favorites that the caller also archived. Filtering is
+per member: another participant does not see the caller's favorite state.
 
-Favorite, unmute, always-mute, archive, unarchive, and pin replays are
-idempotent: enabled states preserve their existing transition timestamp,
-disabled states keep it `null`, and no-op replays do not publish a duplicate
-realtime event. Reapplying a finite mute deliberately restarts the selected
-duration from the new request time. The
+Use `PUT /v1/conversations/:conversationId/pin` to pin a conversation for the
+caller and `DELETE` on the same path to unpin it. Both return the complete
+caller-specific settings snapshot. The legacy settings `PATCH` remains
+available for existing clients.
+
+Favorite, unfavorite, pin, unpin, unmute, always-mute, archive, and unarchive
+replays are idempotent: enabled states preserve their existing transition
+timestamp, disabled states keep it `null`, and no-op replays do not publish a
+duplicate realtime event. Reapplying a finite mute deliberately restarts the
+selected duration from the new request time. The
 `conversation.settings.updated` event includes `mutedUntil`, `favorited`, and
 `favoritedAt`. Treat this event as a refetch hint, not as an ordered state
 update; archive mutations publish it only when the caller's persisted state
@@ -387,7 +556,7 @@ previous owner becomes an admin. Owners cannot leave or be removed until they
 transfer ownership, and deleting a group permanently removes its messages,
 memberships, and receipts.
 
-## Text messages
+## Messages
 
 Generate one UUID on the device for each composed message and keep it when
 retrying the request:
@@ -404,9 +573,10 @@ Content-Type: application/json
 ```
 
 The endpoint always returns `200 OK` for a new message or an identical retry.
-Reusing the same `clientMessageId` with different text or a different
-conversation returns `409 MESSAGE_IDEMPOTENCY_CONFLICT`. Text is trimmed and
-must contain 1-4000 characters after trimming.
+Reusing the same `clientMessageId` with different text, differently ordered
+attachment IDs, or a different conversation returns
+`409 MESSAGE_IDEMPOTENCY_CONFLICT`. Text is trimmed and, when present, contains
+1-4000 characters after trimming.
 
 ```json
 {
@@ -416,9 +586,96 @@ must contain 1-4000 characters after trimming.
   "senderId": "00000000-0000-4000-8000-000000000101",
   "kind": "text",
   "text": "Hello! Are you free to chat?",
+  "attachments": [],
   "createdAt": "2026-08-12T16:00:00.000Z"
 }
 ```
+
+To send images, first create each upload with
+`"purpose": "message_attachment"`, upload the bytes directly to Cloudinary,
+and complete verification. Then send one to ten ready media IDs in display
+order. A caption is optional:
+
+```http
+POST /v1/conversations/550e8400-e29b-41d4-a716-446655440000/messages
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{
+  "clientMessageId": "8e555951-aed1-42e2-8346-6aadece85be3",
+  "text": "The whiteboard after class",
+  "attachmentMediaIds": [
+    "550e8400-e29b-41d4-a716-446655440000"
+  ]
+}
+```
+
+At least `text` or `attachmentMediaIds` is required. Attachment IDs must be
+unique UUIDs owned by the sender, ready, valid for chat messages, and not
+already attached to another message. An image message accepts one to ten image
+IDs in display order. An audio message accepts exactly one audio ID. Images and
+audio cannot be mixed in the same message. Missing, foreign, unfinished,
+invalid, mixed, or previously claimed media all return the privacy-safe
+`409 MESSAGE_ATTACHMENT_UNAVAILABLE` response. The media claim and message
+write commit atomically, including when two sends race for the same asset.
+
+```json
+{
+  "id": "9b2a35a6-6542-48b1-8232-0ac6476db74b",
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  "clientMessageId": "8e555951-aed1-42e2-8346-6aadece85be3",
+  "senderId": "00000000-0000-4000-8000-000000000101",
+  "kind": "image",
+  "text": "The whiteboard after class",
+  "attachments": [
+    {
+      "mediaId": "550e8400-e29b-41d4-a716-446655440000",
+      "type": "image",
+      "contentType": "image/jpeg",
+      "sizeBytes": 238410,
+      "width": 1600,
+      "height": 1200,
+      "url": "https://res.cloudinary.com/example/image/upload/v1/chateo/message-images/550e8400-e29b-41d4-a716-446655440000.jpg"
+    }
+  ],
+  "createdAt": "2026-09-06T16:00:00.000Z"
+}
+```
+
+An audio recording uses the same endpoint and may include a caption:
+
+```json
+{
+  "clientMessageId": "9f666062-bfe2-43f3-9457-7bbefdb96cf4",
+  "attachmentMediaIds": ["661f9511-f3ac-42e5-bf40-c10f5dd67e6b"]
+}
+```
+
+Its persisted attachment contains playback metadata rather than image
+dimensions:
+
+```json
+{
+  "kind": "audio",
+  "text": null,
+  "attachments": [
+    {
+      "mediaId": "661f9511-f3ac-42e5-bf40-c10f5dd67e6b",
+      "type": "audio",
+      "contentType": "audio/mp4",
+      "sizeBytes": 482310,
+      "durationMs": 18400,
+      "url": "https://res.cloudinary.com/example/video/upload/v1/chateo/message-audio/661f9511-f3ac-42e5-bf40-c10f5dd67e6b.m4a"
+    }
+  ]
+}
+```
+
+The same request works for direct conversations and groups; membership and
+block rules remain unchanged. Binary data never passes through this API or a
+Socket.IO event. History and `message.created` return the same persisted
+attachment metadata. A latest-message preview uses the caption when provided
+and otherwise displays `Photo` for images or `Voice message` for audio.
 
 Fetch history with:
 
@@ -748,7 +1005,13 @@ Discovery, conversation, message, and receipt codes include
 `CONVERSATION_OWNER_TRANSFER_SELF_NOT_ALLOWED`,
 `CONVERSATION_SETTINGS_UPDATE_EMPTY`, `CONVERSATION_NOT_FOUND`,
 `USER_BLOCK_SELF_NOT_ALLOWED`, `USER_NOT_FOUND`, `MESSAGE_CURSOR_INVALID`,
-and `MESSAGE_IDEMPOTENCY_CONFLICT`.
+`MESSAGE_IDEMPOTENCY_CONFLICT`, `MESSAGE_ATTACHMENT_UNAVAILABLE`,
+`MEDIA_UPLOAD_IDEMPOTENCY_CONFLICT`,
+`MEDIA_UPLOAD_NOT_FOUND`, `MEDIA_UPLOAD_NOT_READY`, `MEDIA_UPLOAD_EXPIRED`,
+`MEDIA_UPLOAD_VERIFICATION_FAILED`, `MEDIA_STORAGE_UNAVAILABLE`, and
+`MEDIA_UPLOADS_DISABLED`. Audio authorization also uses
+`MEDIA_AUDIO_UPLOADS_DISABLED` when the global media integration is enabled but
+its separate audio preset is not configured.
 
 ## Security behavior
 
@@ -769,40 +1032,66 @@ and `MESSAGE_IDEMPOTENCY_CONFLICT`.
 - Direct-conversation participant pairs are stored in canonical UUID order under a database unique constraint.
 - Conversation archive, mute window, pin, favorite, and clear-history boundary are stored independently for each member.
 - Clearing history hides messages only for that member and never deletes shared message rows.
+- Chat image and audio bytes upload directly to Cloudinary; messages atomically claim only verified, ready media owned by their sender.
 - Group creation and lifecycle mutations enforce one owner, role permissions, member limits, and inviter-to-invitee block checks atomically.
 - Realtime membership changes refresh cached presence/typing authorization, and message events recheck current membership before delivery.
 - Message send retries are deduplicated by `(senderId, clientMessageId)` before unread counters change.
 - Receipt boundaries accept only incoming messages, advance monotonically, and persist before their socket events are published.
 - Socket handshakes validate both the JWT and its server-side session; private events are revalidated before delivery.
+- Profile-avatar, chat-image, and chat-audio bytes upload directly to Cloudinary
+  through server-signed, non-overwriting requests with purpose-specific signed
+  presets; the API secret never leaves the server.
+- The API stores a pending media record before signing and independently checks
+  Cloudinary metadata, owner, purpose, readiness, size, format, image
+  dimensions or audio duration, and signed context before assigning an avatar
+  URL or claiming chat media.
+- Rejected and expired pending uploads remain in the database until a cleanup
+  worker can safely delete the Cloudinary object after the signature window;
+  failed deletions remain retryable.
+- Client-supplied avatar URLs are rejected by `PATCH /v1/me`, and foreign media
+  IDs are indistinguishable from missing IDs.
 
 ## Environment
 
 Copy `.env.example` to `.env` and configure:
 
-| Variable                            | Purpose                                                      |
-| ----------------------------------- | ------------------------------------------------------------ |
-| `NODE_ENV`                          | `development`, `test`, or `production`                       |
-| `DATABASE_URL`                      | PostgreSQL connection string                                 |
-| `JWT_ACCESS_SECRET`                 | Access-token signing secret, at least 32 characters          |
-| `OTP_HASH_SECRET`                   | Independent OTP HMAC secret, at least 32 characters          |
-| `OTP_PROVIDER`                      | `console` for development/test; `twilio` for production      |
-| `TWILIO_ACCOUNT_SID`                | Twilio account that owns the sender                          |
-| `TWILIO_API_KEY`                    | Twilio API key used for HTTP Basic authentication            |
-| `TWILIO_API_SECRET`                 | Secret paired with the Twilio API key                        |
-| `TWILIO_FROM_NUMBER`                | Twilio sender in E.164 form                                  |
-| `AUTH_FIXED_OTP`                    | Optional local/test code; must be empty in production        |
-| `AUTH_OTP_LENGTH`                   | 4–8 digits; production requires at least 6                   |
-| `AUTH_OTP_TTL_SECONDS`              | Code lifetime                                                |
-| `AUTH_OTP_RESEND_SECONDS`           | Server-side resend cooldown                                  |
-| `AUTH_OTP_MAX_ATTEMPTS`             | Cumulative failure limit                                     |
-| `AUTH_OTP_LOCK_SECONDS`             | Lock duration after the failure limit                        |
-| `AUTH_ACCESS_TOKEN_TTL_SECONDS`     | Access-token lifetime                                        |
-| `AUTH_REFRESH_TOKEN_TTL_SECONDS`    | Rotating session lifetime                                    |
-| `API_DOCS_ENABLED`                  | Expose Swagger UI and OpenAPI JSON; defaults to `true`       |
-| `REALTIME_MAX_CONNECTIONS_PER_USER` | Per-instance authenticated socket cap; defaults to `5`       |
-| `CORS_ORIGINS`                      | Comma-separated browser origins for production               |
-| `TRUST_PROXY`                       | Express trust-proxy setting used for accurate throttling IPs |
-| `ALLOW_DEMO_SEED`                   | Must equal `true` to run the manual classroom seed command   |
+| Variable                                  | Purpose                                                      |
+| ----------------------------------------- | ------------------------------------------------------------ |
+| `NODE_ENV`                                | `development`, `test`, or `production`                       |
+| `DATABASE_URL`                            | PostgreSQL connection string                                 |
+| `JWT_ACCESS_SECRET`                       | Access-token signing secret, at least 32 characters          |
+| `OTP_HASH_SECRET`                         | Independent OTP HMAC secret, at least 32 characters          |
+| `OTP_PROVIDER`                            | `console` for development/test; `twilio` for production      |
+| `TWILIO_ACCOUNT_SID`                      | Twilio account that owns the sender                          |
+| `TWILIO_API_KEY`                          | Twilio API key used for HTTP Basic authentication            |
+| `TWILIO_API_SECRET`                       | Secret paired with the Twilio API key                        |
+| `TWILIO_FROM_NUMBER`                      | Twilio sender in E.164 form                                  |
+| `AUTH_FIXED_OTP`                          | Optional local/test code; must be empty in production        |
+| `AUTH_OTP_LENGTH`                         | 4–8 digits; production requires at least 6                   |
+| `AUTH_OTP_TTL_SECONDS`                    | Code lifetime                                                |
+| `AUTH_OTP_RESEND_SECONDS`                 | Server-side resend cooldown                                  |
+| `AUTH_OTP_MAX_ATTEMPTS`                   | Cumulative failure limit                                     |
+| `AUTH_OTP_LOCK_SECONDS`                   | Lock duration after the failure limit                        |
+| `AUTH_ACCESS_TOKEN_TTL_SECONDS`           | Access-token lifetime                                        |
+| `AUTH_REFRESH_TOKEN_TTL_SECONDS`          | Rotating session lifetime                                    |
+| `API_DOCS_ENABLED`                        | Expose Swagger UI and OpenAPI JSON; defaults to `true`       |
+| `REALTIME_MAX_CONNECTIONS_PER_USER`       | Per-instance authenticated socket cap; defaults to `5`       |
+| `MEDIA_UPLOADS_ENABLED`                   | Enables Cloudinary media endpoints; defaults to `false`      |
+| `CLOUDINARY_CLOUD_NAME`                   | Cloudinary product-environment cloud name                    |
+| `CLOUDINARY_API_KEY`                      | Cloudinary public API key                                    |
+| `CLOUDINARY_API_SECRET`                   | Server-only Cloudinary signing/Admin API secret              |
+| `CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET` | Signed image preset with a 5 MiB maximum                     |
+| `CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET`     | Optional signed audio preset with a 20 MiB maximum           |
+| `CLOUDINARY_UPLOAD_FOLDER`                | Safe public-ID prefix; defaults to `chateo`                  |
+| `MEDIA_UPLOAD_TTL_SECONDS`                | Pending upload workflow lifetime; defaults to `600`          |
+| `MEDIA_MAX_PROFILE_AVATAR_BYTES`          | Avatar limit, at most 5 MiB; defaults to `5242880`           |
+| `MEDIA_MAX_PROFILE_AVATAR_DIMENSION`      | Maximum width or height; defaults to `2048`                  |
+| `MEDIA_MAX_PROFILE_AVATAR_PIXELS`         | Maximum total pixels; defaults to `4194304`                  |
+| `MEDIA_MAX_CHAT_AUDIO_BYTES`              | Audio recording limit; defaults to `20971520`                |
+| `MEDIA_MAX_CHAT_AUDIO_DURATION_MS`        | Audio duration limit; defaults to `900000`                   |
+| `CORS_ORIGINS`                            | Comma-separated browser origins for production               |
+| `TRUST_PROXY`                             | Express trust-proxy setting used for accurate throttling IPs |
+| `ALLOW_DEMO_SEED`                         | Must equal `true` to run the manual classroom seed command   |
 
 ## Database
 
@@ -849,6 +1138,26 @@ Timed mute, favorites, and per-member clear history require
 `20260904120000_add_conversation_mute_favorite_and_clear`. It stores finite mute
 expiry and a stable `(clearedAt, clearedThroughMessageId)` visibility boundary;
 it does not delete or rewrite existing messages.
+
+The dedicated favorites list requires
+`20260906100000_add_conversation_favorites_index`. It adds the
+`(user_id, favorited_at)` membership index used to filter a caller's favorites
+before cursor pagination.
+
+Cloudinary-backed profile avatars require
+`20260906130000_add_cloudinary_media_assets`. It creates the owner-scoped media
+upload lifecycle and links a verified asset to `users.avatar_media_id`; image
+bytes and Cloudinary credentials are never stored in PostgreSQL.
+
+Chat image messages require
+`20260906160000_add_message_image_attachments`. It makes message text optional,
+adds the `IMAGE` kind, and stores ordered attachment references. Each media
+asset can be claimed by only one message.
+
+Chat audio messages require
+`20260906190000_add_audio_message_attachments`. It adds the `AUDIO` kind and
+allows the existing ordered attachment relation to claim one verified audio
+recording for a direct or group message.
 
 Run the real-PostgreSQL integration suite against a dedicated database whose
 name ends in `_integration` (or a dedicated schema beginning with

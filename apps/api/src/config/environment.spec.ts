@@ -97,6 +97,109 @@ describe('validateEnvironment', () => {
     expect(environment.API_DOCS_ENABLED).toBe(false);
   });
 
+  it('keeps media uploads disabled by default', () => {
+    const environment = validateEnvironment({
+      ...sharedConfig,
+      NODE_ENV: 'test',
+    });
+
+    expect(environment).toMatchObject({
+      MEDIA_UPLOADS_ENABLED: false,
+      CLOUDINARY_UPLOAD_FOLDER: 'chateo',
+      MEDIA_UPLOAD_TTL_SECONDS: 600,
+      MEDIA_MAX_PROFILE_AVATAR_BYTES: 5242880,
+      MEDIA_MAX_PROFILE_AVATAR_DIMENSION: 2048,
+      MEDIA_MAX_PROFILE_AVATAR_PIXELS: 4194304,
+      MEDIA_MAX_CHAT_AUDIO_BYTES: 20971520,
+      MEDIA_MAX_CHAT_AUDIO_DURATION_MS: 900000,
+    });
+  });
+
+  it('accepts a complete Cloudinary configuration', () => {
+    const environment = validateEnvironment({
+      ...sharedConfig,
+      NODE_ENV: 'test',
+      MEDIA_UPLOADS_ENABLED: 'true',
+      CLOUDINARY_CLOUD_NAME: 'chateo-demo',
+      CLOUDINARY_API_KEY: '1234567890',
+      CLOUDINARY_API_SECRET: 'cloudinary-secret-at-least-16',
+      CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET: 'chateo_profile_avatars',
+      CLOUDINARY_UPLOAD_FOLDER: 'chateo/test',
+    });
+
+    expect(environment).toMatchObject({
+      MEDIA_UPLOADS_ENABLED: true,
+      CLOUDINARY_CLOUD_NAME: 'chateo-demo',
+      CLOUDINARY_UPLOAD_FOLDER: 'chateo/test',
+    });
+  });
+
+  it('accepts image-only uploads without an audio preset', () => {
+    const environment = validateEnvironment({
+      ...sharedConfig,
+      NODE_ENV: 'test',
+      MEDIA_UPLOADS_ENABLED: true,
+      CLOUDINARY_CLOUD_NAME: 'chateo-demo',
+      CLOUDINARY_API_KEY: '1234567890',
+      CLOUDINARY_API_SECRET: 'cloudinary-secret-at-least-16',
+      CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET: 'chateo_profile_avatars',
+    });
+
+    expect(environment.CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET).toBeUndefined();
+  });
+
+  it('accepts a separate signed chat-audio preset', () => {
+    const environment = validateEnvironment({
+      ...sharedConfig,
+      NODE_ENV: 'test',
+      MEDIA_UPLOADS_ENABLED: true,
+      CLOUDINARY_CLOUD_NAME: 'chateo-demo',
+      CLOUDINARY_API_KEY: '1234567890',
+      CLOUDINARY_API_SECRET: 'cloudinary-secret-at-least-16',
+      CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET: 'chateo_profile_avatars',
+      CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET: 'chateo_chat_audio',
+    });
+
+    expect(environment.CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET).toBe(
+      'chateo_chat_audio',
+    );
+  });
+
+  it('rejects an unsafe chat-audio preset name when supplied', () => {
+    expect(() =>
+      validateEnvironment({
+        ...sharedConfig,
+        NODE_ENV: 'test',
+        MEDIA_UPLOADS_ENABLED: true,
+        CLOUDINARY_CLOUD_NAME: 'chateo-demo',
+        CLOUDINARY_API_KEY: '1234567890',
+        CLOUDINARY_API_SECRET: 'cloudinary-secret-at-least-16',
+        CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET: 'chateo_profile_avatars',
+        CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET: 'chat/audio',
+      }),
+    ).toThrow('CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET');
+  });
+
+  it.each([
+    'CLOUDINARY_CLOUD_NAME',
+    'CLOUDINARY_API_KEY',
+    'CLOUDINARY_API_SECRET',
+    'CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET',
+  ] as const)('rejects enabled media uploads without %s', (missingKey) => {
+    const cloudinaryConfig: Record<string, unknown> = {
+      ...sharedConfig,
+      NODE_ENV: 'test',
+      MEDIA_UPLOADS_ENABLED: true,
+      CLOUDINARY_CLOUD_NAME: 'chateo-demo',
+      CLOUDINARY_API_KEY: '1234567890',
+      CLOUDINARY_API_SECRET: 'cloudinary-secret-at-least-16',
+      CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET: 'chateo_profile_avatars',
+    };
+    delete cloudinaryConfig[missingKey];
+
+    expect(() => validateEnvironment(cloudinaryConfig)).toThrow(missingKey);
+  });
+
   it.each([
     'TWILIO_ACCOUNT_SID',
     'TWILIO_API_KEY',

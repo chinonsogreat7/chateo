@@ -126,6 +126,7 @@ export class ConversationSettingsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Unmute a conversation' })
   @ApiOkResponse({ type: ConversationSettingsResponseDto })
+  @ApiBadRequestResponse({ description: 'The conversation ID is invalid.' })
   @ApiNotFoundResponse({
     description: 'The conversation is missing or the user is not a member.',
   })
@@ -140,6 +141,7 @@ export class ConversationSettingsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Add a conversation to favorites' })
   @ApiOkResponse({ type: ConversationSettingsResponseDto })
+  @ApiBadRequestResponse({ description: 'The conversation ID is invalid.' })
   @ApiNotFoundResponse({
     description: 'The conversation is missing or the user is not a member.',
   })
@@ -158,6 +160,7 @@ export class ConversationSettingsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Remove a conversation from favorites' })
   @ApiOkResponse({ type: ConversationSettingsResponseDto })
+  @ApiBadRequestResponse({ description: 'The conversation ID is invalid.' })
   @ApiNotFoundResponse({
     description: 'The conversation is missing or the user is not a member.',
   })
@@ -166,6 +169,44 @@ export class ConversationSettingsController {
     @Param() params: ConversationSettingsParamsDto,
   ): Promise<ConversationSettingsResponseDto> {
     return this.settingsService.setFavorite(
+      user.sub,
+      params.conversationId,
+      false,
+    );
+  }
+
+  @Put(':conversationId/pin')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Pin a conversation for the signed-in user' })
+  @ApiOkResponse({ type: ConversationSettingsResponseDto })
+  @ApiBadRequestResponse({ description: 'The conversation ID is invalid.' })
+  @ApiNotFoundResponse({
+    description: 'The conversation is missing or the user is not a member.',
+  })
+  pin(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationSettingsParamsDto,
+  ): Promise<ConversationSettingsResponseDto> {
+    return this.settingsService.setPinned(
+      user.sub,
+      params.conversationId,
+      true,
+    );
+  }
+
+  @Delete(':conversationId/pin')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Unpin a conversation for the signed-in user' })
+  @ApiOkResponse({ type: ConversationSettingsResponseDto })
+  @ApiBadRequestResponse({ description: 'The conversation ID is invalid.' })
+  @ApiNotFoundResponse({
+    description: 'The conversation is missing or the user is not a member.',
+  })
+  unpin(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationSettingsParamsDto,
+  ): Promise<ConversationSettingsResponseDto> {
+    return this.settingsService.setPinned(
       user.sub,
       params.conversationId,
       false,

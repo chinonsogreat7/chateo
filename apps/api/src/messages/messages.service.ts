@@ -42,11 +42,14 @@ export class MessagesService {
     conversationId: string,
     input: SendMessageDto,
   ): Promise<MessageResponseDto> {
-    const result = await this.repository.sendText({
+    const result = await this.repository.send({
       conversationId: conversationId.toLowerCase(),
       senderId: userId.toLowerCase(),
       clientMessageId: input.clientMessageId.toLowerCase(),
-      text: input.text.trim(),
+      text: input.text?.trim() || null,
+      attachmentMediaIds: (input.attachmentMediaIds ?? []).map((mediaId) =>
+        mediaId.toLowerCase(),
+      ),
       now: this.clock.now(),
     });
 
@@ -58,6 +61,13 @@ export class MessagesService {
         HttpStatus.CONFLICT,
         'MESSAGE_IDEMPOTENCY_CONFLICT',
         'The client message ID has already been used with different message data.',
+      );
+    }
+    if (result.status === 'attachment-unavailable') {
+      throw new ApiException(
+        HttpStatus.CONFLICT,
+        'MESSAGE_ATTACHMENT_UNAVAILABLE',
+        'One or more attachments are unavailable for this message.',
       );
     }
     if (result.status === 'created') {
@@ -201,8 +211,9 @@ export class MessagesService {
       conversationId: message.conversationId,
       clientMessageId: message.clientMessageId,
       senderId: message.senderId,
-      kind: 'text',
+      kind: message.kind.toLowerCase() as 'text' | 'image' | 'audio',
       text: message.text,
+      attachments: message.attachments,
       createdAt: message.createdAt.toISOString(),
     };
   }

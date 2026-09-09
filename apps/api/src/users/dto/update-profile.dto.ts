@@ -1,12 +1,6 @@
 import { Transform } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsOptional,
-  IsString,
-  IsUrl,
-  Length,
-  MaxLength,
-} from 'class-validator';
+import { IsOptional, IsString, Length } from 'class-validator';
 
 export class UpdateProfileDto {
   @ApiPropertyOptional({ example: 'Great Ichoku', minLength: 2, maxLength: 80 })
@@ -17,17 +11,4 @@ export class UpdateProfileDto {
   @IsString()
   @Length(2, 80)
   displayName?: string;
-
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    format: 'uri',
-    example: 'https://example.com/avatars/great.jpg',
-    description:
-      'A URL returned by the future media-upload service, or null to remove.',
-  })
-  @IsOptional()
-  @IsUrl({ require_protocol: true })
-  @MaxLength(2048)
-  avatarUrl?: string | null;
 }

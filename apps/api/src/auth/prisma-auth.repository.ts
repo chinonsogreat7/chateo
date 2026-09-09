@@ -435,8 +435,6 @@ export class PrismaAuthRepository extends AuthRepository {
       data.displayName = input.displayName;
       if (existing.profileCompletedAt === null) data.profileCompletedAt = now;
     }
-    if (input.avatarUrl !== undefined) data.avatarUrl = input.avatarUrl;
-
     const user = await this.prisma.user.update({ where: { id }, data });
     return mapUser(user);
   }

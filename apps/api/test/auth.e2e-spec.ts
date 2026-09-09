@@ -398,13 +398,12 @@ describe('Authentication API (e2e, in memory)', () => {
       .set('Authorization', `Bearer ${auth.accessToken}`)
       .send({
         displayName: '  Great Ichoku  ',
-        avatarUrl: 'https://cdn.example.com/avatars/great.png',
       })
       .expect(HttpStatus.OK);
     expect(patchResponse.body as UserBody).toMatchObject({
       id: auth.user.id,
       displayName: 'Great Ichoku',
-      avatarUrl: 'https://cdn.example.com/avatars/great.png',
+      avatarUrl: null,
       profileComplete: true,
     });
 

@@ -43,7 +43,7 @@ export class MessagesController {
 
   @Post(':conversationId/messages')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Persist or replay an idempotent text message' })
+  @ApiOperation({ summary: 'Persist or replay an idempotent message' })
   @ApiBody({
     type: SendMessageDto,
     examples: {
@@ -54,6 +54,21 @@ export class MessagesController {
           text: 'Hello! Are you free to chat?',
         },
       },
+      image: {
+        summary: 'Send an image message with an optional caption',
+        value: {
+          clientMessageId: '7d444840-9dc0-41d1-b245-5ffdce74fad2',
+          text: 'Class photo',
+          attachmentMediaIds: ['550e8400-e29b-41d4-a716-446655440000'],
+        },
+      },
+      audio: {
+        summary: 'Send one audio recording with an optional caption',
+        value: {
+          clientMessageId: '7d444840-9dc0-41d1-b245-5ffdce74fad2',
+          attachmentMediaIds: ['550e8400-e29b-41d4-a716-446655440000'],
+        },
+      },
     },
   })
   @ApiOkResponse({ type: MessageResponseDto })
@@ -61,7 +76,8 @@ export class MessagesController {
     description: 'The conversation is missing or the user is not a member.',
   })
   @ApiConflictResponse({
-    description: 'The client message ID was reused with different data.',
+    description:
+      'The client message ID was reused with different data or an attachment is unavailable.',
   })
   send(
     @CurrentUser() user: AuthenticatedUser,

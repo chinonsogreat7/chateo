@@ -149,6 +149,7 @@ const BOB_PHONE = '+12025550102';
 const CAROL_PHONE = '+12025550103';
 const CONVERSATION_ID = '00000000-0000-4000-8000-000000000301';
 const SECOND_CONVERSATION_ID = '00000000-0000-4000-8000-000000000302';
+const GROUP_CONVERSATION_ID = '00000000-0000-4000-8000-000000000303';
 const MISSING_CONVERSATION_ID = '00000000-0000-4000-8000-000000000399';
 const ALICE_SESSION_ID = '00000000-0000-4000-8000-000000000201';
 const ALICE_SECOND_SESSION_ID = '00000000-0000-4000-8000-000000000204';
@@ -157,6 +158,13 @@ const CAROL_SESSION_ID = '00000000-0000-4000-8000-000000000203';
 const CLIENT_MESSAGE_ID = '10000000-0000-4000-8000-000000000001';
 const SECOND_CLIENT_MESSAGE_ID = '10000000-0000-4000-8000-000000000002';
 const THIRD_CLIENT_MESSAGE_ID = '10000000-0000-4000-8000-000000000003';
+const FIRST_IMAGE_MEDIA_ID = '20000000-0000-4000-8000-000000000001';
+const SECOND_IMAGE_MEDIA_ID = '20000000-0000-4000-8000-000000000002';
+const FOREIGN_IMAGE_MEDIA_ID = '20000000-0000-4000-8000-000000000003';
+const PENDING_IMAGE_MEDIA_ID = '20000000-0000-4000-8000-000000000004';
+const FIRST_AUDIO_MEDIA_ID = '20000000-0000-4000-8000-000000000011';
+const SECOND_AUDIO_MEDIA_ID = '20000000-0000-4000-8000-000000000012';
+const INVALID_AUDIO_MEDIA_ID = '20000000-0000-4000-8000-000000000013';
 
 jest.setTimeout(15_000);
 
@@ -473,6 +481,10 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
                     },
                   );
                   settingsByMember.set(key, settings);
+                  messagingRepository.applyConversationPreferences(
+                    input.userId,
+                    settings,
+                  );
                   return { status: 'updated', changed, settings };
                 },
               ),
@@ -565,6 +577,47 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       .send({ clientMessageId, text })
       .expect(HttpStatus.OK);
     return response.body as MessageBody;
+  }
+
+  function expectedImageAttachment(
+    mediaId: string,
+    overrides: Partial<
+      Pick<
+        Extract<MessageBody['attachments'][number], { type: 'image' }>,
+        'contentType' | 'sizeBytes' | 'width' | 'height' | 'url'
+      >
+    > = {},
+  ): Extract<MessageBody['attachments'][number], { type: 'image' }> {
+    return {
+      mediaId,
+      type: 'image',
+      contentType: 'image/jpeg',
+      sizeBytes: 120_000,
+      width: 640,
+      height: 480,
+      url: `https://res.cloudinary.com/classroom/image/upload/${mediaId}.jpg`,
+      ...overrides,
+    };
+  }
+
+  function expectedAudioAttachment(
+    mediaId: string,
+    overrides: Partial<
+      Pick<
+        Extract<MessageBody['attachments'][number], { type: 'audio' }>,
+        'contentType' | 'sizeBytes' | 'durationMs' | 'url'
+      >
+    > = {},
+  ): Extract<MessageBody['attachments'][number], { type: 'audio' }> {
+    return {
+      mediaId,
+      type: 'audio',
+      contentType: 'audio/m4a',
+      sizeBytes: 1_250_000,
+      durationMs: 31_250,
+      url: `https://res.cloudinary.com/classroom/video/upload/${mediaId}.m4a`,
+      ...overrides,
+    };
   }
 
   it('requires a valid access token for every messaging REST operation', async () => {
@@ -804,12 +857,477 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       senderId: ALICE_ID,
       kind: 'text',
       text: 'Hello Bob!',
+      attachments: [],
       createdAt: expect.any(String) as string,
     });
     expect(response.body).not.toHaveProperty('participantIds');
     expect(JSON.stringify(response.body)).not.toContain('phoneNumber');
     expect(JSON.stringify(response.body)).not.toContain(ALICE_PHONE);
     expect(JSON.stringify(response.body)).not.toContain(BOB_PHONE);
+    expect(messagingRepository.messageCount).toBe(1);
+  });
+
+  it('sends ordered image attachments in a direct chat through REST, history, and sockets', async () => {
+    const secondUrl =
+      'https://res.cloudinary.com/classroom/image/upload/second-photo.png';
+    messagingRepository.seedMessageAttachmentMedia({
+      id: FIRST_IMAGE_MEDIA_ID,
+      ownerId: ALICE_ID,
+    });
+    messagingRepository.seedMessageAttachmentMedia({
+      id: SECOND_IMAGE_MEDIA_ID,
+      ownerId: ALICE_ID,
+      contentType: 'image/png',
+      sizeBytes: 98_765,
+      width: 1024,
+      height: 768,
+      url: secondUrl,
+    });
+
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([BOB_ID], 1);
+    const socketEvents: MessageCreatedEventPayload[] = [];
+    bobSocket.on(MESSAGE_CREATED_EVENT, (payload) =>
+      socketEvents.push(payload as MessageCreatedEventPayload),
+    );
+
+    const payload = {
+      clientMessageId: CLIENT_MESSAGE_ID,
+      text: '  Class photo  ',
+      attachmentMediaIds: [FIRST_IMAGE_MEDIA_ID, SECOND_IMAGE_MEDIA_ID],
+    };
+    const response = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send(payload)
+      .expect(HttpStatus.OK);
+    const created = response.body as MessageBody;
+    const expectedAttachments = [
+      expectedImageAttachment(FIRST_IMAGE_MEDIA_ID),
+      expectedImageAttachment(SECOND_IMAGE_MEDIA_ID, {
+        contentType: 'image/png',
+        sizeBytes: 98_765,
+        width: 1024,
+        height: 768,
+        url: secondUrl,
+      }),
+    ];
+    expect(created).toMatchObject({
+      conversationId: CONVERSATION_ID,
+      clientMessageId: CLIENT_MESSAGE_ID,
+      senderId: ALICE_ID,
+      kind: 'image',
+      text: 'Class photo',
+      attachments: expectedAttachments,
+    });
+    await waitUntil(
+      () => socketEvents.length === 1,
+      'Expected the image message on the recipient socket.',
+    );
+    expect(socketEvents).toEqual([created]);
+
+    const historyResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    const history = historyResponse.body as MessageHistoryBody;
+    expect(history.items).toEqual([created]);
+
+    const replayResponse = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ ...payload, text: 'Class photo' })
+      .expect(HttpStatus.OK);
+    expect(replayResponse.body).toEqual(created);
+    await delay(50);
+    expect(socketEvents).toEqual([created]);
+
+    const reordered = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({
+        ...payload,
+        text: 'Class photo',
+        attachmentMediaIds: [SECOND_IMAGE_MEDIA_ID, FIRST_IMAGE_MEDIA_ID],
+      })
+      .expect(HttpStatus.CONFLICT);
+    expect(reordered.body as ApiErrorBody).toMatchObject({
+      code: 'MESSAGE_IDEMPOTENCY_CONFLICT',
+    });
+    expect(messagingRepository.messageCount).toBe(1);
+  });
+
+  it('sends an audio recording with a caption through direct REST, history, and sockets', async () => {
+    const audioUrl =
+      'https://res.cloudinary.com/classroom/video/upload/direct-voice.m4a';
+    messagingRepository.seedMessageAttachmentMedia({
+      id: FIRST_AUDIO_MEDIA_ID,
+      ownerId: ALICE_ID,
+      resourceType: 'video',
+      contentType: 'audio/m4a',
+      format: 'm4a',
+      sizeBytes: 1_250_000,
+      durationMs: 31_250,
+      url: audioUrl,
+    });
+
+    const bobSocket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([BOB_ID], 1);
+    const socketEvents: MessageCreatedEventPayload[] = [];
+    bobSocket.on(MESSAGE_CREATED_EVENT, (payload) =>
+      socketEvents.push(payload as MessageCreatedEventPayload),
+    );
+
+    const payload = {
+      clientMessageId: CLIENT_MESSAGE_ID,
+      text: '  Listen to this  ',
+      attachmentMediaIds: [FIRST_AUDIO_MEDIA_ID],
+    };
+    const response = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send(payload)
+      .expect(HttpStatus.OK);
+    const created = response.body as MessageBody;
+    expect(created).toMatchObject({
+      conversationId: CONVERSATION_ID,
+      clientMessageId: CLIENT_MESSAGE_ID,
+      senderId: ALICE_ID,
+      kind: 'audio',
+      text: 'Listen to this',
+      attachments: [
+        expectedAudioAttachment(FIRST_AUDIO_MEDIA_ID, { url: audioUrl }),
+      ],
+    });
+    expect(created.attachments[0]).not.toHaveProperty('width');
+    expect(created.attachments[0]).not.toHaveProperty('height');
+    await waitUntil(
+      () => socketEvents.length === 1,
+      'Expected the audio message on the recipient socket.',
+    );
+    expect(socketEvents).toEqual([created]);
+
+    const historyResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    expect((historyResponse.body as MessageHistoryBody).items).toEqual([
+      created,
+    ]);
+
+    const replayResponse = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ ...payload, text: 'Listen to this' })
+      .expect(HttpStatus.OK);
+    expect(replayResponse.body).toEqual(created);
+    await delay(50);
+    expect(socketEvents).toEqual([created]);
+    expect(messagingRepository.messageCount).toBe(1);
+  });
+
+  it('sends a captionless image to every current member of a group chat', async () => {
+    messagingRepository.seedGroupConversation(
+      GROUP_CONVERSATION_ID,
+      [ALICE_ID, BOB_ID, CAROL_ID],
+      ALICE_ID,
+      new Date(clock.now().getTime() - 30 * 60 * 1000),
+      'Photography Club',
+    );
+    messagingRepository.seedMessageAttachmentMedia({
+      id: FIRST_IMAGE_MEDIA_ID,
+      ownerId: ALICE_ID,
+      contentType: 'image/webp',
+      sizeBytes: 77_000,
+      width: 800,
+      height: 600,
+      url: 'https://res.cloudinary.com/classroom/image/upload/group.webp',
+    });
+
+    const aliceSocket = await connectSocket(aliceToken);
+    const bobSocket = await connectSocket(bobToken);
+    const carolSocket = await connectSocket(carolToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID, CAROL_ID], 3);
+    const events = new Map<string, MessageCreatedEventPayload[]>();
+    for (const [name, socket] of [
+      ['alice', aliceSocket],
+      ['bob', bobSocket],
+      ['carol', carolSocket],
+    ] as const) {
+      const received: MessageCreatedEventPayload[] = [];
+      events.set(name, received);
+      socket.on(MESSAGE_CREATED_EVENT, (payload) =>
+        received.push(payload as MessageCreatedEventPayload),
+      );
+    }
+
+    const response = await request(app.getHttpServer())
+      .post(`/v1/conversations/${GROUP_CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({
+        clientMessageId: CLIENT_MESSAGE_ID,
+        attachmentMediaIds: [FIRST_IMAGE_MEDIA_ID],
+      })
+      .expect(HttpStatus.OK);
+    const created = response.body as MessageBody;
+    expect(created).toMatchObject({
+      conversationId: GROUP_CONVERSATION_ID,
+      senderId: ALICE_ID,
+      kind: 'image',
+      text: null,
+      attachments: [
+        expectedImageAttachment(FIRST_IMAGE_MEDIA_ID, {
+          contentType: 'image/webp',
+          sizeBytes: 77_000,
+          width: 800,
+          height: 600,
+          url: 'https://res.cloudinary.com/classroom/image/upload/group.webp',
+        }),
+      ],
+    });
+    await waitUntil(
+      () => [...events.values()].every((received) => received.length === 1),
+      'Expected the group image on every member socket.',
+    );
+    for (const received of events.values()) expect(received).toEqual([created]);
+
+    const historyResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${GROUP_CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${carolToken}`)
+      .expect(HttpStatus.OK);
+    expect((historyResponse.body as MessageHistoryBody).items).toEqual([
+      created,
+    ]);
+
+    const conversationList = await request(app.getHttpServer())
+      .get('/v1/conversations')
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    const groupConversation = (
+      conversationList.body as {
+        items: Array<{ id: string; [key: string]: unknown }>;
+      }
+    ).items.find((conversation) => conversation.id === GROUP_CONVERSATION_ID);
+    expect(groupConversation).toMatchObject({
+      id: GROUP_CONVERSATION_ID,
+      type: 'group',
+      latestMessage: {
+        id: created.id,
+        kind: 'image',
+        preview: 'Photo',
+      },
+    });
+  });
+
+  it('sends a captionless audio recording to a group and previews it as a voice message', async () => {
+    messagingRepository.seedGroupConversation(
+      GROUP_CONVERSATION_ID,
+      [ALICE_ID, BOB_ID, CAROL_ID],
+      ALICE_ID,
+      new Date(clock.now().getTime() - 30 * 60 * 1000),
+      'Language Practice',
+    );
+    const groupAudioUrl =
+      'https://res.cloudinary.com/classroom/video/upload/group-voice.ogg';
+    messagingRepository.seedMessageAttachmentMedia({
+      id: FIRST_AUDIO_MEDIA_ID,
+      ownerId: ALICE_ID,
+      resourceType: 'video',
+      contentType: 'audio/ogg',
+      format: 'ogg',
+      sizeBytes: 480_000,
+      durationMs: 18_750,
+      url: groupAudioUrl,
+    });
+
+    const aliceSocket = await connectSocket(aliceToken);
+    const bobSocket = await connectSocket(bobToken);
+    const carolSocket = await connectSocket(carolToken);
+    await waitForRoutedSocketCount([ALICE_ID, BOB_ID, CAROL_ID], 3);
+    const eventLists: MessageCreatedEventPayload[][] = [];
+    for (const socket of [aliceSocket, bobSocket, carolSocket]) {
+      const received: MessageCreatedEventPayload[] = [];
+      eventLists.push(received);
+      socket.on(MESSAGE_CREATED_EVENT, (payload) =>
+        received.push(payload as MessageCreatedEventPayload),
+      );
+    }
+
+    const response = await request(app.getHttpServer())
+      .post(`/v1/conversations/${GROUP_CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({
+        clientMessageId: CLIENT_MESSAGE_ID,
+        attachmentMediaIds: [FIRST_AUDIO_MEDIA_ID],
+      })
+      .expect(HttpStatus.OK);
+    const created = response.body as MessageBody;
+    expect(created).toMatchObject({
+      conversationId: GROUP_CONVERSATION_ID,
+      senderId: ALICE_ID,
+      kind: 'audio',
+      text: null,
+      attachments: [
+        expectedAudioAttachment(FIRST_AUDIO_MEDIA_ID, {
+          contentType: 'audio/ogg',
+          sizeBytes: 480_000,
+          durationMs: 18_750,
+          url: groupAudioUrl,
+        }),
+      ],
+    });
+    await waitUntil(
+      () => eventLists.every((events) => events.length === 1),
+      'Expected the group audio message on every member socket.',
+    );
+    for (const events of eventLists) expect(events).toEqual([created]);
+
+    const historyResponse = await request(app.getHttpServer())
+      .get(`/v1/conversations/${GROUP_CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${carolToken}`)
+      .expect(HttpStatus.OK);
+    expect((historyResponse.body as MessageHistoryBody).items).toEqual([
+      created,
+    ]);
+
+    const conversationList = await request(app.getHttpServer())
+      .get('/v1/conversations')
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    const groupConversation = (
+      conversationList.body as {
+        items: Array<{ id: string; [key: string]: unknown }>;
+      }
+    ).items.find((conversation) => conversation.id === GROUP_CONVERSATION_ID);
+    expect(groupConversation).toMatchObject({
+      id: GROUP_CONVERSATION_ID,
+      type: 'group',
+      latestMessage: {
+        id: created.id,
+        kind: 'audio',
+        preview: 'Voice message',
+      },
+    });
+  });
+
+  it('uses the generic attachment conflict for mixed, multiple, and invalid audio metadata', async () => {
+    messagingRepository.seedMessageAttachmentMedia({
+      id: FIRST_IMAGE_MEDIA_ID,
+      ownerId: ALICE_ID,
+    });
+    messagingRepository.seedMessageAttachmentMedia({
+      id: FIRST_AUDIO_MEDIA_ID,
+      ownerId: ALICE_ID,
+      resourceType: 'video',
+      contentType: 'audio/m4a',
+    });
+    messagingRepository.seedMessageAttachmentMedia({
+      id: SECOND_AUDIO_MEDIA_ID,
+      ownerId: ALICE_ID,
+      resourceType: 'video',
+      contentType: 'audio/mpeg',
+    });
+    messagingRepository.seedMessageAttachmentMedia({
+      id: INVALID_AUDIO_MEDIA_ID,
+      ownerId: ALICE_ID,
+      resourceType: 'video',
+      contentType: 'audio/m4a',
+      format: 'mp3',
+    });
+
+    const unavailableCases = [
+      [[FIRST_IMAGE_MEDIA_ID, FIRST_AUDIO_MEDIA_ID], CLIENT_MESSAGE_ID],
+      [[FIRST_AUDIO_MEDIA_ID, SECOND_AUDIO_MEDIA_ID], SECOND_CLIENT_MESSAGE_ID],
+      [[INVALID_AUDIO_MEDIA_ID], THIRD_CLIENT_MESSAGE_ID],
+    ] as const;
+    for (const [attachmentMediaIds, clientMessageId] of unavailableCases) {
+      const response = await request(app.getHttpServer())
+        .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ clientMessageId, attachmentMediaIds })
+        .expect(HttpStatus.CONFLICT);
+      expect(response.body as ApiErrorBody).toMatchObject({
+        statusCode: HttpStatus.CONFLICT,
+        code: 'MESSAGE_ATTACHMENT_UNAVAILABLE',
+        message: 'One or more attachments are unavailable for this message.',
+      });
+    }
+    expect(messagingRepository.messageCount).toBe(0);
+  });
+
+  it.each([
+    ['an empty message', {}],
+    [
+      'duplicate attachment IDs',
+      { attachmentMediaIds: [FIRST_IMAGE_MEDIA_ID, FIRST_IMAGE_MEDIA_ID] },
+    ],
+    [
+      'more than ten attachments',
+      {
+        attachmentMediaIds: Array.from(
+          { length: 11 },
+          (_, index) =>
+            `30000000-0000-4000-8000-${(index + 1)
+              .toString()
+              .padStart(12, '0')}`,
+        ),
+      },
+    ],
+    ['an invalid attachment UUID', { attachmentMediaIds: ['not-a-uuid'] }],
+  ])('rejects %s before message persistence', async (_label, input) => {
+    const response = await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ clientMessageId: CLIENT_MESSAGE_ID, ...input })
+      .expect(HttpStatus.BAD_REQUEST);
+    expect(response.body as ApiErrorBody).toMatchObject({
+      code: 'VALIDATION_ERROR',
+    });
+    expect(messagingRepository.messageCount).toBe(0);
+  });
+
+  it('uses one generic conflict for missing, foreign, pending, and reused attachment media', async () => {
+    messagingRepository.seedMessageAttachmentMedia({
+      id: FOREIGN_IMAGE_MEDIA_ID,
+      ownerId: BOB_ID,
+    });
+    messagingRepository.seedMessageAttachmentMedia({
+      id: PENDING_IMAGE_MEDIA_ID,
+      ownerId: ALICE_ID,
+      status: 'PENDING',
+    });
+    messagingRepository.seedMessageAttachmentMedia({
+      id: FIRST_IMAGE_MEDIA_ID,
+      ownerId: ALICE_ID,
+    });
+
+    await request(app.getHttpServer())
+      .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({
+        clientMessageId: CLIENT_MESSAGE_ID,
+        attachmentMediaIds: [FIRST_IMAGE_MEDIA_ID],
+      })
+      .expect(HttpStatus.OK);
+
+    const unavailableCases = [
+      ['20000000-0000-4000-8000-000000000099', SECOND_CLIENT_MESSAGE_ID],
+      [FOREIGN_IMAGE_MEDIA_ID, THIRD_CLIENT_MESSAGE_ID],
+      [PENDING_IMAGE_MEDIA_ID, '10000000-0000-4000-8000-000000000004'],
+      [FIRST_IMAGE_MEDIA_ID, '10000000-0000-4000-8000-000000000005'],
+    ] as const;
+    for (const [mediaId, clientMessageId] of unavailableCases) {
+      const response = await request(app.getHttpServer())
+        .post(`/v1/conversations/${CONVERSATION_ID}/messages`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ clientMessageId, attachmentMediaIds: [mediaId] })
+        .expect(HttpStatus.CONFLICT);
+      expect(response.body as ApiErrorBody).toMatchObject({
+        statusCode: HttpStatus.CONFLICT,
+        code: 'MESSAGE_ATTACHMENT_UNAVAILABLE',
+        message: 'One or more attachments are unavailable for this message.',
+      });
+    }
     expect(messagingRepository.messageCount).toBe(1);
   });
 

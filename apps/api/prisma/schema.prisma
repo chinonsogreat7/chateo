@@ -38,6 +38,21 @@ enum ConversationMemberRole {
 
 enum MessageKind {
   TEXT
+  IMAGE
+  AUDIO
+}
+
+enum MediaPurpose {
+  PROFILE_AVATAR
+  GROUP_AVATAR
+  MESSAGE_ATTACHMENT
+}
+
+enum MediaStatus {
+  PENDING
+  READY
+  FAILED
+  DELETED
 }
 
 model User {
@@ -46,9 +61,12 @@ model User {
   phoneVerifiedAt              DateTime             @map("phone_verified_at") @db.Timestamptz(3)
   displayName                  String?              @map("display_name") @db.VarChar(80)
   avatarUrl                    String?              @map("avatar_url") @db.Text
+  avatarMediaId                String?              @unique @map("avatar_media_id") @db.Uuid
   profileCompletedAt           DateTime?            @map("profile_completed_at") @db.Timestamptz(3)
   createdAt                    DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt                    DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  avatarMedia                  MediaAsset?          @relation("UserAvatar", fields: [avatarMediaId], references: [id], onDelete: SetNull)
+  mediaAssets                  MediaAsset[]         @relation("MediaOwner")
   sessions                     AuthSession[]
   conversationMemberships      ConversationMember[]
   directConversationsAsUserOne Conversation[]       @relation("DirectUserOne")
@@ -59,6 +77,44 @@ model User {
   blocksReceived               UserBlock[]          @relation("Blocked")
 
   @@map("users")
+}
+
+model MediaAsset {
+  id                 String              @id @default(uuid()) @db.Uuid
+  ownerId            String              @map("owner_id") @db.Uuid
+  clientUploadId     String              @map("client_upload_id") @db.Uuid
+  uploadFingerprint  String              @map("upload_fingerprint") @db.VarChar(64)
+  purpose            MediaPurpose
+  status             MediaStatus         @default(PENDING)
+  cloudinaryPublicId String              @unique @map("cloudinary_public_id") @db.VarChar(255)
+  cloudinaryAssetId  String?             @unique @map("cloudinary_asset_id") @db.VarChar(255)
+  resourceType       String              @default("image") @map("resource_type") @db.VarChar(16)
+  deliveryType       String              @default("upload") @map("delivery_type") @db.VarChar(32)
+  format             String?             @db.VarChar(32)
+  mimeType           String              @map("mime_type") @db.VarChar(127)
+  byteSize           Int                 @map("byte_size")
+  contentSha256      String?             @map("content_sha256") @db.VarChar(64)
+  width              Int?
+  height             Int?
+  durationMs         Int?                @map("duration_ms")
+  originalFilename   String?             @map("original_filename") @db.VarChar(255)
+  secureUrl          String?             @map("secure_url") @db.Text
+  etag               String?             @db.VarChar(64)
+  expiresAt          DateTime            @map("expires_at") @db.Timestamptz(3)
+  completedAt        DateTime?           @map("completed_at") @db.Timestamptz(3)
+  messageClaimedAt   DateTime?           @map("message_claimed_at") @db.Timestamptz(3)
+  failedAt           DateTime?           @map("failed_at") @db.Timestamptz(3)
+  deletedAt          DateTime?           @map("deleted_at") @db.Timestamptz(3)
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  owner              User                @relation("MediaOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  profileAvatarFor   User?               @relation("UserAvatar")
+  messageAttachments MessageAttachment[]
+
+  @@unique([ownerId, clientUploadId])
+  @@index([ownerId, createdAt])
+  @@index([status, expiresAt])
+  @@map("media_assets")
 }
 
 model Conversation {
@@ -109,6 +165,7 @@ model ConversationMember {
   @@index([userId, conversationId])
   @@index([userId, archivedAt])
   @@index([userId, pinnedAt])
+  @@index([userId, favoritedAt])
   @@map("conversation_members")
 }
 
@@ -125,21 +182,33 @@ model UserBlock {
 }
 
 model Message {
-  id              String           @id @default(uuid()) @db.Uuid
-  conversationId  String           @map("conversation_id") @db.Uuid
-  senderId        String           @map("sender_id") @db.Uuid
-  clientMessageId String           @map("client_message_id") @db.Uuid
-  kind            MessageKind      @default(TEXT)
-  text            String           @db.VarChar(4000)
-  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender          User             @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  id              String              @id @default(uuid()) @db.Uuid
+  conversationId  String              @map("conversation_id") @db.Uuid
+  senderId        String              @map("sender_id") @db.Uuid
+  clientMessageId String              @map("client_message_id") @db.Uuid
+  kind            MessageKind         @default(TEXT)
+  text            String?             @db.VarChar(4000)
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  conversation    Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender          User                @relation(fields: [senderId], references: [id], onDelete: Cascade)
   receipts        MessageReceipt[]
+  attachments     MessageAttachment[]
 
   @@unique([senderId, clientMessageId])
   @@unique([id, conversationId])
   @@index([conversationId, createdAt, id])
   @@map("messages")
+}
+
+model MessageAttachment {
+  messageId    String     @map("message_id") @db.Uuid
+  mediaAssetId String     @unique @map("media_asset_id") @db.Uuid
+  position     Int
+  message      Message    @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  mediaAsset   MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Restrict)
+
+  @@id([messageId, position])
+  @@map("message_attachments")
 }
 
 model MessageReceipt {

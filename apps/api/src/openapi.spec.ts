@@ -17,6 +17,9 @@ import { DiscoveryController } from './discovery/discovery.controller';
 import { DiscoveryService } from './discovery/discovery.service';
 import { MessagesController } from './messages/messages.controller';
 import { MessagesService } from './messages/messages.service';
+import { MediaController } from './media/media.controller';
+import { MediaService } from './media/media.service';
+import { ProfileAvatarController } from './media/profile-avatar.controller';
 import { ReceiptsController } from './receipts/receipts.controller';
 import { ReceiptsService } from './receipts/receipts.service';
 import { UsersController } from './users/users.controller';
@@ -30,6 +33,7 @@ const GROUP_PARTICIPANT_ID = '7d444840-9dc0-41d1-b245-5ffdce74fad2';
 const SECOND_PARTICIPANT_ID = '8e555951-aed1-42e2-8346-6aadece85be3';
 const CLIENT_MESSAGE_ID = '7d444840-9dc0-41d1-b245-5ffdce74fad2';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
+const MEDIA_ID = '550e8400-e29b-41d4-a716-446655440000';
 
 interface RequestExampleCase {
   method: 'patch' | 'post' | 'put';
@@ -52,6 +56,8 @@ describe('OpenAPI request examples', () => {
         ConversationsController,
         ConversationSettingsController,
         MessagesController,
+        MediaController,
+        ProfileAvatarController,
         ReceiptsController,
       ],
       providers: [
@@ -62,6 +68,7 @@ describe('OpenAPI request examples', () => {
         { provide: ConversationsService, useValue: {} },
         { provide: ConversationSettingsService, useValue: {} },
         { provide: MessagesService, useValue: {} },
+        { provide: MediaService, useValue: {} },
         { provide: ReceiptsService, useValue: {} },
       ],
     }).compile();
@@ -127,8 +134,25 @@ describe('OpenAPI request examples', () => {
       schemaName: 'UpdateProfileDto',
       payload: {
         displayName: 'Great Ichoku',
-        avatarUrl: 'https://example.com/avatars/great.jpg',
       },
+    },
+    {
+      method: 'post',
+      path: '/v1/media/uploads',
+      schemaName: 'CreateMediaUploadDto',
+      payload: {
+        clientUploadId: '7d444840-9dc0-41d1-b245-5ffdce74fad2',
+        purpose: 'profile_avatar',
+        contentType: 'image/jpeg',
+        sizeBytes: 245000,
+        originalFilename: 'profile-photo.jpg',
+      },
+    },
+    {
+      method: 'put',
+      path: '/v1/me/avatar',
+      schemaName: 'SetProfileAvatarDto',
+      payload: { mediaId: MEDIA_ID },
     },
     {
       method: 'post',
@@ -238,14 +262,264 @@ describe('OpenAPI request examples', () => {
     },
   );
 
-  it('documents nullable avatar URLs as strings', () => {
-    expect(document.components?.schemas?.UpdateProfileDto).toMatchObject({
+  it('does not accept client-supplied avatar URLs in profile updates', () => {
+    const schema = document.components?.schemas?.UpdateProfileDto;
+    expect(schema).toBeDefined();
+    if (!schema || '$ref' in schema) {
+      throw new Error('UpdateProfileDto must be an inline component schema.');
+    }
+    expect(schema.properties).not.toHaveProperty('avatarUrl');
+  });
+
+  it('documents signed image/audio uploads and the profile-avatar lifecycle', () => {
+    const createUpload = document.paths['/v1/media/uploads']?.post;
+    expect(createUpload).toEqual(
+      expect.objectContaining({
+        security: [{ bearer: [] }],
+        responses: expect.objectContaining({
+          '201': expect.any(Object),
+          '400': expect.any(Object),
+          '409': expect.any(Object),
+          '410': expect.any(Object),
+          '413': expect.any(Object),
+          '502': expect.any(Object),
+          '503': expect.any(Object),
+        }),
+      }),
+    );
+
+    expect(document.components?.schemas?.CreateMediaUploadDto).toMatchObject({
+      required: ['clientUploadId', 'purpose', 'contentType', 'sizeBytes'],
       properties: {
-        avatarUrl: {
+        clientUploadId: { type: 'string', format: 'uuid' },
+        purpose: {
           type: 'string',
-          nullable: true,
-          format: 'uri',
+          enum: ['profile_avatar', 'message_attachment'],
         },
+        contentType: {
+          type: 'string',
+          enum: [
+            'image/jpeg',
+            'image/png',
+            'image/webp',
+            'audio/aac',
+            'audio/mp4',
+            'audio/m4a',
+            'audio/x-m4a',
+            'audio/mpeg',
+            'audio/ogg',
+            'audio/wav',
+            'audio/x-wav',
+          ],
+        },
+        sizeBytes: { type: 'number', minimum: 1, maximum: 20971520 },
+        contentSha256: {
+          type: 'string',
+          pattern: '^[0-9a-f]{64}$',
+        },
+      },
+    });
+
+    expect(document.components?.schemas?.MediaAssetResponseDto).toMatchObject({
+      required: expect.arrayContaining([
+        'id',
+        'purpose',
+        'status',
+        'type',
+        'contentType',
+        'sizeBytes',
+      ]),
+      properties: {
+        type: { type: 'string', enum: ['image', 'audio'] },
+        durationMs: { type: 'number', nullable: true, minimum: 1 },
+      },
+    });
+    expect(
+      document.components?.schemas?.CloudinaryUploadFieldsDto,
+    ).toMatchObject({
+      properties: {
+        allowed_formats: {
+          type: 'string',
+          enum: ['jpg,jpeg,png,webp', 'aac,m4a,mp3,ogg,wav'],
+        },
+        transformation: expect.objectContaining({ type: 'string' }),
+      },
+    });
+
+    const completeUpload =
+      document.paths['/v1/media/uploads/{mediaId}/complete']?.post;
+    const mediaParameter = completeUpload?.parameters?.find(
+      (candidate) => !('$ref' in candidate) && candidate.name === 'mediaId',
+    );
+    expect(completeUpload).toEqual(
+      expect.objectContaining({
+        security: [{ bearer: [] }],
+        responses: expect.objectContaining({
+          '200': expect.any(Object),
+          '400': expect.any(Object),
+          '404': expect.any(Object),
+          '409': expect.any(Object),
+          '410': expect.any(Object),
+          '502': expect.any(Object),
+          '503': expect.any(Object),
+        }),
+      }),
+    );
+    expect(mediaParameter).toMatchObject({
+      in: 'path',
+      name: 'mediaId',
+      required: true,
+      schema: { type: 'string', format: 'uuid' },
+    });
+
+    expect(document.paths['/v1/me/avatar']).toMatchObject({
+      put: {
+        security: [{ bearer: [] }],
+        responses: {
+          '200': expect.any(Object),
+          '400': expect.any(Object),
+          '404': expect.any(Object),
+          '409': expect.any(Object),
+        },
+      },
+      delete: {
+        security: [{ bearer: [] }],
+        responses: { '204': expect.any(Object) },
+      },
+    });
+  });
+
+  it('documents text, image, and audio messages with persisted attachment metadata', () => {
+    const send =
+      document.paths['/v1/conversations/{conversationId}/messages']?.post;
+    expect(send).toEqual(
+      expect.objectContaining({
+        security: [{ bearer: [] }],
+        responses: expect.objectContaining({
+          '200': expect.any(Object),
+          '404': expect.any(Object),
+          '409': expect.any(Object),
+        }),
+      }),
+    );
+
+    expect(send?.requestBody).toMatchObject({
+      content: {
+        'application/json': {
+          examples: {
+            default: {
+              value: {
+                clientMessageId: CLIENT_MESSAGE_ID,
+                text: 'Hello! Are you free to chat?',
+              },
+            },
+            image: {
+              value: {
+                clientMessageId: CLIENT_MESSAGE_ID,
+                text: 'Class photo',
+                attachmentMediaIds: [MEDIA_ID],
+              },
+            },
+            audio: {
+              value: {
+                clientMessageId: CLIENT_MESSAGE_ID,
+                attachmentMediaIds: [MEDIA_ID],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(document.components?.schemas?.SendMessageDto).toMatchObject({
+      required: ['clientMessageId'],
+      properties: {
+        clientMessageId: { type: 'string', format: 'uuid' },
+        text: { type: 'string', minLength: 1, maxLength: 4000 },
+        attachmentMediaIds: {
+          type: 'array',
+          items: { type: 'string', format: 'uuid' },
+          minItems: 1,
+          maxItems: 10,
+          uniqueItems: true,
+        },
+      },
+    });
+
+    expect(document.components?.schemas?.MessageResponseDto).toMatchObject({
+      required: expect.arrayContaining([
+        'id',
+        'conversationId',
+        'clientMessageId',
+        'senderId',
+        'kind',
+        'text',
+        'attachments',
+        'createdAt',
+      ]),
+      properties: {
+        kind: { type: 'string', enum: ['text', 'image', 'audio'] },
+        text: { type: 'string', nullable: true },
+        attachments: {
+          type: 'array',
+          items: {
+            oneOf: [
+              {
+                $ref: '#/components/schemas/MessageAttachmentResponseDto',
+              },
+              {
+                $ref: '#/components/schemas/AudioMessageAttachmentResponseDto',
+              },
+            ],
+            discriminator: {
+              propertyName: 'type',
+              mapping: {
+                image: '#/components/schemas/MessageAttachmentResponseDto',
+                audio: '#/components/schemas/AudioMessageAttachmentResponseDto',
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(
+      document.components?.schemas?.MessageAttachmentResponseDto,
+    ).toMatchObject({
+      required: [
+        'mediaId',
+        'type',
+        'contentType',
+        'sizeBytes',
+        'width',
+        'height',
+        'url',
+      ],
+      properties: {
+        mediaId: { type: 'string', format: 'uuid' },
+        type: { type: 'string', enum: ['image'] },
+        sizeBytes: { type: 'number', minimum: 1 },
+        width: { type: 'number', minimum: 1 },
+        height: { type: 'number', minimum: 1 },
+        url: { type: 'string', format: 'uri' },
+      },
+    });
+    expect(
+      document.components?.schemas?.AudioMessageAttachmentResponseDto,
+    ).toMatchObject({
+      required: [
+        'mediaId',
+        'type',
+        'contentType',
+        'sizeBytes',
+        'durationMs',
+        'url',
+      ],
+      properties: {
+        mediaId: { type: 'string', format: 'uuid' },
+        type: { type: 'string', enum: ['audio'] },
+        sizeBytes: { type: 'number', minimum: 1, maximum: 20971520 },
+        durationMs: { type: 'number', minimum: 1, maximum: 900000 },
+        url: { type: 'string', format: 'uri' },
       },
     });
   });

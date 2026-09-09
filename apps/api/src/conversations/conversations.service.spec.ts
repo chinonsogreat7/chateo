@@ -689,6 +689,74 @@ describe('ConversationsService', () => {
     expect(result.unreadCount).toBe(3);
   });
 
+  it('uses an image caption or Photo as the latest-message preview', async () => {
+    const { repository, service } = createService();
+    repository.findForUser
+      .mockResolvedValueOnce(
+        conversation({
+          latestMessage: {
+            id: MESSAGE_ID,
+            senderId: PARTICIPANT_ID,
+            kind: 'IMAGE',
+            text: 'Class photo',
+            createdAt: NOW,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        conversation({
+          latestMessage: {
+            id: MESSAGE_ID,
+            senderId: PARTICIPANT_ID,
+            kind: 'IMAGE',
+            text: null,
+            createdAt: NOW,
+          },
+        }),
+      );
+
+    await expect(service.get(USER_ID, CONVERSATION_ID)).resolves.toMatchObject({
+      latestMessage: { kind: 'image', preview: 'Class photo' },
+    });
+    await expect(service.get(USER_ID, CONVERSATION_ID)).resolves.toMatchObject({
+      latestMessage: { kind: 'image', preview: 'Photo' },
+    });
+  });
+
+  it('uses an audio caption or Voice message as the latest-message preview', async () => {
+    const { repository, service } = createService();
+    repository.findForUser
+      .mockResolvedValueOnce(
+        conversation({
+          latestMessage: {
+            id: MESSAGE_ID,
+            senderId: PARTICIPANT_ID,
+            kind: 'AUDIO',
+            text: 'Meeting recap',
+            createdAt: NOW,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        conversation({
+          latestMessage: {
+            id: MESSAGE_ID,
+            senderId: PARTICIPANT_ID,
+            kind: 'AUDIO',
+            text: null,
+            createdAt: NOW,
+          },
+        }),
+      );
+
+    await expect(service.get(USER_ID, CONVERSATION_ID)).resolves.toMatchObject({
+      latestMessage: { kind: 'audio', preview: 'Meeting recap' },
+    });
+    await expect(service.get(USER_ID, CONVERSATION_ID)).resolves.toMatchObject({
+      latestMessage: { kind: 'audio', preview: 'Voice message' },
+    });
+  });
+
   it('hides a latest-message preview at the caller clear boundary', async () => {
     const { repository, service } = createService();
     repository.findForUser.mockResolvedValue(
@@ -892,6 +960,148 @@ describe('ConversationsService', () => {
       21,
       true,
     );
+  });
+
+  it('lists active favorites with repository filtering before pagination', async () => {
+    const { repository, service } = createService();
+    repository.listForUser.mockResolvedValue([]);
+
+    await expect(service.listFavorites(USER_ID, 20)).resolves.toEqual({
+      items: [],
+      pageInfo: { nextCursor: null, hasNextPage: false },
+    });
+    expect(repository.listForUser).toHaveBeenCalledWith(
+      USER_ID,
+      null,
+      21,
+      false,
+      true,
+    );
+  });
+
+  it('lists archived favorites only when explicitly requested', async () => {
+    const { repository, service } = createService();
+    repository.listForUser.mockResolvedValue([]);
+
+    await service.listFavorites(USER_ID, 20, undefined, true);
+
+    expect(repository.listForUser).toHaveBeenCalledWith(
+      USER_ID,
+      null,
+      21,
+      true,
+      true,
+    );
+  });
+
+  it('uses a favorites-scoped cursor across favorites pages', async () => {
+    const { repository, service } = createService();
+    const first = conversation({
+      settings: {
+        archivedAt: null,
+        mutedAt: null,
+        mutedUntil: null,
+        pinnedAt: NOW,
+        favoritedAt: NOW,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      },
+    });
+    const lookahead = conversation({
+      id: '33333333-3333-4333-8333-333333333334',
+    });
+    repository.listForUser
+      .mockResolvedValueOnce([first, lookahead])
+      .mockResolvedValueOnce([]);
+
+    const page = await service.listFavorites(USER_ID, 1);
+    const nextCursor = page.pageInfo.nextCursor ?? '';
+    expect(
+      JSON.parse(Buffer.from(nextCursor, 'base64url').toString('utf8')),
+    ).toEqual({
+      v: 3,
+      scope: 'favorites',
+      pinned: true,
+      archived: false,
+      lastActivityAt: first.lastActivityAt.toISOString(),
+      id: first.id,
+    });
+
+    await service.listFavorites(USER_ID, 1, nextCursor);
+
+    expect(repository.listForUser).toHaveBeenNthCalledWith(
+      2,
+      USER_ID,
+      {
+        id: first.id,
+        pinned: true,
+        archived: false,
+        lastActivityAt: first.lastActivityAt,
+      },
+      2,
+      false,
+      true,
+    );
+  });
+
+  it('does not accept an ordinary-list cursor for the favorites list', async () => {
+    const { repository, service } = createService();
+    repository.listForUser.mockResolvedValueOnce([
+      conversation(),
+      conversation({ id: '33333333-3333-4333-8333-333333333334' }),
+    ]);
+    const ordinaryPage = await service.list(USER_ID, 1);
+
+    await expectApiError(
+      service.listFavorites(
+        USER_ID,
+        1,
+        ordinaryPage.pageInfo.nextCursor ?? undefined,
+      ),
+      HttpStatus.BAD_REQUEST,
+      'CONVERSATION_CURSOR_INVALID',
+    );
+
+    expect(repository.listForUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not accept a favorites cursor for the ordinary list', async () => {
+    const { repository, service } = createService();
+    repository.listForUser.mockResolvedValueOnce([
+      conversation(),
+      conversation({ id: '33333333-3333-4333-8333-333333333334' }),
+    ]);
+    const favoritesPage = await service.listFavorites(USER_ID, 1);
+
+    await expectApiError(
+      service.list(USER_ID, 1, favoritesPage.pageInfo.nextCursor ?? undefined),
+      HttpStatus.BAD_REQUEST,
+      'CONVERSATION_CURSOR_INVALID',
+    );
+
+    expect(repository.listForUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a favorites cursor when its archive filter changes', async () => {
+    const { repository, service } = createService();
+    repository.listForUser.mockResolvedValueOnce([
+      conversation(),
+      conversation({ id: '33333333-3333-4333-8333-333333333334' }),
+    ]);
+    const page = await service.listFavorites(USER_ID, 1);
+
+    await expectApiError(
+      service.listFavorites(
+        USER_ID,
+        1,
+        page.pageInfo.nextCursor ?? undefined,
+        true,
+      ),
+      HttpStatus.BAD_REQUEST,
+      'CONVERSATION_CURSOR_INVALID',
+    );
+
+    expect(repository.listForUser).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a cursor when its archive filter does not match the request', async () => {

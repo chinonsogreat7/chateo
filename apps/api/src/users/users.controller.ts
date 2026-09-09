@@ -39,7 +39,6 @@ export class UsersController {
         summary: 'Complete the signed-in user profile',
         value: {
           displayName: 'Great Ichoku',
-          avatarUrl: 'https://example.com/avatars/great.jpg',
         },
       },
     },

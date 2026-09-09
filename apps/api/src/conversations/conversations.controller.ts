@@ -44,6 +44,7 @@ import { CreateGroupConversationDto } from './dto/create-group-conversation.dto'
 import { GroupMemberParamsDto } from './dto/group-member-params.dto';
 import { ListArchivedConversationsQueryDto } from './dto/list-archived-conversations-query.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
+import { ListFavoriteConversationsQueryDto } from './dto/list-favorite-conversations-query.dto';
 import { TransferGroupOwnershipDto } from './dto/transfer-group-ownership.dto';
 import { UpdateGroupConversationDto } from './dto/update-group-conversation.dto';
 import { UpdateGroupMemberRoleDto } from './dto/update-group-member-role.dto';
@@ -381,6 +382,24 @@ export class ConversationsController {
       user.sub,
       query.limit,
       query.cursor,
+    );
+  }
+
+  @Get('favorites')
+  @ApiOperation({ summary: "List the signed-in user's favorite conversations" })
+  @ApiOkResponse({ type: ConversationListResponseDto })
+  @ApiBadRequestResponse({
+    description: 'The favorites cursor, archive filter, or limit is invalid.',
+  })
+  listFavorites(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: ListFavoriteConversationsQueryDto,
+  ): Promise<ConversationListResponseDto> {
+    return this.conversationsService.listFavorites(
+      user.sub,
+      query.limit,
+      query.cursor,
+      query.archived,
     );
   }
 

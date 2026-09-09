@@ -1,16 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  ConversationMemberRoleRecord,
   ConversationPageCursor,
   ConversationRecord,
   CreateDirectConversationResult,
 } from '../../src/conversations/conversations.types';
-import type { SendTextMessageInput } from '../../src/messages/messages.repository';
+import type {
+  SendMessageInput,
+  SendTextMessageInput,
+} from '../../src/messages/messages.repository';
 import type {
   ClearConversationMessagesResult,
   ListMessagesResult,
   MarkConversationReadResult,
+  MessageAttachmentRecord,
   MessagePageCursor,
   MessageRecord,
+  SendMessageResult,
   SendTextMessageResult,
 } from '../../src/messages/messages.types';
 import type { RealtimeConversationAccess } from '../../src/realtime/realtime-conversations.repository';
@@ -27,7 +33,7 @@ interface SeedMessagingUser {
   avatarUrl: string | null;
 }
 
-interface StoredConversation {
+interface StoredConversationBase {
   id: string;
   memberIds: string[];
   lastActivityAt: Date;
@@ -35,12 +41,75 @@ interface StoredConversation {
   updatedAt: Date;
 }
 
+interface StoredDirectConversation extends StoredConversationBase {
+  type: 'DIRECT';
+}
+
+interface StoredGroupConversation extends StoredConversationBase {
+  type: 'GROUP';
+  name: string;
+  avatarUrl: string | null;
+  rolesByMemberId: Map<string, ConversationMemberRoleRecord>;
+}
+
+type StoredConversation = StoredDirectConversation | StoredGroupConversation;
+
+interface SeedMessageAttachmentMedia {
+  id: string;
+  ownerId: string;
+  purpose?: 'MESSAGE_ATTACHMENT' | 'PROFILE_AVATAR';
+  status?: 'PENDING' | 'READY' | 'FAILED' | 'DELETED';
+  resourceType?: 'image' | 'video' | 'raw';
+  deliveryType?: 'upload' | 'authenticated';
+  contentType?: string;
+  format?: string;
+  sizeBytes?: number;
+  width?: number | null;
+  height?: number | null;
+  durationMs?: number | null;
+  url?: string | null;
+  deleted?: boolean;
+  claimedMessageId?: string | null;
+}
+
+interface StoredMessageAttachmentMedia {
+  id: string;
+  ownerId: string;
+  purpose: 'MESSAGE_ATTACHMENT' | 'PROFILE_AVATAR';
+  status: 'PENDING' | 'READY' | 'FAILED' | 'DELETED';
+  resourceType: 'image' | 'video' | 'raw';
+  deliveryType: 'upload' | 'authenticated';
+  contentType: string;
+  format: string;
+  sizeBytes: number;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  url: string | null;
+  deleted: boolean;
+  claimedMessageId: string | null;
+}
+
 interface StoredMemberState {
   unreadCount: number;
   lastReadAt: Date | null;
   receiptVersion: number;
+  archivedAt: Date | null;
+  mutedAt: Date | null;
+  mutedUntil: Date | null;
+  pinnedAt: Date | null;
+  favoritedAt: Date | null;
   clearedAt: Date | null;
   clearedThroughMessageId: string | null;
+}
+
+export interface MessagingConversationPreferences {
+  conversationId: string;
+  archivedAt: Date | null;
+  mutedAt: Date | null;
+  mutedUntil: Date | null;
+  pinnedAt: Date | null;
+  favoritedAt: Date | null;
 }
 
 interface StoredReceipt {
@@ -53,6 +122,10 @@ interface StoredReceipt {
 
 function copyDate(value: Date): Date {
   return new Date(value.getTime());
+}
+
+function copyNullableDate(value: Date | null): Date | null {
+  return value ? copyDate(value) : null;
 }
 
 function memberKey(conversationId: string, userId: string): string {
@@ -92,6 +165,10 @@ export class InMemoryMessagingRepository {
   private readonly messageIdsByIdempotencyKey = new Map<string, string>();
   private readonly memberStates = new Map<string, StoredMemberState>();
   private readonly receipts = new Map<string, StoredReceipt>();
+  private readonly attachmentMedia = new Map<
+    string,
+    StoredMessageAttachmentMedia
+  >();
 
   get messageCount(): number {
     return this.messages.size;
@@ -129,20 +206,124 @@ export class InMemoryMessagingRepository {
 
     this.conversations.set(normalizedId, {
       id: normalizedId,
+      type: 'DIRECT',
       memberIds,
       lastActivityAt: copyDate(createdAt),
       createdAt: copyDate(createdAt),
       updatedAt: copyDate(createdAt),
     });
-    for (const memberId of memberIds) {
-      this.memberStates.set(memberKey(normalizedId, memberId), {
-        unreadCount: 0,
-        lastReadAt: null,
-        receiptVersion: 0,
-        clearedAt: null,
-        clearedThroughMessageId: null,
-      });
+    this.seedMemberStates(normalizedId, memberIds);
+  }
+
+  seedGroupConversation(
+    id: string,
+    memberIds: string[],
+    ownerId: string,
+    createdAt: Date,
+    name = 'Study Group',
+    avatarUrl: string | null = null,
+  ): void {
+    const normalizedId = id.toLowerCase();
+    const normalizedMemberIds = memberIds.map((memberId) =>
+      memberId.toLowerCase(),
+    );
+    const normalizedOwnerId = ownerId.toLowerCase();
+    if (this.conversations.has(normalizedId)) {
+      throw new Error(
+        `A conversation with id ${normalizedId} is already seeded.`,
+      );
     }
+    if (
+      normalizedMemberIds.length < 2 ||
+      new Set(normalizedMemberIds).size !== normalizedMemberIds.length ||
+      !normalizedMemberIds.includes(normalizedOwnerId)
+    ) {
+      throw new Error('A group requires distinct members including its owner.');
+    }
+    for (const memberId of normalizedMemberIds) {
+      if (!this.users.has(memberId)) {
+        throw new Error(`Conversation member ${memberId} is not seeded.`);
+      }
+    }
+
+    this.conversations.set(normalizedId, {
+      id: normalizedId,
+      type: 'GROUP',
+      memberIds: normalizedMemberIds,
+      name,
+      avatarUrl,
+      rolesByMemberId: new Map(
+        normalizedMemberIds.map((memberId) => [
+          memberId,
+          memberId === normalizedOwnerId ? 'OWNER' : 'MEMBER',
+        ]),
+      ),
+      lastActivityAt: copyDate(createdAt),
+      createdAt: copyDate(createdAt),
+      updatedAt: copyDate(createdAt),
+    });
+    this.seedMemberStates(normalizedId, normalizedMemberIds);
+  }
+
+  seedMessageAttachmentMedia(input: SeedMessageAttachmentMedia): void {
+    const id = input.id.toLowerCase();
+    if (this.attachmentMedia.has(id)) {
+      throw new Error(`Attachment media ${id} is already seeded.`);
+    }
+    const resourceType = input.resourceType ?? 'image';
+    const contentType =
+      input.contentType ??
+      (resourceType === 'video' ? 'audio/m4a' : 'image/jpeg');
+    this.attachmentMedia.set(id, {
+      id,
+      ownerId: input.ownerId.toLowerCase(),
+      purpose: input.purpose ?? 'MESSAGE_ATTACHMENT',
+      status: input.status ?? 'READY',
+      resourceType,
+      deliveryType: input.deliveryType ?? 'upload',
+      contentType,
+      format: input.format ?? this.defaultFormat(contentType),
+      sizeBytes: input.sizeBytes ?? 120_000,
+      width:
+        input.width === undefined
+          ? resourceType === 'image'
+            ? 640
+            : null
+          : input.width,
+      height:
+        input.height === undefined
+          ? resourceType === 'image'
+            ? 480
+            : null
+          : input.height,
+      durationMs:
+        input.durationMs === undefined
+          ? resourceType === 'video'
+            ? 42_000
+            : null
+          : input.durationMs,
+      url:
+        input.url === undefined
+          ? `https://res.cloudinary.com/classroom/${resourceType}/upload/${id}.${resourceType === 'video' ? 'm4a' : 'jpg'}`
+          : input.url,
+      deleted: input.deleted ?? false,
+      claimedMessageId: input.claimedMessageId ?? null,
+    });
+  }
+
+  applyConversationPreferences(
+    userId: string,
+    settings: MessagingConversationPreferences,
+  ): void {
+    const state = this.requiredMemberState(
+      settings.conversationId.toLowerCase(),
+      userId.toLowerCase(),
+    );
+    state.archivedAt = copyNullableDate(settings.archivedAt);
+    state.mutedAt = copyNullableDate(settings.mutedAt);
+    state.mutedUntil = copyNullableDate(settings.mutedUntil);
+    state.pinnedAt = copyNullableDate(settings.pinnedAt);
+    state.favoritedAt = copyNullableDate(settings.favoritedAt);
   }
 
   async createOrGetDirect(
@@ -158,6 +339,7 @@ export class InMemoryMessagingRepository {
 
     const existing = [...this.conversations.values()].find(
       (conversation) =>
+        conversation.type === 'DIRECT' &&
         conversation.memberIds.length === 2 &&
         conversation.memberIds.includes(normalizedUserId) &&
         conversation.memberIds.includes(normalizedParticipantId),
@@ -188,19 +370,40 @@ export class InMemoryMessagingRepository {
     userId: string,
     cursor: ConversationPageCursor | null,
     take: number,
+    archived = false,
+    favoritedOnly = false,
   ): Promise<ConversationRecord[]> {
     const normalizedUserId = userId.toLowerCase();
     return [...this.conversations.values()]
-      .filter((conversation) =>
-        conversation.memberIds.includes(normalizedUserId),
-      )
-      .sort(
-        (left, right) =>
+      .filter((conversation) => {
+        if (!conversation.memberIds.includes(normalizedUserId)) return false;
+        const state = this.requiredMemberState(
+          conversation.id,
+          normalizedUserId,
+        );
+        return (
+          (state.archivedAt !== null) === archived &&
+          (!favoritedOnly || state.favoritedAt !== null)
+        );
+      })
+      .sort((left, right) => {
+        const leftPinned =
+          this.requiredMemberState(left.id, normalizedUserId).pinnedAt !== null;
+        const rightPinned =
+          this.requiredMemberState(right.id, normalizedUserId).pinnedAt !==
+          null;
+        return (
+          Number(rightPinned) - Number(leftPinned) ||
           right.lastActivityAt.getTime() - left.lastActivityAt.getTime() ||
-          right.id.localeCompare(left.id),
-      )
+          right.id.localeCompare(left.id)
+        );
+      })
       .filter((conversation) => {
         if (!cursor) return true;
+        const pinned =
+          this.requiredMemberState(conversation.id, normalizedUserId)
+            .pinnedAt !== null;
+        if (cursor.pinned !== pinned) return cursor.pinned && !pinned;
         const timeComparison =
           conversation.lastActivityAt.getTime() -
           cursor.lastActivityAt.getTime();
@@ -242,9 +445,16 @@ export class InMemoryMessagingRepository {
   }
 
   async sendText(input: SendTextMessageInput): Promise<SendTextMessageResult> {
+    return this.send({ ...input, attachmentMediaIds: [] });
+  }
+
+  async send(input: SendMessageInput): Promise<SendMessageResult> {
     const conversationId = input.conversationId.toLowerCase();
     const senderId = input.senderId.toLowerCase();
     const clientMessageId = input.clientMessageId.toLowerCase();
+    const attachmentMediaIds = input.attachmentMediaIds.map((mediaId) =>
+      mediaId.toLowerCase(),
+    );
     const conversation = this.conversations.get(conversationId);
     if (!conversation?.memberIds.includes(senderId)) {
       return { status: 'conversation-not-found' };
@@ -258,12 +468,37 @@ export class InMemoryMessagingRepository {
         throw new Error('Message idempotency index is inconsistent.');
       if (
         existing.conversationId !== conversationId ||
-        existing.kind !== 'TEXT' ||
-        existing.text !== input.text
+        (attachmentMediaIds.length === 0
+          ? existing.kind !== 'TEXT'
+          : existing.kind === 'TEXT') ||
+        existing.text !== input.text ||
+        !this.sameOrderedIds(
+          existing.attachments.map((attachment) => attachment.mediaId),
+          attachmentMediaIds,
+        )
       ) {
         return { status: 'idempotency-conflict' };
       }
       return { status: 'existing', message: this.copyMessage(existing) };
+    }
+
+    if (input.text === null && attachmentMediaIds.length === 0) {
+      return { status: 'idempotency-conflict' };
+    }
+
+    const media = attachmentMediaIds.map((mediaId) =>
+      this.attachmentMedia.get(mediaId),
+    );
+    const attachmentType = this.homogeneousAttachmentType(media);
+    if (
+      new Set(attachmentMediaIds).size !== attachmentMediaIds.length ||
+      attachmentType === null ||
+      (attachmentType === 'audio' && attachmentMediaIds.length !== 1) ||
+      media.some(
+        (asset) => !asset || !this.isAvailableAttachment(asset, senderId),
+      )
+    ) {
+      return { status: 'attachment-unavailable' };
     }
 
     const newestClearTime = conversation.memberIds.reduce(
@@ -282,16 +517,50 @@ export class InMemoryMessagingRepository {
       newestClearTime && newestClearTime.getTime() >= input.now.getTime()
         ? new Date(newestClearTime.getTime() + 1)
         : input.now;
+    const messageId = randomUUID();
+    const attachments = media.map((asset): MessageAttachmentRecord => {
+      if (!asset || !this.isAvailableAttachment(asset, senderId)) {
+        throw new Error('Verified attachment media became unavailable.');
+      }
+      if (asset.resourceType === 'video') {
+        return {
+          mediaId: asset.id,
+          type: 'audio',
+          contentType: asset.contentType,
+          sizeBytes: asset.sizeBytes,
+          durationMs: asset.durationMs as number,
+          url: asset.url as string,
+        };
+      }
+      return {
+        mediaId: asset.id,
+        type: 'image',
+        contentType: asset.contentType,
+        sizeBytes: asset.sizeBytes,
+        width: asset.width as number,
+        height: asset.height as number,
+        url: asset.url as string,
+      };
+    });
     const message: MessageRecord = {
-      id: randomUUID(),
+      id: messageId,
       conversationId,
       senderId,
       clientMessageId,
-      kind: 'TEXT',
+      kind:
+        attachmentType === 'audio'
+          ? 'AUDIO'
+          : attachmentType === 'image'
+            ? 'IMAGE'
+            : 'TEXT',
       text: input.text,
+      attachments,
       createdAt: copyDate(createdAt),
       participantIds: [...conversation.memberIds],
     };
+    for (const asset of media) {
+      if (asset) asset.claimedMessageId = messageId;
+    }
     this.messages.set(message.id, message);
     this.messageIdsByIdempotencyKey.set(key, message.id);
     if (createdAt.getTime() > conversation.lastActivityAt.getTime()) {
@@ -556,6 +825,136 @@ export class InMemoryMessagingRepository {
     return state;
   }
 
+  private seedMemberStates(conversationId: string, memberIds: string[]): void {
+    for (const memberId of memberIds) {
+      this.memberStates.set(memberKey(conversationId, memberId), {
+        unreadCount: 0,
+        lastReadAt: null,
+        receiptVersion: 0,
+        archivedAt: null,
+        mutedAt: null,
+        mutedUntil: null,
+        pinnedAt: null,
+        favoritedAt: null,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      });
+    }
+  }
+
+  private isAvailableAttachment(
+    asset: StoredMessageAttachmentMedia,
+    senderId: string,
+  ): boolean {
+    const common =
+      asset.ownerId === senderId &&
+      asset.purpose === 'MESSAGE_ATTACHMENT' &&
+      asset.status === 'READY' &&
+      asset.deliveryType === 'upload' &&
+      asset.sizeBytes > 0 &&
+      asset.url !== null &&
+      asset.url.length > 0 &&
+      !asset.deleted &&
+      asset.claimedMessageId === null;
+    if (!common) return false;
+
+    if (asset.resourceType === 'image') {
+      return (
+        ['image/jpeg', 'image/png', 'image/webp'].includes(asset.contentType) &&
+        this.imageFormatMatchesContentType(asset.format, asset.contentType) &&
+        asset.sizeBytes <= 5 * 1024 * 1024 &&
+        asset.width !== null &&
+        asset.width > 0 &&
+        asset.height !== null &&
+        asset.height > 0
+      );
+    }
+
+    return (
+      asset.resourceType === 'video' &&
+      this.audioFormatMatchesContentType(asset.format, asset.contentType) &&
+      asset.sizeBytes <= 20 * 1024 * 1024 &&
+      asset.durationMs !== null &&
+      asset.durationMs > 0 &&
+      asset.durationMs <= 900_000
+    );
+  }
+
+  private homogeneousAttachmentType(
+    media: Array<StoredMessageAttachmentMedia | undefined>,
+  ): 'image' | 'audio' | 'none' | null {
+    if (media.length === 0) return 'none';
+    const types = new Set(
+      media.map((asset) =>
+        asset?.resourceType === 'image'
+          ? 'image'
+          : asset?.resourceType === 'video'
+            ? 'audio'
+            : 'invalid',
+      ),
+    );
+    if (types.size !== 1 || types.has('invalid')) return null;
+    return types.has('audio') ? 'audio' : 'image';
+  }
+
+  private defaultFormat(contentType: string): string {
+    switch (contentType) {
+      case 'image/jpeg':
+        return 'jpg';
+      case 'image/png':
+        return 'png';
+      case 'image/webp':
+        return 'webp';
+      case 'audio/aac':
+        return 'aac';
+      case 'audio/mp4':
+      case 'audio/m4a':
+      case 'audio/x-m4a':
+        return 'm4a';
+      case 'audio/mpeg':
+        return 'mp3';
+      case 'audio/ogg':
+        return 'ogg';
+      case 'audio/wav':
+      case 'audio/x-wav':
+        return 'wav';
+      default:
+        return 'unknown';
+    }
+  }
+
+  private imageFormatMatchesContentType(
+    format: string,
+    contentType: string,
+  ): boolean {
+    return (
+      (contentType === 'image/jpeg' && ['jpg', 'jpeg'].includes(format)) ||
+      (contentType === 'image/png' && format === 'png') ||
+      (contentType === 'image/webp' && format === 'webp')
+    );
+  }
+
+  private audioFormatMatchesContentType(
+    format: string,
+    contentType: string,
+  ): boolean {
+    return (
+      (contentType === 'audio/aac' && format === 'aac') ||
+      (['audio/mp4', 'audio/m4a', 'audio/x-m4a'].includes(contentType) &&
+        format === 'm4a') ||
+      (contentType === 'audio/mpeg' && format === 'mp3') ||
+      (contentType === 'audio/ogg' && format === 'ogg') ||
+      (['audio/wav', 'audio/x-wav'].includes(contentType) && format === 'wav')
+    );
+  }
+
+  private sameOrderedIds(left: string[], right: string[]): boolean {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => value === right[index])
+    );
+  }
+
   private latestMessage(
     conversationId: string,
     state?: Pick<StoredMemberState, 'clearedAt' | 'clearedThroughMessageId'>,
@@ -658,18 +1057,10 @@ export class InMemoryMessagingRepository {
     conversation: StoredConversation,
     currentUserId: string,
   ): ConversationRecord {
-    const otherUserId = conversation.memberIds.find(
-      (memberId) => memberId !== currentUserId,
-    );
-    const otherUser = otherUserId ? this.users.get(otherUserId) : undefined;
-    if (!otherUser) throw new Error('Conversation participant is missing.');
     const state = this.requiredMemberState(conversation.id, currentUserId);
     const latestMessage = this.latestMessage(conversation.id, state);
-
-    return {
+    const base = {
       id: conversation.id,
-      type: 'DIRECT',
-      otherParticipant: { ...otherUser },
       latestMessage: latestMessage
         ? {
             id: latestMessage.id,
@@ -681,23 +1072,56 @@ export class InMemoryMessagingRepository {
         : null,
       unreadCount: state.unreadCount,
       settings: {
-        archivedAt: null,
-        mutedAt: null,
-        mutedUntil: null,
-        pinnedAt: null,
-        favoritedAt: null,
-        clearedAt: state.clearedAt ? copyDate(state.clearedAt) : null,
+        archivedAt: copyNullableDate(state.archivedAt),
+        mutedAt: copyNullableDate(state.mutedAt),
+        mutedUntil: copyNullableDate(state.mutedUntil),
+        pinnedAt: copyNullableDate(state.pinnedAt),
+        favoritedAt: copyNullableDate(state.favoritedAt),
+        clearedAt: copyNullableDate(state.clearedAt),
         clearedThroughMessageId: state.clearedThroughMessageId,
       },
       lastActivityAt: copyDate(conversation.lastActivityAt),
       createdAt: copyDate(conversation.createdAt),
       updatedAt: copyDate(conversation.updatedAt),
     };
+
+    if (conversation.type === 'GROUP') {
+      const participants = conversation.memberIds.map((memberId) => {
+        const participant = this.users.get(memberId);
+        const role = conversation.rolesByMemberId.get(memberId);
+        if (!participant || !role) {
+          throw new Error('Group participant state is inconsistent.');
+        }
+        return { ...participant, role };
+      });
+      const role = conversation.rolesByMemberId.get(currentUserId);
+      if (!role) throw new Error('Current group member role is missing.');
+      return {
+        ...base,
+        type: 'GROUP',
+        name: conversation.name,
+        avatarUrl: conversation.avatarUrl,
+        participants,
+        role,
+      };
+    }
+
+    const otherUserId = conversation.memberIds.find(
+      (memberId) => memberId !== currentUserId,
+    );
+    const otherUser = otherUserId ? this.users.get(otherUserId) : undefined;
+    if (!otherUser) throw new Error('Conversation participant is missing.');
+    return {
+      ...base,
+      type: 'DIRECT',
+      otherParticipant: { ...otherUser },
+    };
   }
 
   private copyMessage(message: MessageRecord): MessageRecord {
     return {
       ...message,
+      attachments: message.attachments.map((attachment) => ({ ...attachment })),
       createdAt: copyDate(message.createdAt),
       participantIds: [...message.participantIds],
     };

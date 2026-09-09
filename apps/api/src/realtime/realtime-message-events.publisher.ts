@@ -148,8 +148,9 @@ function toMessageCreatedPayload(
     conversationId: message.conversationId,
     clientMessageId: message.clientMessageId,
     senderId: message.senderId,
-    kind: 'text',
+    kind: message.kind.toLowerCase() as 'text' | 'image' | 'audio',
     text: message.text,
+    attachments: message.attachments,
     createdAt: message.createdAt.toISOString(),
   };
 }

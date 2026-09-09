@@ -338,6 +338,46 @@ describe('ConversationSettingsService', () => {
     });
   });
 
+  it.each([
+    ['pins', true, PINNED_AT],
+    ['unpins', false, null],
+  ] as const)(
+    '%s a conversation through the dedicated settings action',
+    async (_operation, pinned, pinnedAt) => {
+      const { repository, service } = createService();
+      repository.updateForMember.mockResolvedValue({
+        status: 'updated',
+        changed: true,
+        settings: {
+          conversationId: NORMALIZED_CONVERSATION_ID,
+          archivedAt: ARCHIVED_AT,
+          mutedAt: MUTED_AT,
+          mutedUntil: null,
+          pinnedAt,
+          favoritedAt: FAVORITED_AT,
+          clearedAt: null,
+          clearedThroughMessageId: null,
+        },
+      });
+
+      await expect(
+        service.setPinned(USER_ID, CONVERSATION_ID, pinned),
+      ).resolves.toMatchObject({
+        archived: true,
+        muted: true,
+        pinned,
+        pinnedAt: pinnedAt?.toISOString() ?? null,
+        favorited: true,
+      });
+      expect(repository.updateForMember).toHaveBeenCalledWith({
+        conversationId: NORMALIZED_CONVERSATION_ID,
+        userId: NORMALIZED_USER_ID,
+        pinned,
+        now: NOW,
+      });
+    },
+  );
+
   it('does not wait for realtime delivery after the settings commit', async () => {
     const { repository, eventsPublisher, service } = createService();
     repository.updateForMember.mockResolvedValue({

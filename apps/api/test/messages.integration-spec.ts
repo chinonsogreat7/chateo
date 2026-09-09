@@ -1,3 +1,4 @@
+import { MediaPurpose, MediaStatus } from '@prisma/client';
 import { Clock } from '../src/auth/providers/clock';
 import { NoopConversationEventsPublisher } from '../src/conversations/conversation-events.publisher';
 import { PrismaConversationsRepository } from '../src/conversations/prisma-conversations.repository';
@@ -17,6 +18,14 @@ const CLIENT_MESSAGE_ONE = '10000000-0000-4000-8000-000000000501';
 const CLIENT_MESSAGE_TWO = '10000000-0000-4000-8000-000000000502';
 const CLIENT_MESSAGE_THREE = '10000000-0000-4000-8000-000000000503';
 const CLIENT_MESSAGE_FOUR = '10000000-0000-4000-8000-000000000504';
+
+const MEDIA_ONE = '20000000-0000-4000-8000-000000000501';
+const MEDIA_TWO = '20000000-0000-4000-8000-000000000502';
+const MEDIA_FOREIGN = '20000000-0000-4000-8000-000000000503';
+const MEDIA_PENDING = '20000000-0000-4000-8000-000000000504';
+const MEDIA_REUSED = '20000000-0000-4000-8000-000000000505';
+const MEDIA_RACE = '20000000-0000-4000-8000-000000000506';
+const MEDIA_AUDIO = '20000000-0000-4000-8000-000000000507';
 
 const BASE_TIME = new Date('2026-08-12T16:30:00.000Z');
 const MESSAGE_TIME_ONE = new Date('2026-08-12T16:31:00.000Z');
@@ -87,6 +96,9 @@ describe('Prisma messaging persistence', () => {
 
   beforeEach(async () => {
     await prisma.message.deleteMany({ where: { conversationId } });
+    await prisma.mediaAsset.deleteMany({
+      where: { ownerId: { in: USER_IDS } },
+    });
     await prisma.conversationMember.updateMany({
       where: { conversationId },
       data: {
@@ -137,6 +149,496 @@ describe('Prisma messaging persistence', () => {
     ).resolves.toBe(1);
     await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
     await expect(memberUnreadCount(SENDER_ID)).resolves.toBe(0);
+  });
+
+  it('converges concurrent identical image sends after one permanent media claim', async () => {
+    await seedMessageImage(MEDIA_RACE);
+    const input = {
+      conversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_ONE,
+      text: 'Exactly one photo',
+      attachmentMediaIds: [MEDIA_RACE],
+      now: MESSAGE_TIME_ONE,
+    };
+
+    const results = await Promise.all([
+      messagesRepository.send(input),
+      messagesRepository.send(input),
+    ]);
+
+    expect(results.map(({ status }) => status).sort()).toEqual([
+      'created',
+      'existing',
+    ]);
+    await expect(
+      prisma.message.count({
+        where: {
+          conversationId,
+          senderId: SENDER_ID,
+          clientMessageId: CLIENT_MESSAGE_ONE,
+        },
+      }),
+    ).resolves.toBe(1);
+    await expect(
+      prisma.messageAttachment.count({
+        where: { mediaAssetId: MEDIA_RACE },
+      }),
+    ).resolves.toBe(1);
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: MEDIA_RACE },
+        select: { messageClaimedAt: true },
+      }),
+    ).resolves.toEqual({ messageClaimedAt: MESSAGE_TIME_ONE });
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
+  });
+
+  it('persists ordered image attachments and maps them into message history', async () => {
+    await seedMessageImage(MEDIA_ONE, {
+      mimeType: 'image/png',
+      byteSize: 101_001,
+      width: 640,
+      height: 480,
+    });
+    await seedMessageImage(MEDIA_TWO, {
+      mimeType: 'image/webp',
+      byteSize: 202_002,
+      width: 1280,
+      height: 720,
+    });
+
+    const result = await messagesRepository.send({
+      conversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_ONE,
+      text: 'Two photos',
+      attachmentMediaIds: [MEDIA_TWO, MEDIA_ONE],
+      now: MESSAGE_TIME_ONE,
+    });
+
+    expect(result.status).toBe('created');
+    if (result.status !== 'created') {
+      throw new Error(`Expected a created message, received ${result.status}.`);
+    }
+    expect(result.message).toMatchObject({
+      conversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_ONE,
+      kind: 'IMAGE',
+      text: 'Two photos',
+      attachments: [
+        {
+          mediaId: MEDIA_TWO,
+          type: 'image',
+          contentType: 'image/webp',
+          sizeBytes: 202_002,
+          width: 1280,
+          height: 720,
+          url: mediaUrl(MEDIA_TWO, 'webp'),
+        },
+        {
+          mediaId: MEDIA_ONE,
+          type: 'image',
+          contentType: 'image/png',
+          sizeBytes: 101_001,
+          width: 640,
+          height: 480,
+          url: mediaUrl(MEDIA_ONE, 'png'),
+        },
+      ],
+    });
+
+    await expect(
+      prisma.messageAttachment.findMany({
+        where: { messageId: result.message.id },
+        orderBy: { position: 'asc' },
+        select: { mediaAssetId: true, position: true },
+      }),
+    ).resolves.toEqual([
+      { mediaAssetId: MEDIA_TWO, position: 0 },
+      { mediaAssetId: MEDIA_ONE, position: 1 },
+    ]);
+
+    await expect(
+      messagesService.list(SENDER_ID, conversationId, 20),
+    ).resolves.toMatchObject({
+      items: [
+        {
+          id: result.message.id,
+          conversationId,
+          senderId: SENDER_ID,
+          clientMessageId: CLIENT_MESSAGE_ONE,
+          kind: 'image',
+          text: 'Two photos',
+          attachments: [
+            {
+              mediaId: MEDIA_TWO,
+              type: 'image',
+              contentType: 'image/webp',
+              sizeBytes: 202_002,
+              width: 1280,
+              height: 720,
+              url: mediaUrl(MEDIA_TWO, 'webp'),
+            },
+            {
+              mediaId: MEDIA_ONE,
+              type: 'image',
+              contentType: 'image/png',
+              sizeBytes: 101_001,
+              width: 640,
+              height: 480,
+              url: mediaUrl(MEDIA_ONE, 'png'),
+            },
+          ],
+          createdAt: MESSAGE_TIME_ONE.toISOString(),
+        },
+      ],
+      pageInfo: { nextCursor: null, hasNextPage: false },
+    });
+  });
+
+  it('returns the existing image message when its identical retry follows the attachment claim', async () => {
+    await seedMessageImage(MEDIA_ONE);
+    const input = {
+      conversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_ONE,
+      text: null,
+      attachmentMediaIds: [MEDIA_ONE],
+      now: MESSAGE_TIME_ONE,
+    };
+
+    const first = await messagesRepository.send(input);
+    const replay = await messagesRepository.send({
+      ...input,
+      now: MESSAGE_TIME_TWO,
+    });
+
+    expect(first.status).toBe('created');
+    expect(replay.status).toBe('existing');
+    if (first.status !== 'created' || replay.status !== 'existing') {
+      throw new Error(
+        'Expected a created image message and its existing replay.',
+      );
+    }
+    expect(replay.message).toEqual(first.message);
+    await expect(
+      prisma.messageAttachment.count({
+        where: { mediaAssetId: MEDIA_ONE },
+      }),
+    ).resolves.toBe(1);
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
+  });
+
+  it('persists one audio recording and maps it into history and the conversation preview', async () => {
+    await seedMessageAudio(MEDIA_AUDIO, {
+      byteSize: 482_310,
+      durationMs: 18_400,
+    });
+
+    const result = await messagesRepository.send({
+      conversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_ONE,
+      text: null,
+      attachmentMediaIds: [MEDIA_AUDIO],
+      now: MESSAGE_TIME_ONE,
+    });
+
+    expect(result.status).toBe('created');
+    if (result.status !== 'created') {
+      throw new Error(`Expected a created message, received ${result.status}.`);
+    }
+    expect(result.message).toMatchObject({
+      kind: 'AUDIO',
+      text: null,
+      attachments: [
+        {
+          mediaId: MEDIA_AUDIO,
+          type: 'audio',
+          contentType: 'audio/mp4',
+          sizeBytes: 482_310,
+          durationMs: 18_400,
+          url: audioUrl(MEDIA_AUDIO),
+        },
+      ],
+    });
+    await expect(
+      messagesService.list(RECIPIENT_ID, conversationId, 20),
+    ).resolves.toMatchObject({
+      items: [
+        {
+          id: result.message.id,
+          kind: 'audio',
+          text: null,
+          attachments: [
+            {
+              mediaId: MEDIA_AUDIO,
+              type: 'audio',
+              contentType: 'audio/mp4',
+              sizeBytes: 482_310,
+              durationMs: 18_400,
+              url: audioUrl(MEDIA_AUDIO),
+            },
+          ],
+        },
+      ],
+    });
+    await expect(
+      conversationsService.get(RECIPIENT_ID, conversationId),
+    ).resolves.toMatchObject({
+      latestMessage: {
+        id: result.message.id,
+        kind: 'audio',
+        preview: 'Voice message',
+      },
+    });
+  });
+
+  it('replays an identical audio message after its permanent media claim', async () => {
+    await seedMessageAudio(MEDIA_AUDIO);
+    const input = {
+      conversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_ONE,
+      text: 'Listen to this',
+      attachmentMediaIds: [MEDIA_AUDIO],
+      now: MESSAGE_TIME_ONE,
+    };
+
+    const first = await messagesRepository.send(input);
+    const replay = await messagesRepository.send({
+      ...input,
+      now: MESSAGE_TIME_TWO,
+    });
+
+    expect(first.status).toBe('created');
+    expect(replay.status).toBe('existing');
+    if (first.status !== 'created' || replay.status !== 'existing') {
+      throw new Error(
+        'Expected a created audio message and its existing replay.',
+      );
+    }
+    expect(replay.message).toEqual(first.message);
+    await expect(
+      prisma.messageAttachment.count({
+        where: { mediaAssetId: MEDIA_AUDIO },
+      }),
+    ).resolves.toBe(1);
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
+  });
+
+  it('rejects mixed image and audio attachments without claiming either asset', async () => {
+    await seedMessageImage(MEDIA_ONE);
+    await seedMessageAudio(MEDIA_AUDIO);
+
+    await expect(
+      messagesRepository.send({
+        conversationId,
+        senderId: SENDER_ID,
+        clientMessageId: CLIENT_MESSAGE_ONE,
+        text: 'Mixed media',
+        attachmentMediaIds: [MEDIA_ONE, MEDIA_AUDIO],
+        now: MESSAGE_TIME_ONE,
+      }),
+    ).resolves.toEqual({ status: 'attachment-unavailable' });
+    await expect(
+      prisma.mediaAsset.findMany({
+        where: { id: { in: [MEDIA_ONE, MEDIA_AUDIO] } },
+        orderBy: { id: 'asc' },
+        select: { messageClaimedAt: true },
+      }),
+    ).resolves.toEqual([
+      { messageClaimedAt: null },
+      { messageClaimedAt: null },
+    ]);
+    await expect(
+      prisma.message.count({ where: { conversationId } }),
+    ).resolves.toBe(0);
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(0);
+  });
+
+  it('rejects an image idempotency replay when attachment order changes', async () => {
+    await seedMessageImage(MEDIA_ONE);
+    await seedMessageImage(MEDIA_TWO);
+    await expect(
+      messagesRepository.send({
+        conversationId,
+        senderId: SENDER_ID,
+        clientMessageId: CLIENT_MESSAGE_ONE,
+        text: 'Ordered photos',
+        attachmentMediaIds: [MEDIA_ONE, MEDIA_TWO],
+        now: MESSAGE_TIME_ONE,
+      }),
+    ).resolves.toMatchObject({ status: 'created' });
+
+    await expect(
+      messagesRepository.send({
+        conversationId,
+        senderId: SENDER_ID,
+        clientMessageId: CLIENT_MESSAGE_ONE,
+        text: 'Ordered photos',
+        attachmentMediaIds: [MEDIA_TWO, MEDIA_ONE],
+        now: MESSAGE_TIME_TWO,
+      }),
+    ).resolves.toEqual({ status: 'idempotency-conflict' });
+    await expect(
+      prisma.message.count({ where: { conversationId } }),
+    ).resolves.toBe(1);
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
+  });
+
+  it('hides whether an unavailable image is foreign, pending, or permanently claimed', async () => {
+    await seedMessageImage(MEDIA_FOREIGN, { ownerId: OUTSIDER_ID });
+    await seedMessageImage(MEDIA_PENDING, {
+      status: MediaStatus.PENDING,
+    });
+    await seedMessageImage(MEDIA_REUSED);
+    const original = await messagesRepository.send({
+      conversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_ONE,
+      text: null,
+      attachmentMediaIds: [MEDIA_REUSED],
+      now: MESSAGE_TIME_ONE,
+    });
+    expect(original.status).toBe('created');
+    if (original.status !== 'created') {
+      throw new Error(
+        `Expected a created message, received ${original.status}.`,
+      );
+    }
+    await prisma.message.delete({ where: { id: original.message.id } });
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: MEDIA_REUSED },
+        select: { messageClaimedAt: true },
+      }),
+    ).resolves.toEqual({ messageClaimedAt: expect.any(Date) });
+    await expect(
+      prisma.messageAttachment.count({
+        where: { mediaAssetId: MEDIA_REUSED },
+      }),
+    ).resolves.toBe(0);
+
+    const unavailableInputs = [
+      {
+        clientMessageId: CLIENT_MESSAGE_TWO,
+        attachmentMediaIds: [MEDIA_FOREIGN],
+      },
+      {
+        clientMessageId: CLIENT_MESSAGE_THREE,
+        attachmentMediaIds: [MEDIA_PENDING],
+      },
+      {
+        clientMessageId: CLIENT_MESSAGE_FOUR,
+        attachmentMediaIds: [MEDIA_REUSED],
+      },
+    ];
+    for (const unavailable of unavailableInputs) {
+      await expect(
+        messagesRepository.send({
+          conversationId,
+          senderId: SENDER_ID,
+          text: null,
+          now: MESSAGE_TIME_TWO,
+          ...unavailable,
+        }),
+      ).resolves.toEqual({ status: 'attachment-unavailable' });
+    }
+
+    await expect(
+      prisma.message.count({ where: { conversationId } }),
+    ).resolves.toBe(0);
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
+  });
+
+  it('rolls back a partial attachment claim when any requested image is unavailable', async () => {
+    await seedMessageImage(MEDIA_ONE);
+    await seedMessageImage(MEDIA_FOREIGN, { ownerId: OUTSIDER_ID });
+
+    await expect(
+      messagesRepository.send({
+        conversationId,
+        senderId: SENDER_ID,
+        clientMessageId: CLIENT_MESSAGE_ONE,
+        text: 'Cannot claim this set',
+        attachmentMediaIds: [MEDIA_ONE, MEDIA_FOREIGN],
+        now: MESSAGE_TIME_ONE,
+      }),
+    ).resolves.toEqual({ status: 'attachment-unavailable' });
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: MEDIA_ONE },
+        select: { messageClaimedAt: true },
+      }),
+    ).resolves.toEqual({ messageClaimedAt: null });
+    await expect(
+      prisma.message.count({ where: { conversationId } }),
+    ).resolves.toBe(0);
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(0);
+
+    await expect(
+      messagesRepository.send({
+        conversationId,
+        senderId: SENDER_ID,
+        clientMessageId: CLIENT_MESSAGE_TWO,
+        text: 'The valid image remains usable',
+        attachmentMediaIds: [MEDIA_ONE],
+        now: MESSAGE_TIME_TWO,
+      }),
+    ).resolves.toMatchObject({ status: 'created' });
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: MEDIA_ONE },
+        select: { messageClaimedAt: true },
+      }),
+    ).resolves.toEqual({ messageClaimedAt: expect.any(Date) });
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
+  });
+
+  it('converges two different messages racing for one image to one created and one unavailable', async () => {
+    await seedMessageImage(MEDIA_RACE);
+
+    const results = await Promise.all([
+      messagesRepository.send({
+        conversationId,
+        senderId: SENDER_ID,
+        clientMessageId: CLIENT_MESSAGE_ONE,
+        text: 'Race one',
+        attachmentMediaIds: [MEDIA_RACE],
+        now: MESSAGE_TIME_ONE,
+      }),
+      messagesRepository.send({
+        conversationId,
+        senderId: SENDER_ID,
+        clientMessageId: CLIENT_MESSAGE_TWO,
+        text: 'Race two',
+        attachmentMediaIds: [MEDIA_RACE],
+        now: MESSAGE_TIME_ONE,
+      }),
+    ]);
+
+    expect(results.map(({ status }) => status).sort()).toEqual([
+      'attachment-unavailable',
+      'created',
+    ]);
+    await expect(
+      prisma.message.count({ where: { conversationId } }),
+    ).resolves.toBe(1);
+    await expect(
+      prisma.messageAttachment.count({
+        where: { mediaAssetId: MEDIA_RACE },
+      }),
+    ).resolves.toBe(1);
+    await expect(
+      prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: MEDIA_RACE },
+        select: { messageClaimedAt: true },
+      }),
+    ).resolves.toEqual({ messageClaimedAt: expect.any(Date) });
+    await expect(memberUnreadCount(RECIPIENT_ID)).resolves.toBe(1);
   });
 
   it('rejects the same idempotency key with different text without another increment', async () => {
@@ -607,6 +1109,93 @@ describe('Prisma messaging persistence', () => {
       select: { unreadCount: true },
     });
     return member.unreadCount;
+  }
+
+  async function seedMessageImage(
+    id: string,
+    options: {
+      ownerId?: string;
+      status?: MediaStatus;
+      mimeType?: 'image/jpeg' | 'image/png' | 'image/webp';
+      byteSize?: number;
+      width?: number;
+      height?: number;
+    } = {},
+  ): Promise<void> {
+    const ownerId = options.ownerId ?? SENDER_ID;
+    const status = options.status ?? MediaStatus.READY;
+    const mimeType = options.mimeType ?? 'image/jpeg';
+    const format = mimeType.replace('image/', '').replace('jpeg', 'jpg');
+    const isReady = status === MediaStatus.READY;
+    await prisma.mediaAsset.create({
+      data: {
+        id,
+        ownerId,
+        clientUploadId: id.replace(/^2/, '3'),
+        uploadFingerprint: id.replaceAll('-', '').padEnd(64, '0'),
+        purpose: MediaPurpose.MESSAGE_ATTACHMENT,
+        status,
+        cloudinaryPublicId: `users/${ownerId}/message-images/${id}`,
+        cloudinaryAssetId: isReady ? `cloudinary-${id}` : null,
+        resourceType: 'image',
+        deliveryType: 'upload',
+        format: isReady ? format : null,
+        mimeType,
+        byteSize: options.byteSize ?? 50_000,
+        width: isReady ? (options.width ?? 800) : null,
+        height: isReady ? (options.height ?? 600) : null,
+        secureUrl: isReady ? mediaUrl(id, format) : null,
+        expiresAt: new Date('2026-08-13T16:30:00.000Z'),
+        completedAt: isReady ? BASE_TIME : null,
+        createdAt: BASE_TIME,
+      },
+    });
+  }
+
+  async function seedMessageAudio(
+    id: string,
+    options: {
+      ownerId?: string;
+      status?: MediaStatus;
+      byteSize?: number;
+      durationMs?: number;
+    } = {},
+  ): Promise<void> {
+    const ownerId = options.ownerId ?? SENDER_ID;
+    const status = options.status ?? MediaStatus.READY;
+    const isReady = status === MediaStatus.READY;
+    await prisma.mediaAsset.create({
+      data: {
+        id,
+        ownerId,
+        clientUploadId: id.replace(/^2/, '3'),
+        uploadFingerprint: id.replaceAll('-', '').padEnd(64, '0'),
+        purpose: MediaPurpose.MESSAGE_ATTACHMENT,
+        status,
+        cloudinaryPublicId: `users/${ownerId}/message-audio/${id}`,
+        cloudinaryAssetId: isReady ? `cloudinary-${id}` : null,
+        resourceType: 'video',
+        deliveryType: 'upload',
+        format: isReady ? 'm4a' : null,
+        mimeType: 'audio/mp4',
+        byteSize: options.byteSize ?? 482_310,
+        width: null,
+        height: null,
+        durationMs: isReady ? (options.durationMs ?? 18_400) : null,
+        secureUrl: isReady ? audioUrl(id) : null,
+        expiresAt: new Date('2026-08-13T16:30:00.000Z'),
+        completedAt: isReady ? BASE_TIME : null,
+        createdAt: BASE_TIME,
+      },
+    });
+  }
+
+  function mediaUrl(id: string, format: string): string {
+    return `https://res.cloudinary.com/classroom/image/upload/${id}.${format}`;
+  }
+
+  function audioUrl(id: string): string {
+    return `https://res.cloudinary.com/classroom/video/upload/${id}.m4a`;
   }
 
   async function cleanup(): Promise<void> {

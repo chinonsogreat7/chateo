@@ -129,16 +129,16 @@ Open **Events**, add each server event below, and select **Listen** for all 15:
 ```
 
 This event is emitted only when the persisted state changes. Repeating an
-unchanged archive, unarchive, favorite, unmute, or always-mute mutation produces
-no duplicate event. Reapplying a finite mute restarts that duration and
-publishes its new expiry. Finite mutes expose their exact expiry in
-`mutedUntil`; `always` uses `mutedUntil: null`. Archive, mute, and favorite
-settings are per member, work for direct chats and groups, and do not suppress
-Socket.IO delivery.
+unchanged archive, unarchive, favorite, unfavorite, pin, unpin, unmute, or
+always-mute mutation produces no duplicate event. Reapplying a finite mute
+restarts that duration and publishes its new expiry. Finite mutes expose their
+exact expiry in `mutedUntil`; `always` uses `mutedUntil: null`. Archive, mute,
+pin, and favorite settings are per member, work for direct chats and groups,
+and do not suppress Socket.IO delivery.
 Trigger it from an authenticated HTTP request with `PUT` or `DELETE` on
-`{{apiBaseUrl}}/conversations/{{conversationId}}/mute` or `/favorite`. A mute
-`PUT` body is `{ "duration": "8_hours" }`; the other accepted durations are
-`24_hours`, `7_days`, and `always`.
+`{{apiBaseUrl}}/conversations/{{conversationId}}/mute`, `/favorite`, or `/pin`.
+A mute `PUT` body is `{ "duration": "8_hours" }`; the other accepted durations
+are `24_hours`, `7_days`, and `always`.
 
 Archive with
 `PUT {{apiBaseUrl}}/conversations/{{conversationId}}/archive` and unarchive with
@@ -149,6 +149,15 @@ back as the `cursor` query value for the next page. The legacy
 `GET {{apiBaseUrl}}/conversations?archived=true` and
 `PATCH {{apiBaseUrl}}/conversations/{{conversationId}}/settings` forms remain
 supported for existing clients.
+
+List active favorites with
+`GET {{apiBaseUrl}}/conversations/favorites?limit=20`; add `archived=true` for
+archived favorites. Pass `pageInfo.nextCursor` unchanged only to the same
+favorites archive mode. Favorites cursors cannot be reused on the ordinary
+conversation list, and active favorites cursors cannot page archived favorites.
+Pin with `PUT {{apiBaseUrl}}/conversations/{{conversationId}}/pin` and unpin
+with `DELETE` on the same path. The favorite and pin actions return the complete
+caller-specific settings snapshot and affect no other member.
 
 Treat this snapshot as a refetch hint, not an ordered state update. Concurrent
 settings writes can publish out of commit order; coalesce the hints and fetch
@@ -226,7 +235,28 @@ after `conversation.members.added`.
   "senderId": "956d3268-0f92-4bc1-a2bb-9c4768ee11ee",
   "kind": "text",
   "text": "Hello from Postman",
+  "attachments": [],
   "createdAt": "2026-08-12T16:30:00.000Z"
+}
+```
+
+An audio event uses `kind: "audio"` and contains exactly one metadata-only
+attachment:
+
+```json
+{
+  "kind": "audio",
+  "text": null,
+  "attachments": [
+    {
+      "mediaId": "661f9511-f3ac-42e5-bf40-c10f5dd67e6b",
+      "type": "audio",
+      "contentType": "audio/mp4",
+      "sizeBytes": 482310,
+      "durationMs": 18400,
+      "url": "https://res.cloudinary.com/example/video/upload/v1/chateo/message-audio/661f9511-f3ac-42e5-bf40-c10f5dd67e6b.m4a"
+    }
+  ]
 }
 ```
 
@@ -423,6 +453,17 @@ Possible codes are `AUTH_ACCESS_TOKEN_INVALID`, `REALTIME_PAYLOAD_INVALID`,
    setup, both socket tabs receive one `message.created` event. For a group,
    every active device belonging to every member receives it. Copy the returned
    server message `id` into `throughMessageId`.
+
+   To test an image or audio message, first use the authenticated media upload
+   lifecycle with `purpose: "message_attachment"`, upload the file directly to
+   the returned Cloudinary target, and complete it. Then replace `text` above
+   with `"attachmentMediaIds": ["<ready media UUID>"]`, or include both fields
+   for a caption. Images accept one to ten ready image IDs; audio accepts exactly
+   one ready recording, and the two types cannot be mixed. The REST response and
+   `message.created` event include the same persisted `attachments` metadata;
+   neither carries binary bytes. Cloudinary audio targets contain
+   `/video/upload`, which is expected because Cloudinary handles audio as its
+   `video` resource type.
 
 6. As B, call
    `PUT {{apiBaseUrl}}/conversations/{{conversationId}}/receipts/delivered`
