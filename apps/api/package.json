@@ -12,6 +12,7 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\" \"postman/**/*.{json,md}\" \"*.{ts,js,json,md}\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\" \"postman/**/*.{json,md}\" \"*.{ts,js,json,md}\"",
     "lint": "eslint src test prisma prisma.config.ts --max-warnings=0",
+    "prelint": "node ../../scripts/verify-tooling.mjs",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
