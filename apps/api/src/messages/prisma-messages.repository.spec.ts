@@ -1,5 +1,7 @@
 import { MediaPurpose, MediaStatus, MessageKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { ConfigService } from '@nestjs/config';
+import { messageFingerprint } from './message-mapping';
 import { PrismaMessagesRepository } from './prisma-messages.repository';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -22,6 +24,11 @@ function rawMessage(overrides: Record<string, unknown> = {}) {
     kind: MessageKind.TEXT,
     text: 'Hello!',
     attachments: [],
+    replyToMessageId: null,
+    editedAt: null,
+    deletedAt: null,
+    version: 0,
+    reactions: [],
     createdAt: NOW,
     ...overrides,
   };
@@ -246,6 +253,223 @@ function sendTransactionState(existing: unknown = null) {
 }
 
 describe('PrismaMessagesRepository', () => {
+  it('enqueues push work in the first-send transaction but never on an idempotent replay', async () => {
+    const state = sendTransactionState();
+    const createMany = jest.fn();
+    const client = {
+      ...state.client,
+      conversationMember: {
+        ...state.client.conversationMember,
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { userId: OTHER_USER_ID, mutedAt: null, mutedUntil: null },
+          ]),
+      },
+      pushDevice: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'device',
+            userId: OTHER_USER_ID,
+            familyId: 'family',
+            version: 0,
+          },
+        ]),
+      },
+      authSession: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ userId: OTHER_USER_ID, familyId: 'family' }]),
+      },
+      pushNotification: { createMany },
+    };
+    const repository = new PrismaMessagesRepository(
+      {
+        $transaction: async (
+          operation: (tx: typeof client) => Promise<unknown>,
+        ) => operation(client),
+      } as unknown as PrismaService,
+      new ConfigService({ PUSH_NOTIFICATIONS_ENABLED: true }),
+    );
+    await expect(repository.sendText(sendInput())).resolves.toMatchObject({
+      status: 'created',
+    });
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          messageId: MESSAGE_ID,
+          deviceId: 'device',
+          deviceVersion: 0,
+          createdAt: NOW,
+          nextAttemptAt: new Date(NOW.getTime() + 15000),
+        },
+      ],
+      skipDuplicates: true,
+    });
+    state.messageFindUnique.mockResolvedValue(rawMessage());
+    await expect(repository.sendText(sendInput())).resolves.toMatchObject({
+      status: 'existing',
+    });
+    expect(createMany).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ['video/mp4', 'mp4'],
+    ['video/quicktime', 'mov'],
+    ['video/webm', 'webm'],
+    ['application/pdf', 'pdf'],
+    ['text/plain', 'txt'],
+    [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'docx',
+    ],
+    [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'xlsx',
+    ],
+    [
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'pptx',
+    ],
+  ])(
+    'atomically claims verified %s attachments and maps playback/download metadata',
+    async (mimeType, format) => {
+      const { repository, transaction } = createRepository();
+      const state = sendTransactionState();
+      const video = mimeType.startsWith('video/');
+      const kind = video ? MessageKind.VIDEO : MessageKind.DOCUMENT;
+      const metadata = {
+        resourceType: video ? 'video' : 'raw',
+        mimeType,
+        format,
+        width: video ? 1280 : null,
+        height: video ? 720 : null,
+        durationMs: video ? 15000 : null,
+        originalFilename: `lesson.${format}`,
+        secureUrl: `https://res.cloudinary.com/demo/${video ? 'video' : 'raw'}/upload/lesson.${format}`,
+      };
+      state.mediaAssetFindMany.mockResolvedValue([
+        readyAudioAsset(AUDIO_ATTACHMENT_ID, metadata),
+      ]);
+      state.mediaAssetUpdateMany.mockResolvedValue({ count: 1 });
+      state.messageCreate.mockResolvedValue(
+        rawMessage({
+          kind,
+          text: null,
+          attachments: [rawAudioAttachment(AUDIO_ATTACHMENT_ID, metadata)],
+        }),
+      );
+      transaction.mockImplementation(
+        async (operation: (client: unknown) => Promise<unknown>) =>
+          operation(state.client),
+      );
+      await expect(repository.send(audioSendInput())).resolves.toMatchObject({
+        status: 'created',
+        message: {
+          kind,
+          attachments: [
+            {
+              type: video ? 'video' : 'document',
+              contentType: mimeType,
+              ...(video
+                ? {
+                    width: 1280,
+                    height: 720,
+                    durationMs: 15000,
+                    url: metadata.secureUrl,
+                  }
+                : {
+                    filename: `lesson.${format}`,
+                    url: metadata.secureUrl.replace(
+                      '/raw/upload/',
+                      '/raw/upload/fl_attachment/',
+                    ),
+                  }),
+            },
+          ],
+        },
+      });
+      expect(state.mediaAssetUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            ownerId: USER_ID,
+            purpose: 'MESSAGE_ATTACHMENT',
+            status: 'READY',
+            messageClaimedAt: null,
+            resourceType: metadata.resourceType,
+          }),
+          data: { messageClaimedAt: NOW },
+        }),
+      );
+      expect(state.messageCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            kind,
+            sendFingerprint: messageFingerprint(audioSendInput()),
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each([
+    { mimeType: 'video/mp4', format: 'mp4', width: null },
+    { mimeType: 'video/mp4', format: 'mp4', width: 1921, height: 720 },
+    {
+      mimeType: 'video/mp4',
+      format: 'mp4',
+      width: 1280,
+      height: 720,
+      durationMs: 300001,
+    },
+    {
+      mimeType: 'video/mp4',
+      format: 'mp4',
+      width: 1280,
+      height: 720,
+      byteSize: 50 * 1024 * 1024 + 1,
+    },
+    {
+      resourceType: 'raw',
+      mimeType: 'application/pdf',
+      format: 'exe',
+      durationMs: null,
+      originalFilename: 'lesson.pdf',
+    },
+    {
+      resourceType: 'raw',
+      mimeType: 'application/pdf',
+      format: 'pdf',
+      durationMs: null,
+      originalFilename: null,
+    },
+    {
+      resourceType: 'raw',
+      mimeType: 'application/pdf',
+      format: 'pdf',
+      durationMs: null,
+      originalFilename: 'lesson.pdf',
+      byteSize: 25 * 1024 * 1024 + 1,
+    },
+  ])(
+    'rejects invalid video/document metadata before claiming: %j',
+    async (metadata) => {
+      const { repository, transaction } = createRepository();
+      const state = sendTransactionState();
+      state.mediaAssetFindMany.mockResolvedValue([
+        readyAudioAsset(AUDIO_ATTACHMENT_ID, metadata),
+      ]);
+      transaction.mockImplementation(
+        async (operation: (client: unknown) => Promise<unknown>) =>
+          operation(state.client),
+      );
+      await expect(repository.send(audioSendInput())).resolves.toEqual({
+        status: 'attachment-unavailable',
+      });
+      expect(state.mediaAssetUpdateMany).not.toHaveBeenCalled();
+      expect(state.messageCreate).not.toHaveBeenCalled();
+    },
+  );
+
   it('updates activity and unread state without unarchiving recipients', async () => {
     const { repository, transaction } = createRepository();
     const state = sendTransactionState();
@@ -266,6 +490,11 @@ describe('PrismaMessagesRepository', () => {
     });
     expect(state.messageCreate).toHaveBeenCalledWith({
       data: {
+        sendFingerprint: messageFingerprint({
+          ...sendInput(),
+          attachmentMediaIds: [],
+        }),
+        replyToMessageId: null,
         conversationId: CONVERSATION_ID,
         senderId: USER_ID,
         clientMessageId: CLIENT_MESSAGE_ID,
@@ -400,6 +629,8 @@ describe('PrismaMessagesRepository', () => {
     });
     expect(state.messageCreate).toHaveBeenCalledWith({
       data: {
+        sendFingerprint: messageFingerprint(imageSendInput()),
+        replyToMessageId: null,
         conversationId: CONVERSATION_ID,
         senderId: USER_ID,
         clientMessageId: CLIENT_MESSAGE_ID,
@@ -500,6 +731,11 @@ describe('PrismaMessagesRepository', () => {
     });
     expect(state.messageCreate).toHaveBeenCalledWith({
       data: {
+        sendFingerprint: messageFingerprint({
+          ...audioSendInput(),
+          text: 'Listen to this',
+        }),
+        replyToMessageId: null,
         conversationId: CONVERSATION_ID,
         senderId: USER_ID,
         clientMessageId: CLIENT_MESSAGE_ID,
@@ -1031,6 +1267,7 @@ describe('PrismaMessagesRepository', () => {
 
   it('sets unread count to zero and stores a read boundary transactionally', async () => {
     const { repository, transaction } = createRepository();
+    const cancelPushes = jest.fn().mockResolvedValue({ count: 1 });
     const latestMessageAt = new Date('2026-08-12T16:01:00.000Z');
     const memberFindUnique = jest
       .fn()
@@ -1051,6 +1288,7 @@ describe('PrismaMessagesRepository', () => {
             update: memberUpdate,
           },
           message: { findFirst: messageFindFirst },
+          pushNotification: { updateMany: cancelPushes },
         }),
     );
 
@@ -1073,6 +1311,20 @@ describe('PrismaMessagesRepository', () => {
       },
       data: { unreadCount: 0, lastReadAt: latestMessageAt },
       select: { conversationId: true, lastReadAt: true, unreadCount: true },
+    });
+    expect(cancelPushes).toHaveBeenCalledWith({
+      where: {
+        status: { in: ['PENDING', 'RECEIPT'] },
+        message: { conversationId: CONVERSATION_ID },
+        device: { userId: USER_ID },
+      },
+      data: {
+        status: 'SKIPPED',
+        errorCode: 'Read',
+        completedAt: NOW,
+        leaseToken: null,
+        leaseUntil: null,
+      },
     });
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,

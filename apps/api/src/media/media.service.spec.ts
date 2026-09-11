@@ -114,6 +114,12 @@ function createService(
   };
   const storage: jest.Mocked<MediaStorageProvider> = {
     signImageUpload: jest.fn(),
+    signVideoUpload: jest.fn(),
+    signDocumentUpload: jest.fn(),
+    findVideo: jest.fn(),
+    findDocument: jest.fn(),
+    verifyDocumentContent: jest.fn().mockResolvedValue(true),
+    deleteDocument: jest.fn(),
     signAudioUpload: jest.fn(),
     findImage: jest.fn(),
     findAudio: jest.fn(),
@@ -223,58 +229,64 @@ describe('MediaService', () => {
     expect(result.upload?.expiresAt).toBe('2026-09-06T10:10:00.000Z');
   });
 
-  it('creates message-image uploads in a separate server-owned folder', async () => {
-    const { repository, storage, service } = createService();
-    repository.createPending.mockImplementation(async (input) => ({
-      status: 'created',
-      asset: asset({
-        id: input.id,
-        purpose: input.purpose,
-        cloudinaryPublicId: input.cloudinaryPublicId,
-        uploadFingerprint: input.uploadFingerprint,
-        originalFilename: input.originalFilename,
-      }),
-    }));
-    storage.signImageUpload.mockResolvedValue({
-      url: 'https://api.cloudinary.com/v1_1/demo/image/upload',
-      method: 'POST',
-      fields: {
-        api_key: 'public-key',
-        timestamp: '1788688800',
-        signature: 'signature',
-        public_id: 'public-id',
-        context: 'context',
-        type: 'upload',
-        overwrite: 'false',
-        allowed_formats: 'jpg,jpeg,png,webp',
-        upload_preset: 'chateo_profile_avatars',
-        transformation: 'c_limit,h_2048,w_2048/q_auto',
-      },
-    });
+  it.each([
+    ['message_attachment', 'MESSAGE_ATTACHMENT', 'message-images'],
+    ['group_avatar', 'GROUP_AVATAR', 'group-avatars'],
+  ] as const)(
+    'creates %s images in a separate server-owned folder',
+    async (purpose, storedPurpose, folder) => {
+      const { repository, storage, service } = createService();
+      repository.createPending.mockImplementation(async (input) => ({
+        status: 'created',
+        asset: asset({
+          id: input.id,
+          purpose: input.purpose,
+          cloudinaryPublicId: input.cloudinaryPublicId,
+          uploadFingerprint: input.uploadFingerprint,
+          originalFilename: input.originalFilename,
+        }),
+      }));
+      storage.signImageUpload.mockResolvedValue({
+        url: 'https://api.cloudinary.com/v1_1/demo/image/upload',
+        method: 'POST',
+        fields: {
+          api_key: 'public-key',
+          timestamp: '1788688800',
+          signature: 'signature',
+          public_id: 'public-id',
+          context: 'context',
+          type: 'upload',
+          overwrite: 'false',
+          allowed_formats: 'jpg,jpeg,png,webp',
+          upload_preset: 'chateo_profile_avatars',
+          transformation: 'c_limit,h_2048,w_2048/q_auto',
+        },
+      });
 
-    const result = await service.createUpload(USER_ID, {
-      clientUploadId: CLIENT_UPLOAD_ID,
-      purpose: 'message_attachment',
-      contentType: 'image/png',
-      sizeBytes: 512000,
-      originalFilename: 'chat-image.png',
-    });
+      const result = await service.createUpload(USER_ID, {
+        clientUploadId: CLIENT_UPLOAD_ID,
+        purpose,
+        contentType: 'image/png',
+        sizeBytes: 512000,
+        originalFilename: 'chat-image.png',
+      });
 
-    const createInput = repository.createPending.mock.calls[0]?.[0];
-    expect(createInput).toMatchObject({
-      purpose: 'MESSAGE_ATTACHMENT',
-      mimeType: 'image/png',
-      originalFilename: 'chat-image.png',
-    });
-    expect(createInput?.cloudinaryPublicId).toMatch(
-      /^chateo\/message-images\/[0-9a-f-]{36}$/,
-    );
-    expect(result.media).toMatchObject({
-      purpose: 'message_attachment',
-      status: 'pending',
-      type: 'image',
-    });
-  });
+      const createInput = repository.createPending.mock.calls[0]?.[0];
+      expect(createInput).toMatchObject({
+        purpose: storedPurpose,
+        mimeType: 'image/png',
+        originalFilename: 'chat-image.png',
+      });
+      expect(createInput?.cloudinaryPublicId).toMatch(
+        new RegExp(`^chateo/${folder}/[0-9a-f-]{36}$`),
+      );
+      expect(result.media).toMatchObject({
+        purpose,
+        status: 'pending',
+        type: 'image',
+      });
+    },
+  );
 
   it('creates chat-audio uploads in a video resource folder without an image transformation', async () => {
     const { repository, storage, service } = createService();

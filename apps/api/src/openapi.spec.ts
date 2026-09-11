@@ -24,6 +24,10 @@ import { ReceiptsController } from './receipts/receipts.controller';
 import { ReceiptsService } from './receipts/receipts.service';
 import { UsersController } from './users/users.controller';
 import { UsersService } from './users/users.service';
+import { PushController } from './push/push.controller';
+import { PushRepository } from './push/push.repository';
+import { Clock } from './auth/providers/clock';
+import { ConfigService } from '@nestjs/config';
 
 const CHALLENGE_ID = '550e8400-e29b-41d4-a716-446655440000';
 const REFRESH_TOKEN =
@@ -59,6 +63,7 @@ describe('OpenAPI request examples', () => {
         MediaController,
         ProfileAvatarController,
         ReceiptsController,
+        PushController,
       ],
       providers: [
         { provide: AuthService, useValue: {} },
@@ -70,6 +75,9 @@ describe('OpenAPI request examples', () => {
         { provide: MessagesService, useValue: {} },
         { provide: MediaService, useValue: {} },
         { provide: ReceiptsService, useValue: {} },
+        { provide: PushRepository, useValue: {} },
+        { provide: Clock, useValue: {} },
+        { provide: ConfigService, useValue: {} },
       ],
     }).compile();
 
@@ -91,6 +99,57 @@ describe('OpenAPI request examples', () => {
 
   afterAll(async () => {
     await app.close();
+  });
+
+  it('documents authenticated push registration/removal without response tokens', () => {
+    const route = document.paths['/v1/me/push-devices/{installationId}'];
+    expect(route?.put).toMatchObject({
+      security: [{ bearer: [] }],
+      responses: expect.objectContaining({
+        '200': expect.any(Object),
+        '401': expect.any(Object),
+        '503': expect.any(Object),
+      }),
+    });
+    expect(route?.delete).toMatchObject({
+      security: [{ bearer: [] }],
+      responses: expect.objectContaining({ '204': expect.any(Object) }),
+    });
+    expect(
+      document.components?.schemas?.PushDeviceResponseDto,
+    ).not.toHaveProperty('properties.token');
+  });
+
+  it('documents authenticated advanced message routes and revision fields', () => {
+    const base = '/v1/conversations/{conversationId}/messages';
+    for (const [suffix, method] of [
+      ['/search', 'get'],
+      ['/{messageId}', 'get'],
+      ['/{messageId}', 'patch'],
+      ['/{messageId}', 'delete'],
+      ['/{messageId}/reaction', 'put'],
+      ['/{messageId}/reaction', 'delete'],
+    ] as const) {
+      expect(document.paths[base + suffix]?.[method]).toMatchObject({
+        security: [{ bearer: [] }],
+        responses: expect.objectContaining({ '200': expect.any(Object) }),
+      });
+    }
+    expect(document.components?.schemas?.MessageResponseDto).toMatchObject({
+      properties: {
+        version: { type: 'number', minimum: 0 },
+        replyToMessageId: { nullable: true, format: 'uuid' },
+        editedAt: { nullable: true },
+        deletedAt: { nullable: true },
+        reactions: { type: 'array' },
+      },
+    });
+    expect(document.components?.schemas?.EditMessageDto).toMatchObject({
+      required: expect.arrayContaining(['text', 'expectedVersion']),
+    });
+    expect(document.components?.schemas?.SetMessageReactionDto).toMatchObject({
+      properties: { emoji: { enum: ['👍', '❤️', '😂', '😮', '😢', '🙏'] } },
+    });
   });
 
   const cases: RequestExampleCase[] = [
@@ -181,7 +240,13 @@ describe('OpenAPI request examples', () => {
       method: 'patch',
       path: '/v1/conversations/{conversationId}',
       schemaName: 'UpdateGroupConversationDto',
-      payload: { name: 'Project Team', avatarUrl: null },
+      payload: { name: 'Project Team', avatarMediaId: null },
+    },
+    {
+      method: 'put',
+      path: '/v1/conversations/{conversationId}/avatar',
+      schemaName: 'SetGroupAvatarDto',
+      payload: { mediaId: MEDIA_ID },
     },
     {
       method: 'post',
@@ -294,7 +359,7 @@ describe('OpenAPI request examples', () => {
         clientUploadId: { type: 'string', format: 'uuid' },
         purpose: {
           type: 'string',
-          enum: ['profile_avatar', 'message_attachment'],
+          enum: ['profile_avatar', 'group_avatar', 'message_attachment'],
         },
         contentType: {
           type: 'string',
@@ -310,9 +375,17 @@ describe('OpenAPI request examples', () => {
             'audio/ogg',
             'audio/wav',
             'audio/x-wav',
+            'video/mp4',
+            'video/quicktime',
+            'video/webm',
+            'application/pdf',
+            'text/plain',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
           ],
         },
-        sizeBytes: { type: 'number', minimum: 1, maximum: 20971520 },
+        sizeBytes: { type: 'number', minimum: 1, maximum: 52428800 },
         contentSha256: {
           type: 'string',
           pattern: '^[0-9a-f]{64}$',
@@ -330,7 +403,7 @@ describe('OpenAPI request examples', () => {
         'sizeBytes',
       ]),
       properties: {
-        type: { type: 'string', enum: ['image', 'audio'] },
+        type: { type: 'string', enum: ['image', 'audio', 'video', 'document'] },
         durationMs: { type: 'number', nullable: true, minimum: 1 },
       },
     });
@@ -340,7 +413,12 @@ describe('OpenAPI request examples', () => {
       properties: {
         allowed_formats: {
           type: 'string',
-          enum: ['jpg,jpeg,png,webp', 'aac,m4a,mp3,ogg,wav'],
+          enum: [
+            'jpg,jpeg,png,webp',
+            'aac,m4a,mp3,ogg,wav',
+            'mp4,mov,webm',
+            'pdf,txt,docx,xlsx,pptx',
+          ],
         },
         transformation: expect.objectContaining({ type: 'string' }),
       },
@@ -458,7 +536,10 @@ describe('OpenAPI request examples', () => {
         'createdAt',
       ]),
       properties: {
-        kind: { type: 'string', enum: ['text', 'image', 'audio'] },
+        kind: {
+          type: 'string',
+          enum: ['text', 'image', 'audio', 'video', 'document'],
+        },
         text: { type: 'string', nullable: true },
         attachments: {
           type: 'array',
@@ -469,6 +550,12 @@ describe('OpenAPI request examples', () => {
               },
               {
                 $ref: '#/components/schemas/AudioMessageAttachmentResponseDto',
+              },
+              {
+                $ref: '#/components/schemas/VideoMessageAttachmentResponseDto',
+              },
+              {
+                $ref: '#/components/schemas/DocumentMessageAttachmentResponseDto',
               },
             ],
             discriminator: {
@@ -743,6 +830,8 @@ describe('OpenAPI request examples', () => {
   it('documents group lifecycle success responses and schemas', () => {
     for (const [path, method] of [
       ['/v1/conversations/{conversationId}', 'patch'],
+      ['/v1/conversations/{conversationId}/avatar', 'put'],
+      ['/v1/conversations/{conversationId}/avatar', 'delete'],
       ['/v1/conversations/{conversationId}/members', 'post'],
       ['/v1/conversations/{conversationId}/members/{memberId}/role', 'patch'],
       ['/v1/conversations/{conversationId}/transfer-ownership', 'post'],
@@ -771,6 +860,16 @@ describe('OpenAPI request examples', () => {
     [
       '/v1/conversations/{conversationId}',
       'patch',
+      ['200', '400', '403', '404', '409'],
+    ],
+    [
+      '/v1/conversations/{conversationId}/avatar',
+      'put',
+      ['200', '400', '403', '404', '409'],
+    ],
+    [
+      '/v1/conversations/{conversationId}/avatar',
+      'delete',
       ['200', '400', '403', '404'],
     ],
     [
@@ -810,7 +909,7 @@ describe('OpenAPI request examples', () => {
     ).toMatchObject({
       properties: {
         name: { type: 'string', minLength: 1, maxLength: 100 },
-        avatarUrl: { type: 'string', nullable: true, format: 'uri' },
+        avatarMediaId: { type: 'string', nullable: true, format: 'uuid' },
       },
     });
     expect(

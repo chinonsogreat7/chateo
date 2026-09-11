@@ -20,54 +20,62 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 
 ## Endpoints
 
-| Method   | Path                                                       | Auth   | Purpose                                           |
-| -------- | ---------------------------------------------------------- | ------ | ------------------------------------------------- |
-| `GET`    | `/v1/health`                                               | Public | Liveness check                                    |
-| `POST`   | `/v1/auth/otp/request`                                     | Public | Request a verification code                       |
-| `POST`   | `/v1/auth/otp/resend`                                      | Public | Resend after the cooldown                         |
-| `POST`   | `/v1/auth/otp/verify`                                      | Public | Verify and receive a token pair                   |
-| `POST`   | `/v1/auth/refresh`                                         | Public | Rotate a refresh token                            |
-| `POST`   | `/v1/auth/logout`                                          | Public | Revoke a refresh session; always idempotent       |
-| `GET`    | `/v1/me`                                                   | Bearer | Read the signed-in profile                        |
-| `PATCH`  | `/v1/me`                                                   | Bearer | Set the display name                              |
-| `PUT`    | `/v1/me/avatar`                                            | Bearer | Select a verified profile-avatar upload           |
-| `DELETE` | `/v1/me/avatar`                                            | Bearer | Remove the profile avatar idempotently            |
-| `POST`   | `/v1/media/uploads`                                        | Bearer | Create/replay a signed Cloudinary media upload    |
-| `POST`   | `/v1/media/uploads/:mediaId/complete`                      | Bearer | Verify the Cloudinary object and mark it ready    |
-| `GET`    | `/v1/me/blocks`                                            | Bearer | List users blocked by the caller                  |
-| `PUT`    | `/v1/me/blocks/:userId`                                    | Bearer | Block a user idempotently                         |
-| `DELETE` | `/v1/me/blocks/:userId`                                    | Bearer | Unblock a user idempotently                       |
-| `POST`   | `/v1/contacts/match`                                       | Bearer | Match phone numbers already known to caller       |
-| `GET`    | `/v1/users/search`                                         | Bearer | Search completed profiles by display name         |
-| `POST`   | `/v1/conversations/direct`                                 | Bearer | Create or return a direct conversation            |
-| `POST`   | `/v1/conversations/group`                                  | Bearer | Create a named group conversation                 |
-| `GET`    | `/v1/conversations`                                        | Bearer | List the signed-in user's conversations           |
-| `GET`    | `/v1/conversations/archived`                               | Bearer | List the caller's archived conversations          |
-| `GET`    | `/v1/conversations/favorites`                              | Bearer | List the caller's active or archived favorites    |
-| `GET`    | `/v1/conversations/:conversationId`                        | Bearer | Open a conversation as a member                   |
-| `PATCH`  | `/v1/conversations/:conversationId`                        | Bearer | Edit group name or avatar                         |
-| `POST`   | `/v1/conversations/:conversationId/members`                | Bearer | Add registered group members                      |
-| `DELETE` | `/v1/conversations/:conversationId/members/:memberId`      | Bearer | Remove a group member                             |
-| `PATCH`  | `/v1/conversations/:conversationId/members/:memberId/role` | Bearer | Promote or demote a group member                  |
-| `POST`   | `/v1/conversations/:conversationId/transfer-ownership`     | Bearer | Transfer group ownership                          |
-| `POST`   | `/v1/conversations/:conversationId/leave`                  | Bearer | Leave a group                                     |
-| `DELETE` | `/v1/conversations/:conversationId`                        | Bearer | Delete an owned group                             |
-| `PUT`    | `/v1/conversations/:conversationId/archive`                | Bearer | Archive for the caller                            |
-| `DELETE` | `/v1/conversations/:conversationId/archive`                | Bearer | Unarchive for the caller                          |
-| `PATCH`  | `/v1/conversations/:conversationId/settings`               | Bearer | Archive, always mute/unmute, or pin for caller    |
-| `PUT`    | `/v1/conversations/:conversationId/mute`                   | Bearer | Mute for 8 hours, 24 hours, 7 days, or always     |
-| `DELETE` | `/v1/conversations/:conversationId/mute`                   | Bearer | Unmute for the caller                             |
-| `PUT`    | `/v1/conversations/:conversationId/favorite`               | Bearer | Add to the caller's favorites                     |
-| `DELETE` | `/v1/conversations/:conversationId/favorite`               | Bearer | Remove from the caller's favorites                |
-| `PUT`    | `/v1/conversations/:conversationId/pin`                    | Bearer | Pin for the caller                                |
-| `DELETE` | `/v1/conversations/:conversationId/pin`                    | Bearer | Unpin for the caller                              |
-| `POST`   | `/v1/conversations/:conversationId/messages`               | Bearer | Persist/replay a text, image, or audio message    |
-| `GET`    | `/v1/conversations/:conversationId/messages`               | Bearer | Read newest-first message history                 |
-| `DELETE` | `/v1/conversations/:conversationId/messages`               | Bearer | Clear message history for the caller              |
-| `PUT`    | `/v1/conversations/:conversationId/receipts/delivered`     | Bearer | Advance the caller's durable delivery boundary    |
-| `PUT`    | `/v1/conversations/:conversationId/receipts/read`          | Bearer | Advance the caller's durable read boundary        |
-| `GET`    | `/v1/conversations/:conversationId/receipts`               | Bearer | Reconcile every participant's receipt frontiers   |
-| `POST`   | `/v1/conversations/:conversationId/read`                   | Bearer | Legacy local read marker; use receipt route above |
+| Method   | Path                                                             | Auth   | Purpose                                                      |
+| -------- | ---------------------------------------------------------------- | ------ | ------------------------------------------------------------ |
+| `GET`    | `/v1/health`                                                     | Public | Liveness check                                               |
+| `POST`   | `/v1/auth/otp/request`                                           | Public | Request a verification code                                  |
+| `POST`   | `/v1/auth/otp/resend`                                            | Public | Resend after the cooldown                                    |
+| `POST`   | `/v1/auth/otp/verify`                                            | Public | Verify and receive a token pair                              |
+| `POST`   | `/v1/auth/refresh`                                               | Public | Rotate a refresh token                                       |
+| `POST`   | `/v1/auth/logout`                                                | Public | Revoke a refresh session; always idempotent                  |
+| `GET`    | `/v1/me`                                                         | Bearer | Read the signed-in profile                                   |
+| `PATCH`  | `/v1/me`                                                         | Bearer | Set the display name                                         |
+| `PUT`    | `/v1/me/avatar`                                                  | Bearer | Select a verified profile-avatar upload                      |
+| `DELETE` | `/v1/me/avatar`                                                  | Bearer | Remove the profile avatar idempotently                       |
+| `POST`   | `/v1/media/uploads`                                              | Bearer | Create/replay a signed Cloudinary media upload               |
+| `POST`   | `/v1/media/uploads/:mediaId/complete`                            | Bearer | Verify the Cloudinary object and mark it ready               |
+| `GET`    | `/v1/me/blocks`                                                  | Bearer | List users blocked by the caller                             |
+| `PUT`    | `/v1/me/blocks/:userId`                                          | Bearer | Block a user idempotently                                    |
+| `DELETE` | `/v1/me/blocks/:userId`                                          | Bearer | Unblock a user idempotently                                  |
+| `POST`   | `/v1/contacts/match`                                             | Bearer | Match phone numbers already known to caller                  |
+| `GET`    | `/v1/users/search`                                               | Bearer | Search completed profiles by display name                    |
+| `POST`   | `/v1/conversations/direct`                                       | Bearer | Create or return a direct conversation                       |
+| `POST`   | `/v1/conversations/group`                                        | Bearer | Create a named group conversation                            |
+| `GET`    | `/v1/conversations`                                              | Bearer | List the signed-in user's conversations                      |
+| `GET`    | `/v1/conversations/archived`                                     | Bearer | List the caller's archived conversations                     |
+| `GET`    | `/v1/conversations/favorites`                                    | Bearer | List the caller's active or archived favorites               |
+| `GET`    | `/v1/conversations/:conversationId`                              | Bearer | Open a conversation as a member                              |
+| `PATCH`  | `/v1/conversations/:conversationId`                              | Bearer | Edit group name or avatar                                    |
+| `PUT`    | `/v1/conversations/:conversationId/avatar`                       | Bearer | Select a verified group photo (owner/admin)                  |
+| `DELETE` | `/v1/conversations/:conversationId/avatar`                       | Bearer | Remove a group photo idempotently (owner/admin)              |
+| `POST`   | `/v1/conversations/:conversationId/members`                      | Bearer | Add registered group members                                 |
+| `DELETE` | `/v1/conversations/:conversationId/members/:memberId`            | Bearer | Remove a group member                                        |
+| `PATCH`  | `/v1/conversations/:conversationId/members/:memberId/role`       | Bearer | Promote or demote a group member                             |
+| `POST`   | `/v1/conversations/:conversationId/transfer-ownership`           | Bearer | Transfer group ownership                                     |
+| `POST`   | `/v1/conversations/:conversationId/leave`                        | Bearer | Leave a group                                                |
+| `DELETE` | `/v1/conversations/:conversationId`                              | Bearer | Delete an owned group                                        |
+| `PUT`    | `/v1/conversations/:conversationId/archive`                      | Bearer | Archive for the caller                                       |
+| `DELETE` | `/v1/conversations/:conversationId/archive`                      | Bearer | Unarchive for the caller                                     |
+| `PATCH`  | `/v1/conversations/:conversationId/settings`                     | Bearer | Archive, always mute/unmute, or pin for caller               |
+| `PUT`    | `/v1/conversations/:conversationId/mute`                         | Bearer | Mute for 8 hours, 24 hours, 7 days, or always                |
+| `DELETE` | `/v1/conversations/:conversationId/mute`                         | Bearer | Unmute for the caller                                        |
+| `PUT`    | `/v1/conversations/:conversationId/favorite`                     | Bearer | Add to the caller's favorites                                |
+| `DELETE` | `/v1/conversations/:conversationId/favorite`                     | Bearer | Remove from the caller's favorites                           |
+| `PUT`    | `/v1/conversations/:conversationId/pin`                          | Bearer | Pin for the caller                                           |
+| `DELETE` | `/v1/conversations/:conversationId/pin`                          | Bearer | Unpin for the caller                                         |
+| `POST`   | `/v1/conversations/:conversationId/messages`                     | Bearer | Persist/replay text, image, audio, video, document, or reply |
+| `GET`    | `/v1/conversations/:conversationId/messages/search`              | Bearer | Search visible text and captions                             |
+| `GET`    | `/v1/conversations/:conversationId/messages/:messageId`          | Bearer | Fetch current message or deletion placeholder                |
+| `PATCH`  | `/v1/conversations/:conversationId/messages/:messageId`          | Bearer | Edit your message or attachment caption                      |
+| `DELETE` | `/v1/conversations/:conversationId/messages/:messageId`          | Bearer | Delete your message for everyone                             |
+| `PUT`    | `/v1/conversations/:conversationId/messages/:messageId/reaction` | Bearer | Set or replace your reaction                                 |
+| `DELETE` | `/v1/conversations/:conversationId/messages/:messageId/reaction` | Bearer | Remove your reaction                                         |
+| `GET`    | `/v1/conversations/:conversationId/messages`                     | Bearer | Read newest-first message history                            |
+| `DELETE` | `/v1/conversations/:conversationId/messages`                     | Bearer | Clear message history for the caller                         |
+| `PUT`    | `/v1/conversations/:conversationId/receipts/delivered`           | Bearer | Advance the caller's durable delivery boundary               |
+| `PUT`    | `/v1/conversations/:conversationId/receipts/read`                | Bearer | Advance the caller's durable read boundary                   |
+| `GET`    | `/v1/conversations/:conversationId/receipts`                     | Bearer | Reconcile every participant's receipt frontiers              |
+| `POST`   | `/v1/conversations/:conversationId/read`                         | Bearer | Legacy local read marker; use receipt route above            |
 
 Authentication, profile, discovery, conversation, message, and receipt
 responses include `Cache-Control: no-store`.
@@ -128,11 +136,15 @@ Content-Type: application/json
 The avatar is optional. `PATCH /v1/me` no longer accepts `avatarUrl`; profile
 images must pass through the verified media lifecycle below.
 
-### Upload an image or audio recording
+### Upload media
+
+Video/document upload configuration and the advanced messaging contracts
+(replies, edits, reactions, deletion, search, and socket revisions) are in
+[MESSAGING.md](MESSAGING.md). All attachment kinds use the lifecycle below.
 
 Create a **signed (not unsigned)** Cloudinary upload preset before enabling this
 feature. The currently named `CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET` is shared
-by profile-avatar and chat-image uploads. Allow JPEG, PNG, and WebP, give the
+by profile-avatar, group-avatar, and chat-image uploads. Allow JPEG, PNG, and WebP, give the
 preset a maximum file size of
 `5242880` bytes (5 MiB), and allow the API's request-supplied public ID. Put its
 name in `CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET`, configure the other
@@ -267,8 +279,8 @@ MIME type: `audio/aac`, `audio/mp4`, `audio/m4a`, `audio/x-m4a`, `audio/mpeg`,
 `message-audio` folder and `/video/upload`. The declared and verified stored
 size may not exceed 20 MiB, and the verified duration must be between one
 millisecond and 900,000 milliseconds. Audio can never be selected as a profile
-avatar. Group avatars and general video or document attachments remain later
-slices.
+or group avatar. Video and document attachments are also supported with their
+own presets, content checks and limits; see [MESSAGING.md](MESSAGING.md).
 
 This classroom slice uses Cloudinary's `upload` delivery type, so a copied
 asset URL is publicly reachable. Before treating chat media as private in
@@ -475,8 +487,9 @@ selected duration from the new request time. The
 `conversation.settings.updated` event includes `mutedUntil`, `favorited`, and
 `favoritedAt`. Treat this event as a refetch hint, not as an ordered state
 update; archive mutations publish it only when the caller's persisted state
-actually changes. Push delivery and mute-based notification filtering are not
-implemented yet, so muting does not suppress messages or Socket.IO events.
+actually changes. Optional Expo offline notifications respect these mute windows
+at queue time and again before delivery. Muting does not suppress persisted
+messages or Socket.IO events. See [push setup](BACKGROUND_WORKERS.md).
 
 ## Blocking users
 
@@ -529,7 +542,50 @@ Group lifecycle permissions are:
 | Leave                                                | Admin, member |
 
 Edit metadata with `PATCH /v1/conversations/:conversationId`. At least one of
-`name` or `avatarUrl` is required; send `avatarUrl: null` to remove the avatar.
+`name` or `avatarMediaId` is required; send `avatarMediaId: null` to remove the avatar.
+Group creation also accepts optional `avatarMediaId`. Both endpoints reject
+arbitrary `avatarUrl` inputs; responses and socket payloads still return
+`avatarUrl`, including existing legacy group photos.
+
+### Verified group photos
+
+Use the same three-step media workflow as profile photos:
+
+1. `POST /v1/media/uploads` with `purpose: "group_avatar"`, a fresh
+   `clientUploadId`, an image `contentType`, and `sizeBytes`.
+2. Send the returned signed fields and file directly to Cloudinary, then
+   `POST /v1/media/uploads/:mediaId/complete`. Wait for `status: "ready"`.
+3. As a group owner/admin, select the verified photo:
+
+```http
+PUT /v1/conversations/:conversationId/avatar
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{ "mediaId": "550e8400-e29b-41d4-a716-446655440000" }
+```
+
+Uploads use the `group-avatars` folder and the existing signed image preset
+and configured image limits (JPEG/PNG/WebP, at most 5 MiB). The acting user
+must own the upload. Missing, foreign, pending, failed, deleted, profile-avatar,
+chat-image, and audio media all return `409 GROUP_AVATAR_UNAVAILABLE`.
+Membership/role checks happen before media lookup: ordinary members receive
+403 and nonmembers or direct conversations receive 404. Media resolution and
+group assignment happen in one serializable transaction, so an invalid photo
+also prevents a simultaneous rename or group creation.
+
+Remove a photo with `DELETE /v1/conversations/:conversationId/avatar`.
+Both dedicated routes return 200 with the complete group response. Assignment
+and removal are idempotent; actual changes publish
+`conversation.metadata.updated` to current members. Removing or replacing a
+photo only detaches its reference, without deleting the uploaded file. A ready
+photo can be reused across groups by its uploader. An active reference prevents
+database deletion of the media asset. The opt-in unused-media worker retires
+detached photos after a fresh grace period; see [cleanup setup](BACKGROUND_WORKERS.md).
+Group photos use the same public delivery limitation described above.
+
+### Group membership management
+
 Add one or more users atomically with:
 
 ```http
@@ -613,8 +669,8 @@ Content-Type: application/json
 At least `text` or `attachmentMediaIds` is required. Attachment IDs must be
 unique UUIDs owned by the sender, ready, valid for chat messages, and not
 already attached to another message. An image message accepts one to ten image
-IDs in display order. An audio message accepts exactly one audio ID. Images and
-audio cannot be mixed in the same message. Missing, foreign, unfinished,
+IDs in display order. Audio, video, and document messages accept exactly one
+asset. Attachment kinds cannot be mixed in the same message. Missing, foreign, unfinished,
 invalid, mixed, or previously claimed media all return the privacy-safe
 `409 MESSAGE_ATTACHMENT_UNAVAILABLE` response. The media claim and message
 write commit atomically, including when two sends race for the same asset.
@@ -672,10 +728,13 @@ dimensions:
 ```
 
 The same request works for direct conversations and groups; membership and
-block rules remain unchanged. Binary data never passes through this API or a
-Socket.IO event. History and `message.created` return the same persisted
+block rules remain unchanged. File uploads go directly to Cloudinary; only
+document completion downloads bytes through this API for bounded validation.
+Socket.IO events contain no file bytes. History and `message.created` return the same persisted
 attachment metadata. A latest-message preview uses the caption when provided
-and otherwise displays `Photo` for images or `Voice message` for audio.
+and otherwise displays `Photo`, `Voice message`, `Video`, or `Document` by kind.
+A deleted latest message displays `Message deleted`. Message responses also
+include reply/revision/deletion/reaction fields; see [advanced messaging](MESSAGING.md).
 
 Fetch history with:
 
@@ -1032,66 +1091,74 @@ its separate audio preset is not configured.
 - Direct-conversation participant pairs are stored in canonical UUID order under a database unique constraint.
 - Conversation archive, mute window, pin, favorite, and clear-history boundary are stored independently for each member.
 - Clearing history hides messages only for that member and never deletes shared message rows.
-- Chat image and audio bytes upload directly to Cloudinary; messages atomically claim only verified, ready media owned by their sender.
+- All chat attachment bytes upload directly to Cloudinary; messages atomically claim only verified, ready media owned by their sender.
 - Group creation and lifecycle mutations enforce one owner, role permissions, member limits, and inviter-to-invitee block checks atomically.
 - Realtime membership changes refresh cached presence/typing authorization, and message events recheck current membership before delivery.
 - Message send retries are deduplicated by `(senderId, clientMessageId)` before unread counters change.
 - Receipt boundaries accept only incoming messages, advance monotonically, and persist before their socket events are published.
 - Socket handshakes validate both the JWT and its server-side session; private events are revalidated before delivery.
-- Profile-avatar, chat-image, and chat-audio bytes upload directly to Cloudinary
+- Profile-avatar, group-avatar, image, audio, video, and document bytes upload directly to Cloudinary
   through server-signed, non-overwriting requests with purpose-specific signed
   presets; the API secret never leaves the server.
 - The API stores a pending media record before signing and independently checks
   Cloudinary metadata, owner, purpose, readiness, size, format, image
-  dimensions or audio duration, and signed context before assigning an avatar
+  dimensions or playback duration, and signed context before assigning an avatar
   URL or claiming chat media.
+- Document completion also validates bounded downloaded bytes and an optional
+  SHA-256. These file-type checks are not antivirus. Public Cloudinary URLs remain
+  accessible after message deletion; private delivery is not implemented.
 - Rejected and expired pending uploads remain in the database until a cleanup
   worker can safely delete the Cloudinary object after the signature window;
   failed deletions remain retryable.
-- Client-supplied avatar URLs are rejected by `PATCH /v1/me`, and foreign media
-  IDs are indistinguishable from missing IDs.
+- Client-supplied avatar URLs are rejected by profile and group mutation APIs;
+  foreign media IDs are indistinguishable from missing IDs.
 
 ## Environment
 
 Copy `.env.example` to `.env` and configure:
 
-| Variable                                  | Purpose                                                      |
-| ----------------------------------------- | ------------------------------------------------------------ |
-| `NODE_ENV`                                | `development`, `test`, or `production`                       |
-| `DATABASE_URL`                            | PostgreSQL connection string                                 |
-| `JWT_ACCESS_SECRET`                       | Access-token signing secret, at least 32 characters          |
-| `OTP_HASH_SECRET`                         | Independent OTP HMAC secret, at least 32 characters          |
-| `OTP_PROVIDER`                            | `console` for development/test; `twilio` for production      |
-| `TWILIO_ACCOUNT_SID`                      | Twilio account that owns the sender                          |
-| `TWILIO_API_KEY`                          | Twilio API key used for HTTP Basic authentication            |
-| `TWILIO_API_SECRET`                       | Secret paired with the Twilio API key                        |
-| `TWILIO_FROM_NUMBER`                      | Twilio sender in E.164 form                                  |
-| `AUTH_FIXED_OTP`                          | Optional local/test code; must be empty in production        |
-| `AUTH_OTP_LENGTH`                         | 4–8 digits; production requires at least 6                   |
-| `AUTH_OTP_TTL_SECONDS`                    | Code lifetime                                                |
-| `AUTH_OTP_RESEND_SECONDS`                 | Server-side resend cooldown                                  |
-| `AUTH_OTP_MAX_ATTEMPTS`                   | Cumulative failure limit                                     |
-| `AUTH_OTP_LOCK_SECONDS`                   | Lock duration after the failure limit                        |
-| `AUTH_ACCESS_TOKEN_TTL_SECONDS`           | Access-token lifetime                                        |
-| `AUTH_REFRESH_TOKEN_TTL_SECONDS`          | Rotating session lifetime                                    |
-| `API_DOCS_ENABLED`                        | Expose Swagger UI and OpenAPI JSON; defaults to `true`       |
-| `REALTIME_MAX_CONNECTIONS_PER_USER`       | Per-instance authenticated socket cap; defaults to `5`       |
-| `MEDIA_UPLOADS_ENABLED`                   | Enables Cloudinary media endpoints; defaults to `false`      |
-| `CLOUDINARY_CLOUD_NAME`                   | Cloudinary product-environment cloud name                    |
-| `CLOUDINARY_API_KEY`                      | Cloudinary public API key                                    |
-| `CLOUDINARY_API_SECRET`                   | Server-only Cloudinary signing/Admin API secret              |
-| `CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET` | Signed image preset with a 5 MiB maximum                     |
-| `CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET`     | Optional signed audio preset with a 20 MiB maximum           |
-| `CLOUDINARY_UPLOAD_FOLDER`                | Safe public-ID prefix; defaults to `chateo`                  |
-| `MEDIA_UPLOAD_TTL_SECONDS`                | Pending upload workflow lifetime; defaults to `600`          |
-| `MEDIA_MAX_PROFILE_AVATAR_BYTES`          | Avatar limit, at most 5 MiB; defaults to `5242880`           |
-| `MEDIA_MAX_PROFILE_AVATAR_DIMENSION`      | Maximum width or height; defaults to `2048`                  |
-| `MEDIA_MAX_PROFILE_AVATAR_PIXELS`         | Maximum total pixels; defaults to `4194304`                  |
-| `MEDIA_MAX_CHAT_AUDIO_BYTES`              | Audio recording limit; defaults to `20971520`                |
-| `MEDIA_MAX_CHAT_AUDIO_DURATION_MS`        | Audio duration limit; defaults to `900000`                   |
-| `CORS_ORIGINS`                            | Comma-separated browser origins for production               |
-| `TRUST_PROXY`                             | Express trust-proxy setting used for accurate throttling IPs |
-| `ALLOW_DEMO_SEED`                         | Must equal `true` to run the manual classroom seed command   |
+| Variable                                  | Purpose                                                                 |
+| ----------------------------------------- | ----------------------------------------------------------------------- |
+| `NODE_ENV`                                | `development`, `test`, or `production`                                  |
+| `DATABASE_URL`                            | PostgreSQL connection string                                            |
+| `JWT_ACCESS_SECRET`                       | Access-token signing secret, at least 32 characters                     |
+| `OTP_HASH_SECRET`                         | Independent OTP HMAC secret, at least 32 characters                     |
+| `OTP_PROVIDER`                            | `console` for development/test; `twilio` for production                 |
+| `TWILIO_ACCOUNT_SID`                      | Twilio account that owns the sender                                     |
+| `TWILIO_API_KEY`                          | Twilio API key used for HTTP Basic authentication                       |
+| `TWILIO_API_SECRET`                       | Secret paired with the Twilio API key                                   |
+| `TWILIO_FROM_NUMBER`                      | Twilio sender in E.164 form                                             |
+| `AUTH_FIXED_OTP`                          | Optional local/test code; must be empty in production                   |
+| `AUTH_OTP_LENGTH`                         | 4–8 digits; production requires at least 6                              |
+| `AUTH_OTP_TTL_SECONDS`                    | Code lifetime                                                           |
+| `AUTH_OTP_RESEND_SECONDS`                 | Server-side resend cooldown                                             |
+| `AUTH_OTP_MAX_ATTEMPTS`                   | Cumulative failure limit                                                |
+| `AUTH_OTP_LOCK_SECONDS`                   | Lock duration after the failure limit                                   |
+| `AUTH_ACCESS_TOKEN_TTL_SECONDS`           | Access-token lifetime                                                   |
+| `AUTH_REFRESH_TOKEN_TTL_SECONDS`          | Rotating session lifetime                                               |
+| `API_DOCS_ENABLED`                        | Expose Swagger UI and OpenAPI JSON; defaults to `true`                  |
+| `REALTIME_MAX_CONNECTIONS_PER_USER`       | Per-instance authenticated socket cap; defaults to `5`                  |
+| `MEDIA_UPLOADS_ENABLED`                   | Enables Cloudinary media endpoints; defaults to `false`                 |
+| `CLOUDINARY_CLOUD_NAME`                   | Cloudinary product-environment cloud name                               |
+| `CLOUDINARY_API_KEY`                      | Cloudinary public API key                                               |
+| `CLOUDINARY_API_SECRET`                   | Server-only Cloudinary signing/Admin API secret                         |
+| `CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET` | Signed image preset with a 5 MiB maximum                                |
+| `CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET`     | Optional signed audio preset with a 20 MiB maximum                      |
+| `CLOUDINARY_CHAT_VIDEO_UPLOAD_PRESET`     | Optional signed MP4/MOV/WebM preset with a 50 MiB maximum               |
+| `CLOUDINARY_CHAT_DOCUMENT_UPLOAD_PRESET`  | Optional signed raw PDF/TXT/DOCX/XLSX/PPTX preset with a 25 MiB maximum |
+| `CLOUDINARY_UPLOAD_FOLDER`                | Safe public-ID prefix; defaults to `chateo`                             |
+| `MEDIA_UPLOAD_TTL_SECONDS`                | Pending upload workflow lifetime; defaults to `600`                     |
+| `MEDIA_MAX_PROFILE_AVATAR_BYTES`          | Avatar limit, at most 5 MiB; defaults to `5242880`                      |
+| `MEDIA_MAX_PROFILE_AVATAR_DIMENSION`      | Maximum width or height; defaults to `2048`                             |
+| `MEDIA_MAX_PROFILE_AVATAR_PIXELS`         | Maximum total pixels; defaults to `4194304`                             |
+| `MEDIA_MAX_CHAT_AUDIO_BYTES`              | Audio recording limit; defaults to `20971520`                           |
+| `MEDIA_MAX_CHAT_AUDIO_DURATION_MS`        | Audio duration limit; defaults to `900000`                              |
+| `MEDIA_MAX_CHAT_VIDEO_BYTES`              | Video limit; at most/default `52428800`                                 |
+| `MEDIA_MAX_CHAT_VIDEO_DURATION_MS`        | Video duration; at most/default `300000`                                |
+| `MEDIA_MAX_CHAT_DOCUMENT_BYTES`           | Document limit; at most/default `26214400`                              |
+| `CORS_ORIGINS`                            | Comma-separated browser origins for production                          |
+| `TRUST_PROXY`                             | Express trust-proxy setting used for accurate throttling IPs            |
+| `ALLOW_DEMO_SEED`                         | Must equal `true` to run the manual classroom seed command              |
 
 ## Database
 
@@ -1158,6 +1225,11 @@ Chat audio messages require
 `20260906190000_add_audio_message_attachments`. It adds the `AUDIO` kind and
 allows the existing ordered attachment relation to claim one verified audio
 recording for a direct or group message.
+
+Advanced messaging and video/document attachments require
+`20260909100000_add_advanced_messages`. Apply it before starting the updated
+API. The PostgreSQL advanced-message suite tests same-chat reply foreign keys,
+concurrent edits/reactions, clear-boundary search and permanent media claims.
 
 Run the real-PostgreSQL integration suite against a dedicated database whose
 name ends in `_integration` (or a dedicated schema beginning with

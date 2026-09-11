@@ -3,6 +3,9 @@ import type {
   SignedImageUpload,
   StoredAudioResource,
   StoredImageResource,
+  SignedFileUpload,
+  StoredVideoResource,
+  StoredDocumentResource,
 } from './media.types';
 
 export interface SignImageUploadInput {
@@ -16,6 +19,8 @@ export type SignAudioUploadInput = SignImageUploadInput;
 export type MediaStorageErrorReason =
   | 'not-configured'
   | 'audio-not-configured'
+  | 'video-not-configured'
+  | 'document-not-configured'
   | 'unavailable'
   | 'invalid-response';
 
@@ -46,4 +51,20 @@ export abstract class MediaStorageProvider {
   abstract deleteImage(publicId: string): Promise<void>;
 
   abstract deleteAudio(publicId: string): Promise<void>;
+  abstract signVideoUpload(
+    input: SignImageUploadInput,
+  ): Promise<SignedFileUpload>;
+  abstract signDocumentUpload(
+    input: SignImageUploadInput,
+  ): Promise<SignedFileUpload>;
+  abstract findVideo(publicId: string): Promise<StoredVideoResource | null>;
+  abstract findDocument(
+    publicId: string,
+  ): Promise<StoredDocumentResource | null>;
+  abstract verifyDocumentContent(
+    resource: StoredDocumentResource,
+    mimeType: string,
+    expectedSha256: string | null,
+  ): Promise<boolean>;
+  abstract deleteDocument(publicId: string): Promise<void>;
 }

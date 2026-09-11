@@ -1,32 +1,23 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { MEDIA_UPLOAD_CONTENT_TYPES } from './create-media-upload.dto';
 
 export class MediaAssetResponseDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
 
-  @ApiProperty({ enum: ['profile_avatar', 'message_attachment'] })
-  purpose!: 'profile_avatar' | 'message_attachment';
+  @ApiProperty({
+    enum: ['profile_avatar', 'group_avatar', 'message_attachment'],
+  })
+  purpose!: 'profile_avatar' | 'group_avatar' | 'message_attachment';
 
   @ApiProperty({ enum: ['pending', 'ready', 'failed', 'deleted'] })
   status!: 'pending' | 'ready' | 'failed' | 'deleted';
 
-  @ApiProperty({ enum: ['image', 'audio'] })
-  type!: 'image' | 'audio';
+  @ApiProperty({ enum: ['image', 'audio', 'video', 'document'] })
+  type!: 'image' | 'audio' | 'video' | 'document';
 
   @ApiProperty({
-    enum: [
-      'image/jpeg',
-      'image/png',
-      'image/webp',
-      'audio/aac',
-      'audio/mp4',
-      'audio/m4a',
-      'audio/x-m4a',
-      'audio/mpeg',
-      'audio/ogg',
-      'audio/wav',
-      'audio/x-wav',
-    ],
+    enum: MEDIA_UPLOAD_CONTENT_TYPES,
   })
   contentType!: string;
 
@@ -80,8 +71,19 @@ export class CloudinaryUploadFieldsDto {
   @ApiProperty({ enum: ['false'] })
   overwrite!: 'false';
 
-  @ApiProperty({ enum: ['jpg,jpeg,png,webp', 'aac,m4a,mp3,ogg,wav'] })
-  allowed_formats!: 'jpg,jpeg,png,webp' | 'aac,m4a,mp3,ogg,wav';
+  @ApiProperty({
+    enum: [
+      'jpg,jpeg,png,webp',
+      'aac,m4a,mp3,ogg,wav',
+      'mp4,mov,webm',
+      'pdf,txt,docx,xlsx,pptx',
+    ],
+  })
+  allowed_formats!:
+    | 'jpg,jpeg,png,webp'
+    | 'aac,m4a,mp3,ogg,wav'
+    | 'mp4,mov,webm'
+    | 'pdf,txt,docx,xlsx,pptx';
 
   @ApiProperty({
     description: 'Server-selected signed Cloudinary upload preset.',

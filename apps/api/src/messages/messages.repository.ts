@@ -4,6 +4,9 @@ import type {
   MarkConversationReadResult,
   MessagePageCursor,
   SendMessageResult,
+  GetMessageResult,
+  MutateMessageResult,
+  MessageMutation,
 } from './messages.types';
 
 export interface SendMessageInput {
@@ -12,6 +15,7 @@ export interface SendMessageInput {
   clientMessageId: string;
   text: string | null;
   attachmentMediaIds: string[];
+  replyToMessageId?: string | null;
   now: Date;
 }
 
@@ -34,7 +38,22 @@ export abstract class MessagesRepository {
     userId: string,
     cursor: MessagePageCursor | null,
     take: number,
+    query?: string,
   ): Promise<ListMessagesResult>;
+
+  abstract getForMember(
+    conversationId: string,
+    userId: string,
+    messageId: string,
+  ): Promise<GetMessageResult>;
+
+  abstract mutate(input: {
+    conversationId: string;
+    actorId: string;
+    messageId: string;
+    mutation: MessageMutation;
+    now: Date;
+  }): Promise<MutateMessageResult>;
 
   abstract markRead(
     conversationId: string,

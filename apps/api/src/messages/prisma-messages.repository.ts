@@ -1,6 +1,19 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { enqueueMessagePush } from '../push/push-outbox';
 import { MediaPurpose, MediaStatus, MessageKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { messageFingerprint } from './message-mapping';
+import {
+  documentFormat,
+  videoFormat,
+  MAX_DOCUMENT_UPLOAD_BYTES,
+  MAX_VIDEO_UPLOAD_BYTES,
+  MAX_VIDEO_DIMENSION,
+  MAX_VIDEO_DURATION_MS,
+  VIDEO_FORMAT_BY_MIME,
+  DOCUMENT_FORMAT_BY_MIME,
+} from '../media/attachment-formats';
 import {
   MessagesRepository,
   type SendMessageInput,
@@ -13,6 +26,8 @@ import type {
   MessagePageCursor,
   MessageRecord,
   SendMessageResult,
+  GetMessageResult,
+  MutateMessageResult,
 } from './messages.types';
 
 const IMAGE_ATTACHMENT_FORMATS = ['jpg', 'jpeg', 'png', 'webp'] as const;
@@ -34,7 +49,7 @@ const AUDIO_ATTACHMENT_FORMAT_BY_MIME_TYPE: Readonly<Record<string, string>> = {
   'audio/x-wav': 'wav',
 };
 
-type AttachmentMessageKind = Extract<MessageKind, 'IMAGE' | 'AUDIO'>;
+type AttachmentMessageKind = Exclude<MessageKind, 'TEXT'>;
 
 interface AttachmentMetadata {
   resourceType: string;
@@ -46,6 +61,7 @@ interface AttachmentMetadata {
   height: number | null;
   durationMs: number | null;
   secureUrl: string | null;
+  originalFilename?: string | null;
 }
 
 const messageSelect = {
@@ -55,6 +71,15 @@ const messageSelect = {
   clientMessageId: true,
   kind: true,
   text: true,
+  sendFingerprint: true,
+  replyToMessageId: true,
+  editedAt: true,
+  deletedAt: true,
+  version: true,
+  reactions: {
+    select: { userId: true, emoji: true },
+    orderBy: { userId: 'asc' as const },
+  },
   createdAt: true,
   attachments: {
     orderBy: { position: 'asc' as const },
@@ -72,6 +97,7 @@ const messageSelect = {
           height: true,
           durationMs: true,
           secureUrl: true,
+          originalFilename: true,
         },
       },
     },
@@ -94,6 +120,7 @@ const attachmentAssetSelect = {
   height: true,
   durationMs: true,
   secureUrl: true,
+  originalFilename: true,
   completedAt: true,
   messageClaimedAt: true,
   deletedAt: true,
@@ -112,7 +139,10 @@ class AttachmentClaimUnavailableError extends Error {
 
 @Injectable()
 export class PrismaMessagesRepository extends MessagesRepository {
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly config?: ConfigService,
+  ) {
     super();
   }
 
@@ -122,6 +152,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
       conversationId: input.conversationId.toLowerCase(),
       senderId: input.senderId.toLowerCase(),
       clientMessageId: input.clientMessageId.toLowerCase(),
+      replyToMessageId: input.replyToMessageId?.toLowerCase() ?? null,
       attachmentMediaIds: input.attachmentMediaIds.map((mediaId) =>
         mediaId.toLowerCase(),
       ),
@@ -171,6 +202,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
     userId: string,
     cursor: MessagePageCursor | null,
     take: number,
+    query?: string,
   ): Promise<ListMessagesResult> {
     const normalizedConversationId = conversationId.toLowerCase();
     const normalizedUserId = userId.toLowerCase();
@@ -194,6 +226,15 @@ export class PrismaMessagesRepository extends MessagesRepository {
         const messages = await transaction.message.findMany({
           where: {
             conversationId: normalizedConversationId,
+            ...(query === undefined
+              ? {}
+              : {
+                  deletedAt: null,
+                  text: {
+                    contains: query.replace(/[\\%_]/g, '\\$&'),
+                    mode: 'insensitive' as const,
+                  },
+                }),
             AND: [
               ...(membership.clearedAt && membership.clearedThroughMessageId
                 ? [
@@ -238,6 +279,206 @@ export class PrismaMessagesRepository extends MessagesRepository {
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
+  }
+
+  async getForMember(
+    conversationId: string,
+    userId: string,
+    messageId: string,
+  ): Promise<GetMessageResult> {
+    return this.prisma.$transaction(
+      async (transaction) => {
+        const membership = await transaction.conversationMember.findUnique({
+          where: { conversationId_userId: { conversationId, userId } },
+          select: { clearedAt: true, clearedThroughMessageId: true },
+        });
+        if (!membership) return { status: 'message-not-found' } as const;
+        const message = await transaction.message.findFirst({
+          where: {
+            id: messageId,
+            conversationId,
+            ...this.visibleHistoryWhere(membership),
+          },
+          select: messageSelect,
+        });
+        return message
+          ? ({
+              status: 'found',
+              message: this.mapMessage(message, []),
+            } as const)
+          : ({ status: 'message-not-found' } as const);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
+
+  async mutate(
+    input: Parameters<MessagesRepository['mutate']>[0],
+  ): Promise<MutateMessageResult> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            const conversation = await transaction.conversation.findUnique({
+              where: { id: input.conversationId },
+              select: {
+                type: true,
+                members: {
+                  select: {
+                    userId: true,
+                    clearedAt: true,
+                    clearedThroughMessageId: true,
+                  },
+                },
+              },
+            });
+            const actor = conversation?.members.find(
+              (member) => member.userId === input.actorId,
+            );
+            if (!conversation || !actor)
+              return { status: 'message-not-found' } as const;
+            if (
+              conversation.type === 'DIRECT' &&
+              (await this.hasBlockBetweenDirectParticipants(
+                transaction,
+                input.actorId,
+                conversation.members,
+              ))
+            ) {
+              return { status: 'message-not-found' } as const;
+            }
+            const message = await transaction.message.findFirst({
+              where: {
+                id: input.messageId,
+                conversationId: input.conversationId,
+                ...this.visibleHistoryWhere(actor),
+              },
+              select: messageSelect,
+            });
+            if (!message) return { status: 'message-not-found' } as const;
+            const mutation = input.mutation;
+            if (
+              mutation.kind !== 'reaction' &&
+              message.senderId !== input.actorId
+            )
+              return { status: 'forbidden' } as const;
+            if (message.deletedAt && mutation.kind !== 'delete')
+              return { status: 'deleted' } as const;
+            const currentReaction =
+              message.reactions.find(
+                (reaction) => reaction.userId === input.actorId,
+              )?.emoji ?? null;
+            const changed =
+              mutation.kind === 'delete'
+                ? !message.deletedAt
+                : mutation.kind === 'edit'
+                  ? message.text !== mutation.text
+                  : currentReaction !== mutation.emoji;
+            if (mutation.kind === 'edit') {
+              if (message.kind === 'TEXT' && !mutation.text)
+                return { status: 'empty-text' } as const;
+              if (changed && message.version !== mutation.expectedVersion)
+                return { status: 'version-conflict' } as const;
+            }
+            let updated = message;
+            if (changed) {
+              if (mutation.kind === 'reaction') {
+                if (mutation.emoji === null) {
+                  await transaction.messageReaction.deleteMany({
+                    where: { messageId: message.id, userId: input.actorId },
+                  });
+                } else {
+                  await transaction.messageReaction.upsert({
+                    where: {
+                      messageId_userId: {
+                        messageId: message.id,
+                        userId: input.actorId,
+                      },
+                    },
+                    create: {
+                      messageId: message.id,
+                      userId: input.actorId,
+                      emoji: mutation.emoji,
+                      updatedAt: input.now,
+                    },
+                    update: { emoji: mutation.emoji, updatedAt: input.now },
+                  });
+                }
+              }
+              if (mutation.kind === 'delete')
+                await transaction.messageReaction.deleteMany({
+                  where: { messageId: message.id },
+                });
+              updated = await transaction.message.update({
+                where: { id: message.id },
+                data: {
+                  version: { increment: 1 },
+                  sendFingerprint:
+                    message.sendFingerprint ??
+                    messageFingerprint({
+                      conversationId: message.conversationId,
+                      text: message.text,
+                      attachmentMediaIds: message.attachments.map(
+                        (attachment) => attachment.mediaAssetId,
+                      ),
+                      replyToMessageId: message.replyToMessageId,
+                    }),
+                  ...(mutation.kind === 'edit'
+                    ? { text: mutation.text, editedAt: input.now }
+                    : {}),
+                  ...(mutation.kind === 'delete'
+                    ? { text: null, deletedAt: input.now }
+                    : {}),
+                },
+                select: messageSelect,
+              });
+            }
+            return {
+              status: 'updated',
+              changed,
+              event: {
+                kind:
+                  mutation.kind === 'delete'
+                    ? 'deleted'
+                    : mutation.kind === 'edit'
+                      ? 'updated'
+                      : 'reaction-updated',
+                actorId: input.actorId,
+                message: this.mapMessage(
+                  updated,
+                  this.uniqueUserIds(conversation.members),
+                ),
+                occurredAt: input.now,
+              },
+            } as const;
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (
+          attempt >= 3 ||
+          !['P2034', 'P2002'].includes(this.prismaErrorCode(error) ?? '')
+        )
+          throw error;
+      }
+    }
+  }
+
+  private visibleHistoryWhere(membership: {
+    clearedAt: Date | null;
+    clearedThroughMessageId: string | null;
+  }): Prisma.MessageWhereInput {
+    return membership.clearedAt && membership.clearedThroughMessageId
+      ? {
+          OR: [
+            { createdAt: { gt: membership.clearedAt } },
+            {
+              createdAt: membership.clearedAt,
+              id: { gt: membership.clearedThroughMessageId },
+            },
+          ],
+        }
+      : {};
   }
 
   async markRead(
@@ -294,6 +535,23 @@ export class PrismaMessagesRepository extends MessagesRepository {
             if (!updated.lastReadAt) {
               throw new Error('Updated read state is missing its timestamp.');
             }
+
+            // Cancel the existing jobs atomically; a later unread message must
+            // not make an older, already-read message eligible again.
+            await transaction.pushNotification.updateMany({
+              where: {
+                status: { in: ['PENDING', 'RECEIPT'] },
+                message: { conversationId: normalizedConversationId },
+                device: { userId: normalizedUserId },
+              },
+              data: {
+                status: 'SKIPPED',
+                errorCode: 'Read',
+                completedAt: now,
+                leaseToken: null,
+                leaseUntil: null,
+              },
+            });
 
             return {
               status: 'updated',
@@ -426,7 +684,13 @@ export class PrismaMessagesRepository extends MessagesRepository {
       where: { id: input.conversationId },
       select: {
         type: true,
-        members: { select: { userId: true, clearedAt: true } },
+        members: {
+          select: {
+            userId: true,
+            clearedAt: true,
+            clearedThroughMessageId: true,
+          },
+        },
       },
     });
     const members = conversation?.members ?? [];
@@ -459,6 +723,22 @@ export class PrismaMessagesRepository extends MessagesRepository {
       ))
     ) {
       return { status: 'conversation-not-found' };
+    }
+
+    if (input.replyToMessageId) {
+      const sender = members.find(
+        (member) => member.userId === input.senderId,
+      )!;
+      const reply = await transaction.message.findFirst({
+        where: {
+          id: input.replyToMessageId,
+          conversationId: input.conversationId,
+          deletedAt: null,
+          ...this.visibleHistoryWhere(sender),
+        },
+        select: { id: true },
+      });
+      if (!reply) return { status: 'reply-unavailable' };
     }
 
     const newestClearTimestamp = members.reduce<Date | null>(
@@ -509,6 +789,8 @@ export class PrismaMessagesRepository extends MessagesRepository {
         clientMessageId: input.clientMessageId,
         kind: messageKind,
         text: input.text,
+        sendFingerprint: messageFingerprint(input),
+        replyToMessageId: input.replyToMessageId ?? null,
         createdAt: messageCreatedAt,
         ...(input.attachmentMediaIds.length > 0
           ? {
@@ -540,6 +822,14 @@ export class PrismaMessagesRepository extends MessagesRepository {
       data: { unreadCount: { increment: 1 } },
     });
 
+    if (this.config?.get<boolean>('PUSH_NOTIFICATIONS_ENABLED', false)) {
+      await enqueueMessagePush(
+        transaction,
+        message,
+        input.now,
+        this.config.get<number>('PUSH_OFFLINE_DELAY_SECONDS', 15),
+      );
+    }
     return {
       status: 'created',
       message: this.mapMessage(message, participantIds),
@@ -582,15 +872,26 @@ export class PrismaMessagesRepository extends MessagesRepository {
     input: SendMessageInput,
     participantIds: string[],
   ): SendMessageResult {
+    if (message.sendFingerprint) {
+      return message.sendFingerprint === messageFingerprint(input)
+        ? {
+            status: 'existing',
+            message: this.mapMessage(message, participantIds),
+          }
+        : { status: 'idempotency-conflict' };
+    }
     const kindMatchesRequest =
       input.attachmentMediaIds.length === 0
         ? message.kind === MessageKind.TEXT
         : message.kind === MessageKind.IMAGE ||
-          message.kind === MessageKind.AUDIO;
+          message.kind === MessageKind.AUDIO ||
+          message.kind === MessageKind.VIDEO ||
+          message.kind === MessageKind.DOCUMENT;
     if (
       message.conversationId !== input.conversationId ||
       !kindMatchesRequest ||
       message.text !== input.text ||
+      (message.replyToMessageId ?? null) !== (input.replyToMessageId ?? null) ||
       !this.sameOrderedIds(
         message.attachments.map((attachment) => attachment.mediaAssetId),
         input.attachmentMediaIds,
@@ -612,7 +913,8 @@ export class PrismaMessagesRepository extends MessagesRepository {
       (message.kind === MessageKind.TEXT && message.attachments.length !== 0) ||
       (message.kind === MessageKind.IMAGE &&
         message.attachments.length === 0) ||
-      (message.kind === MessageKind.AUDIO && message.attachments.length !== 1)
+      (['AUDIO', 'VIDEO', 'DOCUMENT'].includes(message.kind) &&
+        message.attachments.length !== 1)
     ) {
       throw new Error('Persisted message attachment count is invalid.');
     }
@@ -623,11 +925,20 @@ export class PrismaMessagesRepository extends MessagesRepository {
       clientMessageId: message.clientMessageId,
       senderId: message.senderId,
       kind: message.kind,
-      text: message.text,
-      attachments: message.attachments.map((attachment) =>
-        this.mapAttachment(message.kind, attachment),
-      ),
+      text: message.deletedAt ? null : message.text,
+      attachments: message.deletedAt
+        ? []
+        : message.attachments.map((attachment) =>
+            this.mapAttachment(message.kind, attachment),
+          ),
       createdAt: message.createdAt,
+      replyToMessageId: message.deletedAt
+        ? null
+        : (message.replyToMessageId ?? null),
+      editedAt: message.editedAt ?? null,
+      deletedAt: message.deletedAt ?? null,
+      version: message.version ?? 0,
+      reactions: message.deletedAt ? [] : (message.reactions ?? []),
       participantIds,
     };
   }
@@ -675,19 +986,42 @@ export class PrismaMessagesRepository extends MessagesRepository {
             width: { gt: 0 },
             height: { gt: 0 },
           }
-        : {
-            resourceType: 'video',
-            byteSize: { gt: 0, lte: MAX_AUDIO_ATTACHMENT_BYTES },
-            width: null,
-            height: null,
-            durationMs: {
-              gt: 0,
-              lte: MAX_AUDIO_ATTACHMENT_DURATION_MS,
-            },
-            OR: Object.entries(AUDIO_ATTACHMENT_FORMAT_BY_MIME_TYPE).map(
-              ([mimeType, format]) => ({ mimeType, format }),
-            ),
-          }),
+        : kind === MessageKind.VIDEO
+          ? {
+              resourceType: 'video',
+              byteSize: { gt: 0, lte: MAX_VIDEO_UPLOAD_BYTES },
+              width: { gt: 0, lte: MAX_VIDEO_DIMENSION },
+              height: { gt: 0, lte: MAX_VIDEO_DIMENSION },
+              durationMs: { gt: 0, lte: MAX_VIDEO_DURATION_MS },
+              OR: Object.entries(VIDEO_FORMAT_BY_MIME).map(
+                ([mimeType, format]) => ({ mimeType, format }),
+              ),
+            }
+          : kind === MessageKind.DOCUMENT
+            ? {
+                resourceType: 'raw',
+                byteSize: { gt: 0, lte: MAX_DOCUMENT_UPLOAD_BYTES },
+                width: null,
+                height: null,
+                durationMs: null,
+                originalFilename: { not: null },
+                OR: Object.entries(DOCUMENT_FORMAT_BY_MIME).map(
+                  ([mimeType, format]) => ({ mimeType, format }),
+                ),
+              }
+            : {
+                resourceType: 'video',
+                byteSize: { gt: 0, lte: MAX_AUDIO_ATTACHMENT_BYTES },
+                width: null,
+                height: null,
+                durationMs: {
+                  gt: 0,
+                  lte: MAX_AUDIO_ATTACHMENT_DURATION_MS,
+                },
+                OR: Object.entries(AUDIO_ATTACHMENT_FORMAT_BY_MIME_TYPE).map(
+                  ([mimeType, format]) => ({ mimeType, format }),
+                ),
+              }),
     };
   }
 
@@ -737,6 +1071,15 @@ export class PrismaMessagesRepository extends MessagesRepository {
     ) {
       return MessageKind.AUDIO;
     }
+    if (
+      verifiedAssets.length === 1 &&
+      this.isCommonAvailableAsset(verifiedAssets[0]!)
+    ) {
+      if (this.isValidVideoMetadata(verifiedAssets[0]!))
+        return MessageKind.VIDEO;
+      if (this.isValidDocumentMetadata(verifiedAssets[0]!))
+        return MessageKind.DOCUMENT;
+    }
     return null;
   }
 
@@ -764,6 +1107,31 @@ export class PrismaMessagesRepository extends MessagesRepository {
         sizeBytes: media.byteSize,
         durationMs: media.durationMs,
         url: media.secureUrl,
+      };
+    }
+    if (kind === MessageKind.VIDEO && this.isValidVideoMetadata(media)) {
+      return {
+        mediaId: attachment.mediaAssetId,
+        type: 'video',
+        contentType: media.mimeType,
+        sizeBytes: media.byteSize,
+        width: media.width,
+        height: media.height,
+        durationMs: media.durationMs,
+        url: media.secureUrl,
+      };
+    }
+    if (kind === MessageKind.DOCUMENT && this.isValidDocumentMetadata(media)) {
+      return {
+        mediaId: attachment.mediaAssetId,
+        type: 'document',
+        contentType: media.mimeType,
+        sizeBytes: media.byteSize,
+        filename: media.originalFilename,
+        url: media.secureUrl.replace(
+          '/raw/upload/',
+          '/raw/upload/fl_attachment/',
+        ),
       };
     }
     throw new Error('Persisted message attachment metadata is invalid.');
@@ -837,6 +1205,59 @@ export class PrismaMessagesRepository extends MessagesRepository {
       media.durationMs !== null &&
       media.durationMs > 0 &&
       media.durationMs <= MAX_AUDIO_ATTACHMENT_DURATION_MS &&
+      this.isHttpsUrl(media.secureUrl)
+    );
+  }
+
+  private isValidVideoMetadata(
+    media: AttachmentMetadata,
+  ): media is AttachmentMetadata & {
+    width: number;
+    height: number;
+    durationMs: number;
+    secureUrl: string;
+  } {
+    return (
+      media.resourceType === 'video' &&
+      media.deliveryType === 'upload' &&
+      Boolean(media.format) &&
+      videoFormat(media.mimeType) === media.format &&
+      media.byteSize > 0 &&
+      media.byteSize <= MAX_VIDEO_UPLOAD_BYTES &&
+      Number.isInteger(media.width) &&
+      media.width !== null &&
+      media.width > 0 &&
+      media.width <= MAX_VIDEO_DIMENSION &&
+      Number.isInteger(media.height) &&
+      media.height !== null &&
+      media.height > 0 &&
+      media.height <= MAX_VIDEO_DIMENSION &&
+      Number.isInteger(media.durationMs) &&
+      media.durationMs !== null &&
+      media.durationMs > 0 &&
+      media.durationMs <= MAX_VIDEO_DURATION_MS &&
+      this.isHttpsUrl(media.secureUrl)
+    );
+  }
+
+  private isValidDocumentMetadata(
+    media: AttachmentMetadata,
+  ): media is AttachmentMetadata & {
+    originalFilename: string;
+    secureUrl: string;
+  } {
+    return (
+      media.resourceType === 'raw' &&
+      media.deliveryType === 'upload' &&
+      Boolean(media.format) &&
+      documentFormat(media.mimeType) === media.format &&
+      media.byteSize > 0 &&
+      media.byteSize <= MAX_DOCUMENT_UPLOAD_BYTES &&
+      media.width === null &&
+      media.height === null &&
+      media.durationMs === null &&
+      typeof media.originalFilename === 'string' &&
+      media.originalFilename.length > 0 &&
       this.isHttpsUrl(media.secureUrl)
     );
   }

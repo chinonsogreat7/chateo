@@ -1,4 +1,6 @@
 process.env.NODE_ENV = 'test';
+process.env.PUSH_NOTIFICATIONS_ENABLED = 'false';
+process.env.MEDIA_UNUSED_CLEANUP_ENABLED = 'false';
 process.env.PORT = '3001';
 process.env.DATABASE_URL =
   'postgresql://chateo:chateo@localhost:5432/chateo_test?schema=public';

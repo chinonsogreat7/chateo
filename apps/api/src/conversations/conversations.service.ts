@@ -122,7 +122,7 @@ export class ConversationsService {
     const result = await this.repository.createGroup({
       creatorId: normalizedCreatorId,
       name: input.name.trim(),
-      avatarUrl: input.avatarUrl ?? null,
+      avatarMediaId: input.avatarMediaId?.toLowerCase() ?? null,
       participantIds,
       now: this.clock.now(),
     });
@@ -132,6 +132,10 @@ export class ConversationsService {
         'USER_NOT_FOUND',
         'One or more selected users do not exist.',
       );
+    }
+
+    if (result.status === 'avatar-unavailable') {
+      throw this.groupAvatarUnavailableException();
     }
 
     this.publishCreatedBestEffort({
@@ -151,7 +155,7 @@ export class ConversationsService {
     conversationId: string,
     input: UpdateGroupConversationDto,
   ): Promise<GroupConversationResponseDto> {
-    if (input.name === undefined && input.avatarUrl === undefined) {
+    if (input.name === undefined && input.avatarMediaId === undefined) {
       throw new ApiException(
         HttpStatus.BAD_REQUEST,
         'CONVERSATION_GROUP_UPDATE_EMPTY',
@@ -165,7 +169,9 @@ export class ConversationsService {
       conversationId: conversationId.toLowerCase(),
       actorId: normalizedActorId,
       ...(input.name === undefined ? {} : { name: input.name.trim() }),
-      ...(input.avatarUrl === undefined ? {} : { avatarUrl: input.avatarUrl }),
+      ...(input.avatarMediaId === undefined
+        ? {}
+        : { avatarMediaId: input.avatarMediaId?.toLowerCase() ?? null }),
       now,
     });
     if (result.status === 'conversation-not-found') {
@@ -173,6 +179,9 @@ export class ConversationsService {
     }
     if (result.status === 'forbidden') {
       throw this.groupForbiddenException();
+    }
+    if (result.status === 'avatar-unavailable') {
+      throw this.groupAvatarUnavailableException();
     }
     if (result.status !== 'updated') {
       throw new Error(`Unexpected group update status: ${result.status}`);
@@ -190,6 +199,31 @@ export class ConversationsService {
       });
     }
     return this.toResponse(result.conversation);
+  }
+
+  setGroupAvatar(
+    actorId: string,
+    conversationId: string,
+    mediaId: string,
+  ): Promise<GroupConversationResponseDto> {
+    return this.updateGroup(actorId, conversationId, {
+      avatarMediaId: mediaId,
+    });
+  }
+
+  clearGroupAvatar(
+    actorId: string,
+    conversationId: string,
+  ): Promise<GroupConversationResponseDto> {
+    return this.updateGroup(actorId, conversationId, { avatarMediaId: null });
+  }
+
+  private groupAvatarUnavailableException(): ApiException {
+    return new ApiException(
+      HttpStatus.CONFLICT,
+      'GROUP_AVATAR_UNAVAILABLE',
+      'Select a verified, ready group photo owned by your account.',
+    );
   }
 
   async addGroupMembers(
@@ -639,7 +673,9 @@ export class ConversationsService {
             kind: latestMessage.kind.toLowerCase() as
               | 'text'
               | 'image'
-              | 'audio',
+              | 'audio'
+              | 'video'
+              | 'document',
             preview: this.messagePreview(latestMessage),
             createdAt: latestMessage.createdAt.toISOString(),
           }
@@ -674,13 +710,18 @@ export class ConversationsService {
   }
 
   private messagePreview(message: ConversationLatestMessageRecord): string {
+    if (message.deletedAt) return 'Message deleted';
     const text =
       message.text ||
       (message.kind === 'IMAGE'
         ? 'Photo'
         : message.kind === 'AUDIO'
           ? 'Voice message'
-          : '');
+          : message.kind === 'VIDEO'
+            ? 'Video'
+            : message.kind === 'DOCUMENT'
+              ? 'Document'
+              : '');
     const codePoints = Array.from(text);
     if (codePoints.length <= MAX_MESSAGE_PREVIEW_CODE_POINTS) return text;
     return `${codePoints

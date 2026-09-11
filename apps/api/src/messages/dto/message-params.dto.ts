@@ -6,3 +6,9 @@ export class MessageConversationParamsDto {
   @IsUUID()
   conversationId!: string;
 }
+
+export class MessageParamsDto extends MessageConversationParamsDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  messageId!: string;
+}

@@ -15,6 +15,31 @@ const twilioConfig = {
 };
 
 describe('validateEnvironment', () => {
+  it('keeps unused cleanup and push opt-in and validates their operational limits', () => {
+    const input = { ...sharedConfig, NODE_ENV: 'test' };
+    expect(validateEnvironment(input)).toMatchObject({
+      PUSH_NOTIFICATIONS_ENABLED: false,
+      MEDIA_UNUSED_CLEANUP_ENABLED: false,
+      MEDIA_UNUSED_RETENTION_HOURS: 24,
+      PUSH_OFFLINE_DELAY_SECONDS: 15,
+    });
+    expect(() =>
+      validateEnvironment({ ...input, PUSH_NOTIFICATIONS_ENABLED: true }),
+    ).toThrow('EXPO_ACCESS_TOKEN');
+    expect(() =>
+      validateEnvironment({ ...input, MEDIA_UNUSED_RETENTION_HOURS: 23 }),
+    ).toThrow('MEDIA_UNUSED_RETENTION_HOURS');
+    expect(() =>
+      validateEnvironment({ ...input, PUSH_OFFLINE_DELAY_SECONDS: 0 }),
+    ).toThrow('PUSH_OFFLINE_DELAY_SECONDS');
+    expect(
+      validateEnvironment({
+        ...input,
+        PUSH_NOTIFICATIONS_ENABLED: true,
+        EXPO_ACCESS_TOKEN: 'server-only-test-token',
+      }),
+    ).toMatchObject({ PUSH_NOTIFICATIONS_ENABLED: true });
+  });
   it.each(['development', 'test'] as const)(
     'accepts the console provider in %s',
     (nodeEnvironment) => {
@@ -112,6 +137,9 @@ describe('validateEnvironment', () => {
       MEDIA_MAX_PROFILE_AVATAR_PIXELS: 4194304,
       MEDIA_MAX_CHAT_AUDIO_BYTES: 20971520,
       MEDIA_MAX_CHAT_AUDIO_DURATION_MS: 900000,
+      MEDIA_MAX_CHAT_VIDEO_BYTES: 52428800,
+      MEDIA_MAX_CHAT_VIDEO_DURATION_MS: 300000,
+      MEDIA_MAX_CHAT_DOCUMENT_BYTES: 26214400,
     });
   });
 
@@ -132,6 +160,18 @@ describe('validateEnvironment', () => {
       CLOUDINARY_CLOUD_NAME: 'chateo-demo',
       CLOUDINARY_UPLOAD_FOLDER: 'chateo/test',
     });
+  });
+
+  it.each([
+    ['MEDIA_MAX_CHAT_VIDEO_BYTES', 52428801],
+    ['MEDIA_MAX_CHAT_VIDEO_DURATION_MS', 300001],
+    ['MEDIA_MAX_CHAT_DOCUMENT_BYTES', 26214401],
+    ['CLOUDINARY_CHAT_VIDEO_UPLOAD_PRESET', '../unsafe'],
+    ['CLOUDINARY_CHAT_DOCUMENT_UPLOAD_PRESET', 'unsafe/preset'],
+  ])('rejects invalid %s limits or preset names', (key, value) => {
+    expect(() =>
+      validateEnvironment({ ...sharedConfig, NODE_ENV: 'test', [key]: value }),
+    ).toThrow(key);
   });
 
   it('accepts image-only uploads without an audio preset', () => {

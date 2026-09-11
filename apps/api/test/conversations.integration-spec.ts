@@ -202,7 +202,7 @@ describe('Prisma direct-conversation concurrency', () => {
     const created = await repository.createGroup({
       creatorId: USER_ONE_ID,
       name: 'Ownership Integration Group',
-      avatarUrl: null,
+      avatarMediaId: null,
       participantIds: [USER_TWO_ID, USER_THREE_ID],
       now: NOW,
     });
@@ -390,7 +390,7 @@ describe('Prisma direct-conversation concurrency', () => {
     const created = await repository.createGroup({
       creatorId: USER_ONE_ID,
       name: 'Capacity Integration Group',
-      avatarUrl: null,
+      avatarMediaId: null,
       participantIds: initialParticipantIds,
       now: NOW,
     });
@@ -432,7 +432,7 @@ describe('Prisma direct-conversation concurrency', () => {
     const created = await repository.createGroup({
       creatorId: USER_ONE_ID,
       name: 'Timed Settings Integration Group',
-      avatarUrl: null,
+      avatarMediaId: null,
       participantIds: [USER_TWO_ID],
       now: NOW,
     });
@@ -535,7 +535,7 @@ describe('Prisma direct-conversation concurrency', () => {
       const created = await repository.createGroup({
         creatorId: USER_ONE_ID,
         name,
-        avatarUrl: null,
+        avatarMediaId: null,
         participantIds: [USER_TWO_ID],
         now: new Date(NOW.getTime() + (index + 1) * 1_000),
       });
@@ -610,7 +610,7 @@ describe('Prisma direct-conversation concurrency', () => {
     const created = await repository.createGroup({
       creatorId: USER_ONE_ID,
       name: 'Integration Study Group',
-      avatarUrl: null,
+      avatarMediaId: null,
       participantIds: [USER_TWO_ID, USER_THREE_ID],
       now: NOW,
     });

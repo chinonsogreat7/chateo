@@ -40,6 +40,8 @@ enum MessageKind {
   TEXT
   IMAGE
   AUDIO
+  VIDEO
+  DOCUMENT
 }
 
 enum MediaPurpose {
@@ -53,6 +55,14 @@ enum MediaStatus {
   READY
   FAILED
   DELETED
+}
+
+enum PushStatus {
+  PENDING
+  RECEIPT
+  SENT
+  SKIPPED
+  FAILED
 }
 
 model User {
@@ -73,8 +83,10 @@ model User {
   directConversationsAsUserTwo Conversation[]       @relation("DirectUserTwo")
   groupsCreated                Conversation[]       @relation("GroupCreator")
   messagesSent                 Message[]
+  messageReactions             MessageReaction[]
   blocksInitiated              UserBlock[]          @relation("Blocker")
   blocksReceived               UserBlock[]          @relation("Blocked")
+  pushDevices                  PushDevice[]
 
   @@map("users")
 }
@@ -103,17 +115,20 @@ model MediaAsset {
   expiresAt          DateTime            @map("expires_at") @db.Timestamptz(3)
   completedAt        DateTime?           @map("completed_at") @db.Timestamptz(3)
   messageClaimedAt   DateTime?           @map("message_claimed_at") @db.Timestamptz(3)
+  unusedSince        DateTime?           @map("unused_since") @db.Timestamptz(3)
   failedAt           DateTime?           @map("failed_at") @db.Timestamptz(3)
   deletedAt          DateTime?           @map("deleted_at") @db.Timestamptz(3)
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
   owner              User                @relation("MediaOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   profileAvatarFor   User?               @relation("UserAvatar")
+  groupAvatars       Conversation[]      @relation("GroupAvatar")
   messageAttachments MessageAttachment[]
 
   @@unique([ownerId, clientUploadId])
   @@index([ownerId, createdAt])
   @@index([status, expiresAt])
+  @@index([status, unusedSince, id])
   @@map("media_assets")
 }
 
@@ -124,6 +139,7 @@ model Conversation {
   directUserTwoId String?              @map("direct_user_two_id") @db.Uuid
   name            String?              @db.VarChar(100)
   avatarUrl       String?              @map("avatar_url") @db.Text
+  avatarMediaId   String?              @map("avatar_media_id") @db.Uuid
   createdById     String?              @map("created_by_id") @db.Uuid
   lastActivityAt  DateTime             @default(now()) @map("last_activity_at") @db.Timestamptz(3)
   createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -131,6 +147,7 @@ model Conversation {
   directUserOne   User?                @relation("DirectUserOne", fields: [directUserOneId], references: [id], onDelete: Cascade)
   directUserTwo   User?                @relation("DirectUserTwo", fields: [directUserTwoId], references: [id], onDelete: Cascade)
   createdBy       User?                @relation("GroupCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  avatarMedia     MediaAsset?          @relation("GroupAvatar", fields: [avatarMediaId], references: [id], onDelete: Restrict)
   members         ConversationMember[]
   messages        Message[]
 
@@ -138,6 +155,7 @@ model Conversation {
   @@index([directUserOneId])
   @@index([directUserTwoId])
   @@index([createdById])
+  @@index([avatarMediaId])
   @@index([lastActivityAt, id])
   @@map("conversations")
 }
@@ -182,22 +200,86 @@ model UserBlock {
 }
 
 model Message {
-  id              String              @id @default(uuid()) @db.Uuid
-  conversationId  String              @map("conversation_id") @db.Uuid
-  senderId        String              @map("sender_id") @db.Uuid
-  clientMessageId String              @map("client_message_id") @db.Uuid
-  kind            MessageKind         @default(TEXT)
-  text            String?             @db.VarChar(4000)
-  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
-  conversation    Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender          User                @relation(fields: [senderId], references: [id], onDelete: Cascade)
-  receipts        MessageReceipt[]
-  attachments     MessageAttachment[]
+  id                String              @id @default(uuid()) @db.Uuid
+  conversationId    String              @map("conversation_id") @db.Uuid
+  senderId          String              @map("sender_id") @db.Uuid
+  clientMessageId   String              @map("client_message_id") @db.Uuid
+  kind              MessageKind         @default(TEXT)
+  text              String?             @db.VarChar(4000)
+  sendFingerprint   String?             @map("send_fingerprint") @db.VarChar(64)
+  replyToMessageId  String?             @map("reply_to_message_id") @db.Uuid
+  editedAt          DateTime?           @map("edited_at") @db.Timestamptz(3)
+  deletedAt         DateTime?           @map("deleted_at") @db.Timestamptz(3)
+  version           Int                 @default(0)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  conversation      Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender            User                @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  receipts          MessageReceipt[]
+  attachments       MessageAttachment[]
+  replyTo           Message?            @relation("MessageReplies", fields: [replyToMessageId, conversationId], references: [id, conversationId], onDelete: NoAction, onUpdate: NoAction)
+  replies           Message[]           @relation("MessageReplies")
+  reactions         MessageReaction[]
+  pushNotifications PushNotification[]
 
   @@unique([senderId, clientMessageId])
   @@unique([id, conversationId])
   @@index([conversationId, createdAt, id])
+  @@index([replyToMessageId, conversationId])
   @@map("messages")
+}
+
+model MessageReaction {
+  messageId String   @map("message_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  emoji     String   @db.VarChar(32)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@index([userId])
+  @@map("message_reactions")
+}
+
+model PushDevice {
+  id            String             @id @db.Uuid
+  userId        String             @map("user_id") @db.Uuid
+  familyId      String             @map("family_id") @db.Uuid
+  platform      DevicePlatform
+  token         String?            @db.VarChar(255)
+  tokenHash     String?            @unique @map("token_hash") @db.Char(64)
+  version       Int                @default(0)
+  registeredAt  DateTime           @map("registered_at") @db.Timestamptz(3)
+  disabledAt    DateTime?          @map("disabled_at") @db.Timestamptz(3)
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notifications PushNotification[]
+
+  @@index([userId, disabledAt])
+  @@map("push_devices")
+}
+
+model PushNotification {
+  id            String     @id @default(uuid()) @db.Uuid
+  messageId     String     @map("message_id") @db.Uuid
+  deviceId      String     @map("device_id") @db.Uuid
+  deviceVersion Int        @map("device_version")
+  status        PushStatus @default(PENDING)
+  attempts      Int        @default(0)
+  nextAttemptAt DateTime   @map("next_attempt_at") @db.Timestamptz(3)
+  leaseToken    String?    @map("lease_token") @db.Uuid
+  leaseUntil    DateTime?  @map("lease_until") @db.Timestamptz(3)
+  ticketId      String?    @map("ticket_id") @db.VarChar(255)
+  ticketAt      DateTime?  @map("ticket_at") @db.Timestamptz(3)
+  errorCode     String?    @map("error_code") @db.VarChar(64)
+  completedAt   DateTime?  @map("completed_at") @db.Timestamptz(3)
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  message       Message    @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  device        PushDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, deviceId])
+  @@index([status, nextAttemptAt, id])
+  @@index([deviceId])
+  @@map("push_notifications")
 }
 
 model MessageAttachment {

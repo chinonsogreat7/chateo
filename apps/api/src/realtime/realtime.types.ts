@@ -2,6 +2,9 @@ import type { Socket } from 'socket.io';
 
 export const CHAT_NAMESPACE = '/chat';
 export const MESSAGE_CREATED_EVENT = 'message.created';
+export const MESSAGE_UPDATED_EVENT = 'message.updated';
+export const MESSAGE_DELETED_EVENT = 'message.deleted';
+export const MESSAGE_REACTION_UPDATED_EVENT = 'message.reaction.updated';
 export const CONVERSATION_HISTORY_CLEARED_EVENT =
   'conversation.history.cleared';
 export const CONVERSATION_CREATED_EVENT = 'conversation.created';
@@ -137,6 +140,9 @@ export interface ChatServerToClientEvents {
   ): void;
   [CONVERSATION_DELETED_EVENT](payload: ConversationDeletedEventPayload): void;
   [MESSAGE_CREATED_EVENT](payload: MessageCreatedEventPayload): void;
+  [MESSAGE_UPDATED_EVENT](payload: MessageChangedEventPayload): void;
+  [MESSAGE_DELETED_EVENT](payload: MessageChangedEventPayload): void;
+  [MESSAGE_REACTION_UPDATED_EVENT](payload: MessageChangedEventPayload): void;
   [CONVERSATION_HISTORY_CLEARED_EVENT](
     payload: ConversationHistoryClearedEventPayload,
   ): void;
@@ -217,10 +223,21 @@ export interface MessageCreatedEventPayload {
   conversationId: string;
   clientMessageId: string;
   senderId: string;
-  kind: 'text' | 'image' | 'audio';
+  kind: 'text' | 'image' | 'audio' | 'video' | 'document';
   text: string | null;
   attachments: MessageCreatedAttachmentPayload[];
   createdAt: string;
+  replyToMessageId?: string | null;
+  editedAt?: string | null;
+  deletedAt?: string | null;
+  version?: number;
+  reactions?: Array<{ userId: string; emoji: string }>;
+}
+
+export interface MessageChangedEventPayload {
+  message: MessageCreatedEventPayload;
+  actorId: string;
+  occurredAt: string;
 }
 
 interface MessageCreatedAttachmentPayloadBase {
@@ -245,7 +262,17 @@ export interface MessageCreatedAudioAttachmentPayload
 
 export type MessageCreatedAttachmentPayload =
   | MessageCreatedImageAttachmentPayload
-  | MessageCreatedAudioAttachmentPayload;
+  | MessageCreatedAudioAttachmentPayload
+  | (MessageCreatedAttachmentPayloadBase & {
+      type: 'video';
+      width: number;
+      height: number;
+      durationMs: number;
+    })
+  | (MessageCreatedAttachmentPayloadBase & {
+      type: 'document';
+      filename: string;
+    });
 
 export interface ConversationHistoryClearedEventPayload {
   conversationId: string;

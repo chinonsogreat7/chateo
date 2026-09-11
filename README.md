@@ -3,7 +3,7 @@
 ChatMe is a WhatsApp-style mobile chat project. This repository is being built as a monorepo so the backend, future mobile client, and shared contracts can evolve together.
 
 The current backend supports the student mobile team from sign-in through live
-direct and group text, image, and audio chat. It is guided by the
+direct and group text, image, audio, video, and document chat. It is guided by the
 [ChatMe Figma design](https://www.figma.com/design/TMSAXEwYtU57KMvtaY1ckh/ChatMe-App?node-id=0-1)
 and the project rubric in this workspace.
 
@@ -19,8 +19,10 @@ and the project rubric in this workspace.
 - Per-user archive, timed mute, pin, favorite, and non-destructive clear-history controls, plus idempotent user blocking
 - Dedicated archive, favorite-list, pin/unpin, and paginated archived-chat APIs for both direct chats and groups
 - Complete group lifecycle APIs for metadata, members, admins, ownership, leaving, and deletion
-- Persistent, idempotent text, image, and audio message sending with cursor-paginated history
-- Idempotent signed direct uploads for profile avatars, chat images, and audio recordings
+- Verified group photos with owner/admin-only assignment and removal, plus realtime metadata updates
+- Persistent, idempotent text, image, audio, video, and document messages with cursor-paginated history
+- Replies, reactions, sender-only editing/deletion, message search, and versioned socket updates
+- Idempotent signed uploads for avatars and all supported attachment kinds, including bounded document-content verification
 - Per-user unread counts, durable delivery/read receipts, and latest-message chat-list previews
 - Authenticated Socket.IO conversation, message, receipt, presence, and typing events on the `/chat` namespace
 - Short-lived JWT access tokens
@@ -31,9 +33,11 @@ and the project rubric in this workspace.
 - Development console OTP delivery and production Twilio SMS delivery
 
 Mute windows are persisted per user with exact 8-hour, 24-hour, 7-day, or
-indefinite durations. Push notification delivery and mute-based notification
-filtering are not implemented yet, so muting does not suppress messages or
-Socket.IO events.
+indefinite durations. Optional Expo offline push notifications respect these
+windows; muting never suppresses persisted messages or Socket.IO events.
+Unused completed uploads and replaced avatars can be cleaned up after a
+configurable grace period. Both workers are opt-in; see
+[push and cleanup setup](apps/api/BACKGROUND_WORKERS.md).
 
 Archive changes are idempotent and affect only the signed-in member. Dedicated
 archive routes coexist with the legacy conversation-list `archived=true` query
@@ -84,11 +88,18 @@ The favorites-list migration adds the member lookup index used by the dedicated
 favorites feed.
 The media-assets migration adds the server-owned Cloudinary upload lifecycle
 and the verified profile-avatar relationship; binary files remain outside
-PostgreSQL and the API process.
+PostgreSQL. Documents are downloaded transiently by the API for bounded validation.
 The message-image migration adds ordered, single-use media references to
 messages; the same message endpoint works for direct chats and groups.
 The audio-message migration adds the `AUDIO` message kind while reusing those
 single-use media references for one verified recording per message.
+The group-avatar migration adds an indexed media reference to conversations.
+Existing avatar URLs remain readable, but new group-photo assignments require
+an owned, ready `group_avatar` media ID. Deploy this migration before running
+the updated API (`npm run prisma:deploy --workspace @chateo/api`).
+The advanced-message migration adds replies, revisions, tombstones, reactions,
+send fingerprints, and video/document message kinds. Deployment and client
+contracts are covered in [the advanced messaging guide](apps/api/MESSAGING.md).
 
 Replace the two placeholder secrets in `apps/api/.env`. Generate independent values with:
 
@@ -99,9 +110,11 @@ openssl rand -base64 48
 Media uploads are disabled by default. To enable Cloudinary, set
 `MEDIA_UPLOADS_ENABLED=true` and configure the cloud name, API key, API secret,
 and signed image upload preset documented in `apps/api/.env.example`. That
-image preset is shared by profile avatars and chat images and must enforce a
+image preset is shared by profile avatars, group photos, and chat images and must enforce a
 5 MiB maximum. Before authorizing audio recordings, also configure the separate
 signed audio preset with the documented formats and 20 MiB maximum.
+Video and documents each need a separate signed preset (50 MiB and 25 MiB,
+respectively); see [setup and validation limits](apps/api/MESSAGING.md#deployment).
 
 Start the API:
 

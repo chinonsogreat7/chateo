@@ -14,6 +14,7 @@ import { MessagesModule } from './messages/messages.module';
 import { MediaModule } from './media/media.module';
 import { ReceiptsModule } from './receipts/receipts.module';
 import { UsersModule } from './users/users.module';
+import { PushModule } from './push/push.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { UsersModule } from './users/users.module';
     MediaModule,
     ReceiptsModule,
     HealthModule,
+    PushModule,
   ],
   providers: [
     {

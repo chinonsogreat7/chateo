@@ -12,7 +12,12 @@ import type {
   SignedImageUpload,
   StoredAudioResource,
   StoredImageResource,
+  StoredVideoResource,
+  StoredDocumentResource,
+  SignedFileUpload,
 } from './media.types';
+import { MAX_DOCUMENT_UPLOAD_BYTES } from './attachment-formats';
+import { validDocumentContent } from './document-content';
 
 interface CloudinaryBaseConfiguration {
   cloudName: string;
@@ -39,6 +44,7 @@ interface CloudinaryResourcePayload {
   width?: unknown;
   height?: unknown;
   duration?: unknown;
+  video?: unknown;
   secure_url?: unknown;
   etag?: unknown;
   context?: unknown;
@@ -48,6 +54,7 @@ const CLOUDINARY_REQUEST_TIMEOUT_MS = 10_000;
 
 @Injectable()
 export class CloudinaryMediaProvider extends MediaStorageProvider {
+  private documentVerifications = 0;
   constructor(private readonly config: ConfigService) {
     super();
   }
@@ -123,6 +130,208 @@ export class CloudinaryMediaProvider extends MediaStorageProvider {
     };
   }
 
+  async signVideoUpload(
+    input: SignImageUploadInput,
+  ): Promise<SignedFileUpload> {
+    return this.signFileUpload(input, 'video');
+  }
+
+  async signDocumentUpload(
+    input: SignImageUploadInput,
+  ): Promise<SignedFileUpload> {
+    return this.signFileUpload(input, 'document');
+  }
+
+  private signFileUpload(
+    input: SignImageUploadInput,
+    kind: 'video' | 'document',
+  ): SignedFileUpload {
+    const config = this.baseConfiguration();
+    const preset = this.config
+      .get<string>(
+        kind === 'video'
+          ? 'CLOUDINARY_CHAT_VIDEO_UPLOAD_PRESET'
+          : 'CLOUDINARY_CHAT_DOCUMENT_UPLOAD_PRESET',
+        '',
+      )
+      .trim();
+    if (!preset)
+      throw new MediaStorageError(
+        kind === 'video' ? 'video-not-configured' : 'document-not-configured',
+        `${kind} uploads are not configured.`,
+      );
+    const parameters = {
+      allowed_formats:
+        kind === 'video'
+          ? ('mp4,mov,webm' as const)
+          : ('pdf,txt,docx,xlsx,pptx' as const),
+      context: this.serializeContext(input.context),
+      overwrite: 'false' as const,
+      public_id: input.publicId,
+      timestamp: Math.floor(input.timestamp.getTime() / 1000).toString(),
+      type: 'upload' as const,
+      upload_preset: preset,
+    };
+    return {
+      url: `https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudName)}/${kind === 'video' ? 'video' : 'raw'}/upload`,
+      method: 'POST',
+      fields: {
+        ...parameters,
+        api_key: config.apiKey,
+        signature: this.sign(parameters, config.apiSecret),
+      },
+    };
+  }
+
+  async findVideo(publicId: string): Promise<StoredVideoResource | null> {
+    const payload = await this.findResource(publicId, 'video');
+    if (payload === null) return null;
+    const audio = this.parseAudioResource(payload);
+    const resource = payload as CloudinaryResourcePayload;
+    return {
+      ...audio,
+      width: typeof resource.width === 'number' ? resource.width : 0,
+      height: typeof resource.height === 'number' ? resource.height : 0,
+      videoCodec:
+        this.isObject(resource.video) &&
+        typeof resource.video.codec === 'string'
+          ? resource.video.codec
+          : '',
+    };
+  }
+
+  async findDocument(publicId: string): Promise<StoredDocumentResource | null> {
+    const payload = await this.findResource(publicId, 'raw');
+    if (payload === null) return null;
+    if (!this.isObject(payload)) throw this.invalidResponse();
+    const resource = payload as CloudinaryResourcePayload;
+    if (
+      !this.isNonEmptyString(resource.asset_id) ||
+      !this.isNonEmptyString(resource.public_id) ||
+      !this.isNonEmptyString(resource.resource_type) ||
+      !this.isNonEmptyString(resource.type) ||
+      !Number.isSafeInteger(resource.bytes) ||
+      (resource.bytes as number) < 1 ||
+      !this.isHttpsUrl(resource.secure_url)
+    )
+      throw this.invalidResponse();
+    // Raw resources may omit format; their extension is part of public_id.
+    return {
+      assetId: resource.asset_id,
+      publicId: resource.public_id,
+      resourceType: resource.resource_type,
+      deliveryType: resource.type,
+      format: resource.public_id.split('.').at(-1)?.toLowerCase() ?? '',
+      byteSize: resource.bytes as number,
+      secureUrl: resource.secure_url,
+      etag: this.isNonEmptyString(resource.etag) ? resource.etag : null,
+      context: this.parseContext(resource.context),
+    };
+  }
+
+  async verifyDocumentContent(
+    resource: StoredDocumentResource,
+    mimeType: string,
+    expectedSha256: string | null,
+  ): Promise<boolean> {
+    if (this.documentVerifications >= 2)
+      throw new MediaStorageError(
+        'unavailable',
+        'Document verification is busy; retry shortly.',
+      );
+    this.documentVerifications += 1;
+    try {
+      return await this.readAndVerifyDocument(
+        resource,
+        mimeType,
+        expectedSha256,
+      );
+    } finally {
+      this.documentVerifications -= 1;
+    }
+  }
+
+  private async readAndVerifyDocument(
+    resource: StoredDocumentResource,
+    mimeType: string,
+    expectedSha256: string | null,
+  ): Promise<boolean> {
+    const config = this.baseConfiguration();
+    const url = new URL(resource.secureUrl);
+    const expectedPath = `/${config.cloudName}/raw/upload/`;
+    if (
+      url.protocol !== 'https:' ||
+      url.hostname !== 'res.cloudinary.com' ||
+      url.port ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !url.pathname.startsWith(expectedPath)
+    )
+      return false;
+    const relative = decodeURIComponent(
+      url.pathname.slice(expectedPath.length),
+    ).replace(/^v\d+\//, '');
+    if (
+      relative !== resource.publicId ||
+      resource.byteSize > MAX_DOCUMENT_UPLOAD_BYTES
+    )
+      return false;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        redirect: 'error',
+        signal: AbortSignal.timeout(CLOUDINARY_REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new MediaStorageError(
+        'unavailable',
+        'Document verification download failed.',
+        { cause: error },
+      );
+    }
+    if (!response.ok || !response.body)
+      throw new MediaStorageError(
+        'unavailable',
+        'Document verification is temporarily unavailable.',
+      );
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > Math.min(MAX_DOCUMENT_UPLOAD_BYTES, resource.byteSize)) {
+          await reader.cancel();
+          return false;
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } catch (error) {
+      throw new MediaStorageError(
+        'unavailable',
+        'Document verification stream failed.',
+        { cause: error },
+      );
+    } finally {
+      reader.releaseLock();
+    }
+    if (size !== resource.byteSize) return false;
+    const bytes = Buffer.concat(chunks);
+    return (
+      (!expectedSha256 ||
+        createHash('sha256').update(bytes).digest('hex') === expectedSha256) &&
+      validDocumentContent(bytes, mimeType)
+    );
+  }
+
+  async deleteDocument(publicId: string): Promise<void> {
+    await this.deleteResource(publicId, 'raw');
+  }
+
   async findImage(publicId: string): Promise<StoredImageResource | null> {
     const payload = await this.findResource(publicId, 'image');
     return payload === null ? null : this.parseImageResource(payload);
@@ -143,7 +352,7 @@ export class CloudinaryMediaProvider extends MediaStorageProvider {
 
   private async findResource(
     publicId: string,
-    resourceType: 'image' | 'video',
+    resourceType: 'image' | 'video' | 'raw',
   ): Promise<unknown | null> {
     const config = this.baseConfiguration();
     const encodedPublicId = encodeURIComponent(publicId);
@@ -189,7 +398,7 @@ export class CloudinaryMediaProvider extends MediaStorageProvider {
 
   private async deleteResource(
     publicId: string,
-    resourceType: 'image' | 'video',
+    resourceType: 'image' | 'video' | 'raw',
   ): Promise<void> {
     const config = this.baseConfiguration();
     const timestamp = Math.floor(Date.now() / 1000).toString();

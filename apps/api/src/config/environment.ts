@@ -99,6 +99,18 @@ const environmentSchema = Joi.object({
     .pattern(/^[A-Za-z0-9_-]+$/)
     .allow('')
     .optional(),
+  CLOUDINARY_CHAT_VIDEO_UPLOAD_PRESET: Joi.string()
+    .trim()
+    .max(255)
+    .pattern(/^[A-Za-z0-9_-]+$/)
+    .allow('')
+    .optional(),
+  CLOUDINARY_CHAT_DOCUMENT_UPLOAD_PRESET: Joi.string()
+    .trim()
+    .max(255)
+    .pattern(/^[A-Za-z0-9_-]+$/)
+    .allow('')
+    .optional(),
   CLOUDINARY_UPLOAD_FOLDER: Joi.string()
     .trim()
     .max(180)
@@ -134,7 +146,43 @@ const environmentSchema = Joi.object({
     .min(1000)
     .max(900000)
     .default(900000),
+  MEDIA_MAX_CHAT_VIDEO_BYTES: Joi.number()
+    .integer()
+    .min(1024)
+    .max(52428800)
+    .default(52428800),
+  MEDIA_MAX_CHAT_VIDEO_DURATION_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(300000)
+    .default(300000),
+  MEDIA_MAX_CHAT_DOCUMENT_BYTES: Joi.number()
+    .integer()
+    .min(1024)
+    .max(26214400)
+    .default(26214400),
   CORS_ORIGINS: Joi.string().allow('').default(''),
+  MEDIA_UNUSED_CLEANUP_ENABLED: Joi.boolean().default(false),
+  MEDIA_UNUSED_RETENTION_HOURS: Joi.number()
+    .integer()
+    .min(24)
+    .max(8760)
+    .default(24),
+  PUSH_NOTIFICATIONS_ENABLED: Joi.boolean().default(false),
+  EXPO_ACCESS_TOKEN: Joi.when('PUSH_NOTIFICATIONS_ENABLED', {
+    is: true,
+    then: Joi.string()
+      .min(16)
+      .max(512)
+      .pattern(/^[A-Za-z0-9_.-]+$/)
+      .required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  PUSH_OFFLINE_DELAY_SECONDS: Joi.number()
+    .integer()
+    .min(5)
+    .max(300)
+    .default(15),
   TRUST_PROXY: Joi.string().allow('').default('loopback'),
 }).unknown(true);
 

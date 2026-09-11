@@ -80,6 +80,66 @@ function createPublisher(sockets: RealtimeSocketTarget[]) {
 }
 
 describe('RealtimeMessageEventsPublisher', () => {
+  it.each(['updated', 'deleted', 'reaction-updated'] as const)(
+    'publishes %s only to currently authorized visible-history recipients',
+    async (kind) => {
+      const socket = target({
+        userId: USER_ONE_ID,
+        sessionId: 'one',
+        tokenExpiresAt: NOW.getTime() + 60000,
+      });
+      const {
+        publisher,
+        findAccessibleConversation,
+        findSocketsForUsers,
+        isSessionActive,
+      } = createPublisher([socket]);
+      isSessionActive.mockResolvedValue(true);
+      findAccessibleConversation.mockResolvedValue({
+        conversationId: CONVERSATION_ID,
+        participantIds: [USER_ONE_ID, 'new-member-not-present-at-mutation'],
+      });
+      const changed = message({
+        version: 3,
+        deletedAt: kind === 'deleted' ? NOW : null,
+      });
+      await publisher.publishChanged({
+        kind,
+        message: changed,
+        actorId: USER_TWO_ID,
+        occurredAt: NOW,
+      });
+      expect(findAccessibleConversation).toHaveBeenCalledWith(
+        CONVERSATION_ID,
+        USER_TWO_ID,
+        changed,
+      );
+      expect(findSocketsForUsers).toHaveBeenCalledWith([USER_ONE_ID]);
+      expect(socket.emit).toHaveBeenCalledWith(
+        kind === 'reaction-updated'
+          ? 'message.reaction.updated'
+          : `message.${kind}`,
+        expect.objectContaining({
+          actorId: USER_TWO_ID,
+          occurredAt: NOW.toISOString(),
+          message: expect.objectContaining({
+            id: changed.id,
+            version: 3,
+            text: kind === 'deleted' ? null : changed.text,
+          }),
+        }),
+      );
+      findAccessibleConversation.mockResolvedValue(null);
+      await publisher.publishChanged({
+        kind,
+        message: changed,
+        actorId: USER_TWO_ID,
+        occurredAt: NOW,
+      });
+      expect(socket.emit).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('emits a clear boundary only to the clearing user active devices', async () => {
     const ownerDevice = target({
       userId: USER_ONE_ID,
@@ -160,6 +220,11 @@ describe('RealtimeMessageEventsPublisher', () => {
       text: 'Hello from another device',
       attachments: [],
       createdAt: NOW.toISOString(),
+      replyToMessageId: null,
+      editedAt: null,
+      deletedAt: null,
+      version: 0,
+      reactions: [],
     };
     expect(first.emit).toHaveBeenCalledWith(
       MESSAGE_CREATED_EVENT,

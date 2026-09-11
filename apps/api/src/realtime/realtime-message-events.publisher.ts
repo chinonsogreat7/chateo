@@ -2,15 +2,21 @@ import { Injectable } from '@nestjs/common';
 import { AuthRepository } from '../auth/auth.repository';
 import { Clock } from '../auth/providers/clock';
 import { MessageEventsPublisher } from '../messages/message-events.publisher';
+import { messageResponse } from '../messages/message-mapping';
 import type {
   ConversationHistoryClearedRecord,
   MessageRecord,
+  MessageChangedRecord,
 } from '../messages/messages.types';
 import { ChatGateway } from './chat.gateway';
 import { RealtimeConversationsRepository } from './realtime-conversations.repository';
 import {
   CONVERSATION_HISTORY_CLEARED_EVENT,
   MESSAGE_CREATED_EVENT,
+  MESSAGE_UPDATED_EVENT,
+  MESSAGE_DELETED_EVENT,
+  MESSAGE_REACTION_UPDATED_EVENT,
+  type MessageChangedEventPayload,
   type ConversationHistoryClearedEventPayload,
   type MessageCreatedEventPayload,
   type RealtimeSocketData,
@@ -53,6 +59,29 @@ export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
     await this.publishToUsers(participantIds, MESSAGE_CREATED_EVENT, payload);
   }
 
+  async publishChanged(record: MessageChangedRecord): Promise<void> {
+    const access = await this.conversations.findAccessibleConversation(
+      record.message.conversationId,
+      record.actorId,
+      record.message,
+    );
+    if (!access) return;
+    const recipients = record.message.participantIds.filter((id) =>
+      access.participantIds.includes(id),
+    );
+    const event =
+      record.kind === 'updated'
+        ? MESSAGE_UPDATED_EVENT
+        : record.kind === 'deleted'
+          ? MESSAGE_DELETED_EVENT
+          : MESSAGE_REACTION_UPDATED_EVENT;
+    await this.publishToUsers(recipients, event, {
+      message: messageResponse(record.message),
+      actorId: record.actorId,
+      occurredAt: record.occurredAt.toISOString(),
+    });
+  }
+
   async publishHistoryCleared(
     record: ConversationHistoryClearedRecord,
   ): Promise<void> {
@@ -74,9 +103,13 @@ export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
     userIds: string[],
     event:
       | typeof MESSAGE_CREATED_EVENT
+      | typeof MESSAGE_UPDATED_EVENT
+      | typeof MESSAGE_DELETED_EVENT
+      | typeof MESSAGE_REACTION_UPDATED_EVENT
       | typeof CONVERSATION_HISTORY_CLEARED_EVENT,
     payload:
       | MessageCreatedEventPayload
+      | MessageChangedEventPayload
       | ConversationHistoryClearedEventPayload,
   ): Promise<void> {
     const uniqueUserIds = [...new Set(userIds)];
@@ -126,9 +159,13 @@ export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
     activeSessionIds: ReadonlySet<string>,
     event:
       | typeof MESSAGE_CREATED_EVENT
+      | typeof MESSAGE_UPDATED_EVENT
+      | typeof MESSAGE_DELETED_EVENT
+      | typeof MESSAGE_REACTION_UPDATED_EVENT
       | typeof CONVERSATION_HISTORY_CLEARED_EVENT,
     payload:
       | MessageCreatedEventPayload
+      | MessageChangedEventPayload
       | ConversationHistoryClearedEventPayload,
   ): Promise<void> {
     if (!activeSessionIds.has(data.sessionId)) {
@@ -143,16 +180,7 @@ export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
 function toMessageCreatedPayload(
   message: MessageRecord,
 ): MessageCreatedEventPayload {
-  return {
-    id: message.id,
-    conversationId: message.conversationId,
-    clientMessageId: message.clientMessageId,
-    senderId: message.senderId,
-    kind: message.kind.toLowerCase() as 'text' | 'image' | 'audio',
-    text: message.text,
-    attachments: message.attachments,
-    createdAt: message.createdAt.toISOString(),
-  };
+  return messageResponse(message);
 }
 
 function readSocketData(value: unknown): RealtimeSocketData | null {

@@ -85,6 +85,8 @@ interface ConversationsServiceDouble {
   list: jest.Mock;
   get: jest.Mock;
   updateGroup: jest.Mock;
+  setGroupAvatar: jest.Mock;
+  clearGroupAvatar: jest.Mock;
   addGroupMembers: jest.Mock;
   removeGroupMember: jest.Mock;
   updateGroupMemberRole: jest.Mock;
@@ -123,6 +125,63 @@ describe('Chat management API (e2e, in memory)', () => {
   let settings: jest.Mocked<ConversationSettingsRepository>;
   let conversationsService: ConversationsServiceDouble;
   let messagesService: MessagesServiceDouble;
+
+  it('routes authenticated group photo set/remove requests', async () => {
+    const mediaId = '550e8400-e29b-41d4-a716-446655440000';
+    const endpoint = `/v1/conversations/${CONVERSATION_ID}/avatar`;
+    await request(app.getHttpServer())
+      .put(endpoint)
+      .set('Authorization', 'Bearer classroom-token')
+      .send({ mediaId })
+      .expect(HttpStatus.OK);
+    expect(conversationsService.setGroupAvatar).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+      mediaId,
+    );
+    await request(app.getHttpServer())
+      .delete(endpoint)
+      .set('Authorization', 'Bearer classroom-token')
+      .expect(HttpStatus.OK);
+    expect(conversationsService.clearGroupAvatar).toHaveBeenCalledWith(
+      USER_ID,
+      CONVERSATION_ID,
+    );
+  });
+
+  it.each([
+    {},
+    { mediaId: null },
+    { mediaId: 'not-a-uuid' },
+    { mediaId: 'https://example.com/photo.jpg' },
+    { mediaId: TARGET_ID, avatarUrl: 'https://example.com/photo.jpg' },
+  ])('rejects invalid group photo payload %j', async (payload) => {
+    await request(app.getHttpServer())
+      .put(`/v1/conversations/${CONVERSATION_ID}/avatar`)
+      .set('Authorization', 'Bearer classroom-token')
+      .send(payload)
+      .expect(HttpStatus.BAD_REQUEST);
+    expect(conversationsService.setGroupAvatar).not.toHaveBeenCalled();
+  });
+
+  it('rejects arbitrary URLs in group creation and metadata updates', async () => {
+    await request(app.getHttpServer())
+      .post('/v1/conversations/group')
+      .set('Authorization', 'Bearer classroom-token')
+      .send({
+        name: 'Study Group',
+        participantIds: [TARGET_ID],
+        avatarUrl: 'https://example.com/photo.jpg',
+      })
+      .expect(HttpStatus.BAD_REQUEST);
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${CONVERSATION_ID}`)
+      .set('Authorization', 'Bearer classroom-token')
+      .send({ avatarUrl: 'https://example.com/photo.jpg' })
+      .expect(HttpStatus.BAD_REQUEST);
+    expect(conversationsService.createGroup).not.toHaveBeenCalled();
+    expect(conversationsService.updateGroup).not.toHaveBeenCalled();
+  });
 
   beforeEach(async () => {
     blocks = {
@@ -172,6 +231,8 @@ describe('Chat management API (e2e, in memory)', () => {
       list: jest.fn(),
       get: jest.fn(),
       updateGroup: jest.fn().mockResolvedValue(GROUP_RESPONSE),
+      setGroupAvatar: jest.fn().mockResolvedValue(GROUP_RESPONSE),
+      clearGroupAvatar: jest.fn().mockResolvedValue(GROUP_RESPONSE),
       addGroupMembers: jest.fn().mockResolvedValue(GROUP_RESPONSE),
       removeGroupMember: jest.fn().mockResolvedValue(undefined),
       updateGroupMemberRole: jest.fn().mockResolvedValue(GROUP_RESPONSE),
@@ -565,13 +626,13 @@ describe('Chat management API (e2e, in memory)', () => {
     await request(app.getHttpServer())
       .patch(`/v1/conversations/${CONVERSATION_ID}`)
       .set('Authorization', 'Bearer classroom-token')
-      .send({ name: '  Project Team  ', avatarUrl: null })
+      .send({ name: '  Project Team  ', avatarMediaId: null })
       .expect(HttpStatus.OK)
       .expect('Cache-Control', 'no-store');
     expect(conversationsService.updateGroup).toHaveBeenCalledWith(
       USER_ID,
       CONVERSATION_ID,
-      { name: 'Project Team', avatarUrl: null },
+      { name: 'Project Team', avatarMediaId: null },
     );
 
     await request(app.getHttpServer())

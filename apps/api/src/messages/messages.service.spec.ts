@@ -34,12 +34,15 @@ function createService() {
     send: jest.fn(),
     sendText: jest.fn(),
     listForMember: jest.fn(),
+    getForMember: jest.fn(),
+    mutate: jest.fn(),
     markRead: jest.fn(),
     clearForMember: jest.fn(),
   };
   const clock: Clock = { now: jest.fn().mockReturnValue(NOW) };
   const eventsPublisher: jest.Mocked<MessageEventsPublisher> = {
     publishCreated: jest.fn().mockResolvedValue(undefined),
+    publishChanged: jest.fn().mockResolvedValue(undefined),
     publishHistoryCleared: jest.fn().mockResolvedValue(undefined),
   };
   return {
@@ -67,6 +70,77 @@ async function expectApiError(
 }
 
 describe('MessagesService', () => {
+  it.each([
+    ['message-not-found', HttpStatus.NOT_FOUND, 'MESSAGE_NOT_FOUND'],
+    ['forbidden', HttpStatus.FORBIDDEN, 'MESSAGE_SENDER_REQUIRED'],
+    ['deleted', HttpStatus.CONFLICT, 'MESSAGE_DELETED'],
+    ['version-conflict', HttpStatus.CONFLICT, 'MESSAGE_VERSION_CONFLICT'],
+    ['empty-text', HttpStatus.BAD_REQUEST, 'MESSAGE_TEXT_REQUIRED'],
+  ] as const)(
+    'maps mutation failure %s without publishing events',
+    async (status, httpStatus, code) => {
+      const { repository, service, eventsPublisher } = createService();
+      repository.mutate.mockResolvedValue({ status });
+      await expectApiError(
+        service.edit(USER_ID, CONVERSATION_ID, MESSAGE_ID, {
+          text: 'Edited',
+          expectedVersion: 0,
+        }),
+        httpStatus,
+        code,
+      );
+      expect(eventsPublisher.publishChanged).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps committed mutations successful when socket publication fails, and skips no-op events', async () => {
+    const { repository, service, eventsPublisher } = createService();
+    const event = {
+      kind: 'updated' as const,
+      actorId: USER_ID,
+      message: message({ text: 'Edited', version: 1, editedAt: NOW }),
+      occurredAt: NOW,
+    };
+    repository.mutate.mockResolvedValue({
+      status: 'updated',
+      changed: true,
+      event,
+    });
+    eventsPublisher.publishChanged.mockRejectedValue(
+      new Error('socket unavailable'),
+    );
+    const logger = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      await expect(
+        service.edit(USER_ID, CONVERSATION_ID, MESSAGE_ID, {
+          text: ' Edited ',
+          expectedVersion: 0,
+        }),
+      ).resolves.toMatchObject({ text: 'Edited', version: 1 });
+      expect(repository.mutate).toHaveBeenCalledWith({
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        messageId: MESSAGE_ID,
+        now: NOW,
+        mutation: { kind: 'edit', text: 'Edited', expectedVersion: 0 },
+      });
+      repository.mutate.mockResolvedValue({
+        status: 'updated',
+        changed: false,
+        event,
+      });
+      await service.edit(USER_ID, CONVERSATION_ID, MESSAGE_ID, {
+        text: 'Edited',
+        expectedVersion: 0,
+      });
+      expect(eventsPublisher.publishChanged).toHaveBeenCalledTimes(1);
+    } finally {
+      logger.mockRestore();
+    }
+  });
+
   it('returns a newly created text message and publishes it once', async () => {
     const { repository, eventsPublisher, service } = createService();
     repository.send.mockResolvedValue({
@@ -88,6 +162,11 @@ describe('MessagesService', () => {
       text: 'Hello!',
       attachments: [],
       createdAt: NOW.toISOString(),
+      replyToMessageId: null,
+      editedAt: null,
+      deletedAt: null,
+      version: 0,
+      reactions: [],
     });
     expect(repository.send).toHaveBeenCalledWith({
       conversationId: CONVERSATION_ID,
@@ -152,6 +231,11 @@ describe('MessagesService', () => {
       text: null,
       attachments: imageMessage.attachments,
       createdAt: NOW.toISOString(),
+      replyToMessageId: null,
+      editedAt: null,
+      deletedAt: null,
+      version: 0,
+      reactions: [],
     });
     expect(repository.send).toHaveBeenCalledWith({
       conversationId: CONVERSATION_ID,
@@ -200,6 +284,11 @@ describe('MessagesService', () => {
       text: 'Voice note',
       attachments: audioMessage.attachments,
       createdAt: NOW.toISOString(),
+      replyToMessageId: null,
+      editedAt: null,
+      deletedAt: null,
+      version: 0,
+      reactions: [],
     });
     expect(eventsPublisher.publishCreated).toHaveBeenCalledWith(audioMessage);
   });

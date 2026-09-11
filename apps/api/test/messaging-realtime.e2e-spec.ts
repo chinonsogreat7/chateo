@@ -48,6 +48,10 @@ import {
   CONVERSATION_HISTORY_CLEARED_EVENT,
   CONVERSATION_SETTINGS_UPDATED_EVENT,
   MESSAGE_CREATED_EVENT,
+  MESSAGE_UPDATED_EVENT,
+  MESSAGE_DELETED_EVENT,
+  MESSAGE_REACTION_UPDATED_EVENT,
+  type MessageChangedEventPayload,
   PRESENCE_CHANGED_EVENT,
   PRESENCE_SUBSCRIBE_COMMAND,
   REALTIME_AUTH_ERROR_CODE,
@@ -619,6 +623,373 @@ describe('Messaging REST and realtime API (e2e, in memory)', () => {
       ...overrides,
     };
   }
+
+  it('replies, edits, reacts and deletes with versioned socket snapshots and safe send retries', async () => {
+    const socket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([BOB_ID], 1);
+    const updates: MessageChangedEventPayload[] = [];
+    for (const event of [
+      MESSAGE_UPDATED_EVENT,
+      MESSAGE_DELETED_EVENT,
+      MESSAGE_REACTION_UPDATED_EVENT,
+    ]) {
+      socket.on(event, (payload) =>
+        updates.push(payload as MessageChangedEventPayload),
+      );
+    }
+    const first = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'Original lesson',
+    );
+    const base = `/v1/conversations/${CONVERSATION_ID}/messages`;
+    const reply = await request(app.getHttpServer())
+      .post(base)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({
+        clientMessageId: SECOND_CLIENT_MESSAGE_ID,
+        text: 'A reply',
+        replyToMessageId: first.id,
+      })
+      .expect(200);
+    expect(reply.body).toMatchObject({
+      replyToMessageId: first.id,
+      version: 0,
+      reactions: [],
+    });
+    await request(app.getHttpServer())
+      .patch(`${base}/${first.id}`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ text: 'Not mine', expectedVersion: 0 })
+      .expect(403);
+    await request(app.getHttpServer())
+      .patch(`${base}/${first.id}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ text: 'Updated lesson', expectedVersion: 0 })
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch(`${base}/${first.id}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ text: 'Stale overwrite', expectedVersion: 0 })
+      .expect(409);
+    const reacted = await request(app.getHttpServer())
+      .put(`${base}/${first.id}/reaction`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ emoji: '👍' })
+      .expect(200);
+    expect(reacted.body).toMatchObject({
+      version: 2,
+      reactions: [{ userId: BOB_ID, emoji: '👍' }],
+    });
+    await request(app.getHttpServer())
+      .put(`${base}/${first.id}/reaction`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ emoji: '👍' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .delete(`${base}/${first.id}/reaction`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(200);
+    expect(
+      await sendMessage(
+        aliceToken,
+        CONVERSATION_ID,
+        CLIENT_MESSAGE_ID,
+        'Original lesson',
+      ),
+    ).toMatchObject({ id: first.id, text: 'Updated lesson', version: 3 });
+    const deleted = await request(app.getHttpServer())
+      .delete(`${base}/${first.id}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+    expect(deleted.body).toMatchObject({
+      text: null,
+      attachments: [],
+      reactions: [],
+      deletedAt: expect.any(String),
+      version: 4,
+    });
+    await request(app.getHttpServer())
+      .delete(`${base}/${first.id}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .put(`${base}/${first.id}/reaction`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ emoji: '❤️' })
+      .expect(409);
+    expect(
+      await sendMessage(
+        aliceToken,
+        CONVERSATION_ID,
+        CLIENT_MESSAGE_ID,
+        'Original lesson',
+      ),
+    ).toEqual(deleted.body);
+    await request(app.getHttpServer())
+      .get(`${base}/${first.id}`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(200, deleted.body);
+    await waitUntil(
+      () => updates.length === 4,
+      'Expected four changed-message events',
+    );
+    expect(updates.map((event) => event.message.version)).toEqual([1, 2, 3, 4]);
+    expect(updates.at(-1)?.message).toEqual(deleted.body);
+    await delay(50);
+    expect(updates).toHaveLength(4);
+  });
+
+  it('binds search pagination to the query and chat, and hides cleared reply targets and updates', async () => {
+    const socket = await connectSocket(bobToken);
+    await waitForRoutedSocketCount([BOB_ID], 1);
+    const updates: MessageChangedEventPayload[] = [];
+    socket.on(MESSAGE_UPDATED_EVENT, (event) =>
+      updates.push(event as MessageChangedEventPayload),
+    );
+    const first = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'Lesson one',
+    );
+    clock.advanceSeconds(1);
+    const second = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      SECOND_CLIENT_MESSAGE_ID,
+      'Lesson two',
+    );
+    const base = `/v1/conversations/${CONVERSATION_ID}/messages`;
+    const page = await request(app.getHttpServer())
+      .get(`${base}/search`)
+      .query({ q: 'lesson', limit: 1 })
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(200);
+    const history = page.body as MessageHistoryBody;
+    expect(history.items.map((item) => item.id)).toEqual([second.id]);
+    const cursor = history.pageInfo.nextCursor!;
+    const next = await request(app.getHttpServer())
+      .get(`${base}/search`)
+      .query({ q: 'lesson', cursor })
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(200);
+    expect(
+      (next.body as MessageHistoryBody).items.map((item) => item.id),
+    ).toEqual([first.id]);
+    await request(app.getHttpServer())
+      .get(`${base}/search`)
+      .query({ q: 'changed', cursor })
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(`/v1/conversations/${SECOND_CONVERSATION_ID}/messages/search`)
+      .query({ q: 'lesson', cursor })
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(base)
+      .query({ cursor })
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(400);
+    await request(app.getHttpServer())
+      .delete(base)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get(`${base}/${first.id}`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(404);
+    const cleared = await request(app.getHttpServer())
+      .get(`${base}/search`)
+      .query({ q: 'lesson' })
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(200);
+    expect((cleared.body as MessageHistoryBody).items).toEqual([]);
+    await request(app.getHttpServer())
+      .post(base)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({
+        clientMessageId: THIRD_CLIENT_MESSAGE_ID,
+        text: 'Hidden reply',
+        replyToMessageId: first.id,
+      })
+      .expect(409);
+    await request(app.getHttpServer())
+      .patch(`${base}/${first.id}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ text: 'Edited after clear', expectedVersion: 0 })
+      .expect(200);
+    await delay(50);
+    expect(updates).toEqual([]);
+  });
+
+  it.each([CONVERSATION_ID, GROUP_CONVERSATION_ID])(
+    'delivers verified video and document attachments over REST and sockets in %s',
+    async (conversationId) => {
+      if (conversationId === GROUP_CONVERSATION_ID)
+        messagingRepository.seedGroupConversation(
+          conversationId,
+          [ALICE_ID, BOB_ID, CAROL_ID],
+          ALICE_ID,
+          clock.now(),
+        );
+      const socket = await connectSocket(bobToken);
+      await waitForRoutedSocketCount([BOB_ID], 1);
+      const events: MessageBody[] = [];
+      socket.on(MESSAGE_CREATED_EVENT, (event) =>
+        events.push(event as MessageBody),
+      );
+      messagingRepository.seedMessageAttachmentMedia({
+        id: FIRST_IMAGE_MEDIA_ID,
+        ownerId: ALICE_ID,
+        resourceType: 'video',
+        contentType: 'video/mp4',
+        format: 'mp4',
+        sizeBytes: 900000,
+        width: 1280,
+        height: 720,
+        durationMs: 15000,
+      });
+      messagingRepository.seedMessageAttachmentMedia({
+        id: SECOND_IMAGE_MEDIA_ID,
+        ownerId: ALICE_ID,
+        resourceType: 'raw',
+        contentType: 'application/pdf',
+        format: 'pdf',
+        sizeBytes: 12000,
+        width: null,
+        height: null,
+        durationMs: null,
+        filename: 'lesson.pdf',
+        url: 'https://res.cloudinary.com/classroom/raw/upload/lesson.pdf',
+      });
+      const base = `/v1/conversations/${conversationId}/messages`;
+      const video = await request(app.getHttpServer())
+        .post(base)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({
+          clientMessageId: CLIENT_MESSAGE_ID,
+          attachmentMediaIds: [FIRST_IMAGE_MEDIA_ID],
+          text: 'Video lesson',
+        })
+        .expect(200);
+      const document = await request(app.getHttpServer())
+        .post(base)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({
+          clientMessageId: SECOND_CLIENT_MESSAGE_ID,
+          attachmentMediaIds: [SECOND_IMAGE_MEDIA_ID],
+          replyToMessageId: (video.body as MessageBody).id,
+        })
+        .expect(200);
+      expect(video.body).toMatchObject({
+        kind: 'video',
+        attachments: [
+          { type: 'video', durationMs: 15000, width: 1280, height: 720 },
+        ],
+      });
+      expect(document.body).toMatchObject({
+        kind: 'document',
+        replyToMessageId: (video.body as MessageBody).id,
+        attachments: [
+          {
+            type: 'document',
+            filename: 'lesson.pdf',
+            url: 'https://res.cloudinary.com/classroom/raw/upload/fl_attachment/lesson.pdf',
+          },
+        ],
+      });
+      await waitUntil(
+        () => events.length === 2,
+        'Expected video and document socket events',
+      );
+      expect(events).toEqual([video.body, document.body]);
+      const history = await request(app.getHttpServer())
+        .get(base)
+        .set('Authorization', `Bearer ${bobToken}`)
+        .expect(200);
+      expect((history.body as MessageHistoryBody).items).toEqual(
+        expect.arrayContaining([video.body, document.body]),
+      );
+      await request(app.getHttpServer())
+        .post(base)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({
+          clientMessageId: THIRD_CLIENT_MESSAGE_ID,
+          attachmentMediaIds: [SECOND_IMAGE_MEDIA_ID],
+        })
+        .expect(409);
+    },
+  );
+
+  it('validates and authorizes advanced message operations', async () => {
+    const first = await sendMessage(
+      aliceToken,
+      CONVERSATION_ID,
+      CLIENT_MESSAGE_ID,
+      'A message',
+    );
+    const base = `/v1/conversations/${CONVERSATION_ID}/messages`;
+    for (const operation of [
+      request(app.getHttpServer()).get(`${base}/${first.id}`),
+      request(app.getHttpServer())
+        .patch(`${base}/${first.id}`)
+        .send({ text: 'Edit', expectedVersion: 0 }),
+      request(app.getHttpServer()).delete(`${base}/${first.id}`),
+      request(app.getHttpServer())
+        .put(`${base}/${first.id}/reaction`)
+        .send({ emoji: '👍' }),
+      request(app.getHttpServer()).delete(`${base}/${first.id}/reaction`),
+      request(app.getHttpServer())
+        .get(`${base}/search`)
+        .query({ q: 'message' }),
+    ]) {
+      await operation.set('Authorization', `Bearer ${carolToken}`).expect(404);
+    }
+    for (const body of [
+      { text: 'Edit' },
+      { text: 'Edit', expectedVersion: -1 },
+      { text: '\u0000', expectedVersion: 0 },
+      { text: '', expectedVersion: 0 },
+    ]) {
+      await request(app.getHttpServer())
+        .patch(`${base}/${first.id}`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send(body)
+        .expect(400);
+    }
+    await request(app.getHttpServer())
+      .put(`${base}/${first.id}/reaction`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ emoji: 'not-an-emoji' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(`${base}/search`)
+      .query({ q: 'a' })
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(`${base}/search`)
+      .query({ q: 'message' })
+      .expect(401);
+    await request(app.getHttpServer())
+      .patch(`${base}/${first.id}`)
+      .send({ text: 'Edit', expectedVersion: 0 })
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`${base}/${first.id}`)
+      .expect(401);
+    await request(app.getHttpServer())
+      .put(`${base}/${first.id}/reaction`)
+      .send({ emoji: '👍' })
+      .expect(401);
+    await request(app.getHttpServer())
+      .delete(`${base}/${first.id}/reaction`)
+      .expect(401);
+    await request(app.getHttpServer()).get(`${base}/${first.id}`).expect(401);
+  });
 
   it('requires a valid access token for every messaging REST operation', async () => {
     await request(app.getHttpServer())

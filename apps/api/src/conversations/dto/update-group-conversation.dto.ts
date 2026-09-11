@@ -1,12 +1,6 @@
 import { Transform } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsString,
-  IsUrl,
-  Length,
-  MaxLength,
-  ValidateIf,
-} from 'class-validator';
+import { IsString, IsUUID, Length, ValidateIf } from 'class-validator';
 
 export class UpdateGroupConversationDto {
   @ApiPropertyOptional({
@@ -29,15 +23,15 @@ export class UpdateGroupConversationDto {
   @ApiPropertyOptional({
     type: String,
     nullable: true,
-    format: 'uri',
-    example: 'https://example.com/groups/project-team.jpg',
-    description: 'A new avatar URL, or null to remove the current avatar.',
+    format: 'uuid',
+    example: '550e8400-e29b-41d4-a716-446655440000',
+    description:
+      'A ready group_avatar media ID owned by the acting owner/admin, or null to remove the avatar. Arbitrary avatarUrl inputs are not accepted.',
   })
   @ValidateIf(
     (_object: UpdateGroupConversationDto, value: unknown) =>
       value !== undefined && value !== null,
   )
-  @IsUrl({ require_protocol: true })
-  @MaxLength(2048)
-  avatarUrl?: string | null;
+  @IsUUID()
+  avatarMediaId?: string | null;
 }

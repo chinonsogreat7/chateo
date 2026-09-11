@@ -20,6 +20,16 @@ import type {
 import { MediaClock } from './media-clock';
 import { MediaRepository } from './media.repository';
 import {
+  documentFormat,
+  videoFormat,
+  mediaType,
+  safeDocumentFilename,
+  MAX_DOCUMENT_UPLOAD_BYTES,
+  MAX_VIDEO_UPLOAD_BYTES,
+  MAX_VIDEO_DIMENSION,
+  MAX_VIDEO_DURATION_MS,
+} from './attachment-formats';
+import {
   MediaStorageError,
   MediaStorageProvider,
 } from './media-storage.provider';
@@ -29,6 +39,8 @@ import type {
   MediaProfileUserRecord,
   StoredAudioResource,
   StoredImageResource,
+  StoredVideoResource,
+  StoredDocumentResource,
 } from './media.types';
 
 const DEFAULT_UPLOAD_TTL_SECONDS = 600;
@@ -78,9 +90,13 @@ export class MediaService {
     const normalizedInput = this.normalizeInput(input);
     this.assertPurposeSupportsContentType(normalizedInput);
     this.assertAllowedSize(normalizedInput);
-    const resourceType = isAudioUploadContentType(normalizedInput.contentType)
-      ? ('video' as const)
-      : ('image' as const);
+    const type = mediaType(normalizedInput.contentType);
+    const resourceType =
+      type === 'document'
+        ? ('raw' as const)
+        : type === 'image'
+          ? ('image' as const)
+          : ('video' as const);
 
     const now = this.clock.now();
     const mediaId = randomUUID();
@@ -94,13 +110,20 @@ export class MediaService {
       cloudinaryPublicId: this.cloudinaryPublicId(
         mediaId,
         normalizedInput.purpose,
-        resourceType,
+        normalizedInput.contentType,
       ),
       resourceType,
       deliveryType: 'upload',
       mimeType: normalizedInput.contentType,
       byteSize: normalizedInput.sizeBytes,
-      originalFilename: normalizedInput.originalFilename,
+      originalFilename:
+        type === 'document'
+          ? safeDocumentFilename(
+              normalizedInput.originalFilename,
+              mediaId,
+              documentFormat(normalizedInput.contentType)!,
+            )
+          : normalizedInput.originalFilename,
       expiresAt: new Date(now.getTime() + this.uploadTtlSeconds() * 1000),
       now,
     });
@@ -133,9 +156,13 @@ export class MediaService {
         context: this.storageContext(asset),
       };
       const upload =
-        asset.resourceType === 'video'
-          ? await this.storage.signAudioUpload(signInput)
-          : await this.storage.signImageUpload(signInput);
+        mediaType(asset.mimeType) === 'document'
+          ? await this.storage.signDocumentUpload(signInput)
+          : mediaType(asset.mimeType) === 'video'
+            ? await this.storage.signVideoUpload(signInput)
+            : asset.resourceType === 'video'
+              ? await this.storage.signAudioUpload(signInput)
+              : await this.storage.signImageUpload(signInput);
       return {
         media: this.toResponse(asset),
         upload: {
@@ -176,7 +203,26 @@ export class MediaService {
 
     let completion: VerifiedCompletionMetadata | null;
     try {
-      if (asset.resourceType === 'video') {
+      if (asset.resourceType === 'raw') {
+        const resource = await this.storage.findDocument(
+          asset.cloudinaryPublicId,
+        );
+        if (!resource) throw this.uploadNotReadyException();
+        completion = this.verifyDocumentResource(asset, resource);
+        if (
+          completion &&
+          !(await this.storage.verifyDocumentContent(
+            resource,
+            asset.mimeType,
+            asset.contentSha256,
+          ))
+        )
+          completion = null;
+      } else if (mediaType(asset.mimeType) === 'video') {
+        const resource = await this.storage.findVideo(asset.cloudinaryPublicId);
+        if (!resource) throw this.uploadNotReadyException();
+        completion = this.verifyVideoResource(asset, resource);
+      } else if (asset.resourceType === 'video') {
         const resource = await this.storage.findAudio(asset.cloudinaryPublicId);
         if (!resource) throw this.uploadNotReadyException();
         completion = this.verifyAudioResource(asset, resource);
@@ -274,14 +320,20 @@ export class MediaService {
 
   private assertAllowedSize(input: NormalizedMediaUploadInput): void {
     const isAudio = isAudioUploadContentType(input.contentType);
-    const configuredMaximum = isAudio
-      ? this.maxAudioBytes()
-      : this.maxAvatarBytes();
+    const type = mediaType(input.contentType);
+    const configuredMaximum =
+      type === 'video'
+        ? this.maxVideoBytes()
+        : type === 'document'
+          ? this.maxDocumentBytes()
+          : isAudio
+            ? this.maxAudioBytes()
+            : this.maxAvatarBytes();
     if (input.sizeBytes > configuredMaximum) {
       throw new ApiException(
         HttpStatus.PAYLOAD_TOO_LARGE,
         'MEDIA_UPLOAD_TOO_LARGE',
-        `${isAudio ? 'Audio' : 'Image'} uploads cannot exceed ${configuredMaximum} bytes.`,
+        `${type} uploads cannot exceed ${configuredMaximum} bytes.`,
         { maximumBytes: configuredMaximum },
       );
     }
@@ -291,13 +343,13 @@ export class MediaService {
     input: NormalizedMediaUploadInput,
   ): void {
     if (
-      input.purpose === 'profile_avatar' &&
-      isAudioUploadContentType(input.contentType)
+      input.purpose !== 'message_attachment' &&
+      mediaType(input.contentType) !== 'image'
     ) {
       throw new ApiException(
         HttpStatus.BAD_REQUEST,
         'MEDIA_UPLOAD_CONTENT_TYPE_UNSUPPORTED',
-        'Profile avatars only support JPEG, PNG, or WebP images.',
+        'Avatars only support JPEG, PNG, or WebP images.',
       );
     }
   }
@@ -312,7 +364,7 @@ export class MediaService {
   private cloudinaryPublicId(
     mediaId: string,
     purpose: MediaUploadPurpose,
-    resourceType: 'image' | 'video',
+    mimeType: string,
   ): string {
     const folder = this.config.get<string>(
       'CLOUDINARY_UPLOAD_FOLDER',
@@ -321,10 +373,16 @@ export class MediaService {
     const purposeFolder =
       purpose === 'profile_avatar'
         ? 'profile-avatars'
-        : resourceType === 'video'
-          ? 'message-audio'
-          : 'message-images';
-    return `${folder}/${purposeFolder}/${mediaId}`;
+        : purpose === 'group_avatar'
+          ? 'group-avatars'
+          : mediaType(mimeType) === 'document'
+            ? 'message-documents'
+            : mediaType(mimeType) === 'video'
+              ? 'message-videos'
+              : mediaType(mimeType) === 'audio'
+                ? 'message-audio'
+                : 'message-images';
+    return `${folder}/${purposeFolder}/${mediaId}${documentFormat(mimeType) ? `.${documentFormat(mimeType)}` : ''}`;
   }
 
   private uploadFingerprint(input: {
@@ -427,6 +485,100 @@ export class MediaService {
           etag: resource.etag,
         }
       : null;
+  }
+
+  private verifyVideoResource(
+    asset: MediaAssetRecord,
+    resource: StoredVideoResource,
+  ): VerifiedCompletionMetadata | null {
+    const durationMs = Math.round(resource.durationSeconds * 1000);
+    const matches =
+      this.matchesResource(asset, resource) &&
+      asset.resourceType === 'video' &&
+      resource.resourceType === 'video' &&
+      videoFormat(asset.mimeType) === resource.format.toLowerCase() &&
+      resource.byteSize <= this.maxVideoBytes() &&
+      Number.isSafeInteger(resource.width) &&
+      resource.width > 0 &&
+      resource.width <= MAX_VIDEO_DIMENSION &&
+      Number.isSafeInteger(resource.height) &&
+      resource.height > 0 &&
+      resource.height <= MAX_VIDEO_DIMENSION &&
+      Boolean(resource.videoCodec) &&
+      Number.isSafeInteger(durationMs) &&
+      durationMs > 0 &&
+      resource.durationSeconds * 1000 <=
+        this.config.get<number>(
+          'MEDIA_MAX_CHAT_VIDEO_DURATION_MS',
+          MAX_VIDEO_DURATION_MS,
+        );
+    return matches
+      ? {
+          cloudinaryAssetId: resource.assetId,
+          format: resource.format.toLowerCase(),
+          byteSize: resource.byteSize,
+          width: resource.width,
+          height: resource.height,
+          durationMs,
+          secureUrl: resource.secureUrl,
+          etag: resource.etag,
+        }
+      : null;
+  }
+
+  private verifyDocumentResource(
+    asset: MediaAssetRecord,
+    resource: StoredDocumentResource,
+  ): VerifiedCompletionMetadata | null {
+    const matches =
+      this.matchesResource(asset, resource) &&
+      asset.resourceType === 'raw' &&
+      resource.resourceType === 'raw' &&
+      documentFormat(asset.mimeType) === resource.format.toLowerCase() &&
+      resource.byteSize <= this.maxDocumentBytes() &&
+      resource.byteSize === asset.byteSize;
+    return matches
+      ? {
+          cloudinaryAssetId: resource.assetId,
+          format: resource.format.toLowerCase(),
+          byteSize: resource.byteSize,
+          width: null,
+          height: null,
+          durationMs: null,
+          secureUrl: resource.secureUrl,
+          etag: resource.etag,
+        }
+      : null;
+  }
+
+  private matchesResource(
+    asset: MediaAssetRecord,
+    resource: StoredDocumentResource | StoredVideoResource,
+  ): boolean {
+    return (
+      asset.purpose === 'MESSAGE_ATTACHMENT' &&
+      Boolean(resource.assetId) &&
+      resource.publicId === asset.cloudinaryPublicId &&
+      resource.deliveryType === 'upload' &&
+      Number.isSafeInteger(resource.byteSize) &&
+      resource.byteSize > 0 &&
+      resource.context.media_id === asset.id &&
+      resource.context.upload_fingerprint === asset.uploadFingerprint &&
+      this.isHttpsUrl(resource.secureUrl)
+    );
+  }
+
+  private maxVideoBytes(): number {
+    return this.config.get<number>(
+      'MEDIA_MAX_CHAT_VIDEO_BYTES',
+      MAX_VIDEO_UPLOAD_BYTES,
+    );
+  }
+  private maxDocumentBytes(): number {
+    return this.config.get<number>(
+      'MEDIA_MAX_CHAT_DOCUMENT_BYTES',
+      MAX_DOCUMENT_UPLOAD_BYTES,
+    );
   }
 
   private maxAvatarDimension(): number {
@@ -578,6 +730,19 @@ export class MediaService {
   private mapStorageError(error: unknown): ApiException {
     if (
       error instanceof MediaStorageError &&
+      (error.reason === 'video-not-configured' ||
+        error.reason === 'document-not-configured')
+    ) {
+      const type =
+        error.reason === 'video-not-configured' ? 'VIDEO' : 'DOCUMENT';
+      return new ApiException(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        `MEDIA_${type}_UPLOADS_DISABLED`,
+        `Chat ${type.toLowerCase()} uploads are not configured on this server.`,
+      );
+    }
+    if (
+      error instanceof MediaStorageError &&
       error.reason === 'not-configured'
     ) {
       return this.uploadsDisabledException();
@@ -608,7 +773,7 @@ export class MediaService {
       id: asset.id,
       purpose: this.toApiPurpose(asset.purpose),
       status: asset.status.toLowerCase() as MediaAssetResponseDto['status'],
-      type: asset.resourceType === 'video' ? 'audio' : 'image',
+      type: mediaType(asset.mimeType),
       contentType: asset.mimeType,
       sizeBytes: asset.byteSize,
       originalFilename: asset.originalFilename,
@@ -623,17 +788,23 @@ export class MediaService {
   }
 
   private toStoredPurpose(purpose: MediaUploadPurpose): MediaPurpose {
-    return purpose === 'profile_avatar'
-      ? 'PROFILE_AVATAR'
-      : 'MESSAGE_ATTACHMENT';
+    const purposes: Record<MediaUploadPurpose, MediaPurpose> = {
+      profile_avatar: 'PROFILE_AVATAR',
+      group_avatar: 'GROUP_AVATAR',
+      message_attachment: 'MESSAGE_ATTACHMENT',
+    };
+    return purposes[purpose];
   }
 
   private toApiPurpose(
     purpose: MediaPurpose,
   ): MediaAssetResponseDto['purpose'] {
-    return purpose === 'PROFILE_AVATAR'
-      ? 'profile_avatar'
-      : 'message_attachment';
+    const purposes: Record<MediaPurpose, MediaAssetResponseDto['purpose']> = {
+      PROFILE_AVATAR: 'profile_avatar',
+      GROUP_AVATAR: 'group_avatar',
+      MESSAGE_ATTACHMENT: 'message_attachment',
+    };
+    return purposes[purpose];
   }
 
   private toUserResponse(user: MediaProfileUserRecord): UserResponseDto {

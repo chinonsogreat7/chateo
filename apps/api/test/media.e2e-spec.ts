@@ -45,6 +45,9 @@ import type {
   SignedImageUpload,
   StoredAudioResource,
   StoredImageResource,
+  StoredVideoResource,
+  StoredDocumentResource,
+  SignedFileUpload,
 } from '../src/media/media.types';
 import { ProfileAvatarController } from '../src/media/profile-avatar.controller';
 import {
@@ -76,9 +79,9 @@ interface AuthBody {
 interface CreateUploadBody {
   media: {
     id: string;
-    purpose: 'profile_avatar' | 'message_attachment';
+    purpose: 'profile_avatar' | 'group_avatar' | 'message_attachment';
     status: 'pending' | 'ready' | 'failed' | 'deleted';
-    type: 'image' | 'audio';
+    type: 'image' | 'audio' | 'video' | 'document';
     contentType: string;
     sizeBytes: number;
     originalFilename: string | null;
@@ -90,7 +93,9 @@ interface CreateUploadBody {
     expiresAt: string;
     completedAt: string | null;
   };
-  upload: (SignedImageUpload | SignedAudioUpload) & { expiresAt: string };
+  upload: (SignedImageUpload | SignedAudioUpload | SignedFileUpload) & {
+    expiresAt: string;
+  };
 }
 
 const PHONE_NUMBER = '+14155552671';
@@ -323,6 +328,47 @@ class MutableMediaClock extends MediaClock {
 }
 
 class FakeMediaStorageProvider extends MediaStorageProvider {
+  readonly videoResources = new Map<string, StoredVideoResource>();
+  readonly documentResources = new Map<string, StoredDocumentResource>();
+  documentContentValid = true;
+
+  async signVideoUpload(
+    input: SignImageUploadInput,
+  ): Promise<SignedFileUpload> {
+    const base = await this.signAudioUpload(input);
+    return {
+      ...base,
+      fields: {
+        ...base.fields,
+        allowed_formats: 'mp4,mov,webm',
+        upload_preset: 'chateo_chat_video',
+      },
+    };
+  }
+  async signDocumentUpload(
+    input: SignImageUploadInput,
+  ): Promise<SignedFileUpload> {
+    const base = await this.signAudioUpload(input);
+    return {
+      ...base,
+      url: base.url.replace('/video/', '/raw/'),
+      fields: {
+        ...base.fields,
+        allowed_formats: 'pdf,txt,docx,xlsx,pptx',
+        upload_preset: 'chateo_chat_documents',
+      },
+    };
+  }
+  async findVideo(publicId: string): Promise<StoredVideoResource | null> {
+    return this.videoResources.get(publicId) ?? null;
+  }
+  async findDocument(publicId: string): Promise<StoredDocumentResource | null> {
+    return this.documentResources.get(publicId) ?? null;
+  }
+  async verifyDocumentContent(): Promise<boolean> {
+    return this.documentContentValid;
+  }
+  async deleteDocument(): Promise<void> {}
   readonly signCalls: SignImageUploadInput[] = [];
   readonly signAudioCalls: SignAudioUploadInput[] = [];
   readonly findCalls: string[] = [];
@@ -635,6 +681,210 @@ describe('Media API (e2e, in memory)', () => {
     return response.body as CreateUploadBody;
   }
 
+  it.each([
+    ['video/mp4', 'mp4'],
+    ['video/quicktime', 'mov'],
+    ['video/webm', 'webm'],
+  ])(
+    'signs and verifies a %s video with dimensions and duration',
+    async (contentType, format) => {
+      const input = validUploadInput({
+        purpose: 'message_attachment',
+        contentType,
+        sizeBytes: 2000000,
+      });
+      const created = await createUpload(input);
+      expect(created.media).toMatchObject({ type: 'video', status: 'pending' });
+      expect(created.upload.fields).toMatchObject({
+        allowed_formats: 'mp4,mov,webm',
+        overwrite: 'false',
+        upload_preset: 'chateo_chat_video',
+      });
+      const pending = mediaRepository.findByClientUpload(
+        userId,
+        CLIENT_UPLOAD_ID,
+      )!;
+      storage.videoResources.set(pending.cloudinaryPublicId, {
+        ...createStoredAudio(pending, { format, durationSeconds: 15.25 }),
+        width: 1280,
+        height: 720,
+        videoCodec: 'h264',
+      });
+      const completed = await authorized(
+        request(app.getHttpServer()).post(
+          `/v1/media/uploads/${created.media.id}/complete`,
+        ),
+      ).expect(200);
+      expect(completed.body).toMatchObject({
+        type: 'video',
+        status: 'ready',
+        contentType,
+        width: 1280,
+        height: 720,
+        durationMs: 15250,
+      });
+      expect((await createUpload(input)).media).toMatchObject({
+        id: created.media.id,
+        status: 'ready',
+      });
+    },
+  );
+
+  it.each([
+    ['application/pdf', 'pdf'],
+    ['text/plain', 'txt'],
+    [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'docx',
+    ],
+    [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'xlsx',
+    ],
+    [
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'pptx',
+    ],
+  ])(
+    'signs and verifies %s documents using raw storage and server-selected extensions',
+    async (contentType, format) => {
+      const created = await createUpload(
+        validUploadInput({
+          purpose: 'message_attachment',
+          contentType,
+          originalFilename: 'class/lesson.exe',
+          sizeBytes: 12000,
+        }),
+      );
+      expect(created.media).toMatchObject({
+        type: 'document',
+        originalFilename: `class_lesson.${format}`,
+      });
+      expect(created.upload.url).toContain('/raw/upload');
+      expect(created.upload.fields).toMatchObject({
+        allowed_formats: 'pdf,txt,docx,xlsx,pptx',
+        overwrite: 'false',
+      });
+      const pending = mediaRepository.findByClientUpload(
+        userId,
+        CLIENT_UPLOAD_ID,
+      )!;
+      expect(pending.cloudinaryPublicId.endsWith(`.${format}`)).toBe(true);
+      storage.documentResources.set(pending.cloudinaryPublicId, {
+        ...createStoredImage(pending),
+        resourceType: 'raw',
+        format,
+        secureUrl: `https://res.cloudinary.com/classroom/raw/upload/${pending.cloudinaryPublicId}`,
+      });
+      const completed = await authorized(
+        request(app.getHttpServer()).post(
+          `/v1/media/uploads/${created.media.id}/complete`,
+        ),
+      ).expect(200);
+      expect(completed.body).toMatchObject({
+        type: 'document',
+        status: 'ready',
+        contentType,
+        width: null,
+        height: null,
+        durationMs: null,
+        sizeBytes: 12000,
+      });
+    },
+  );
+
+  it.each([
+    ['missing visual stream', { videoCodec: '' }],
+    ['oversized dimensions', { width: 1921 }],
+    ['overlong duration', { durationSeconds: 300.001 }],
+    ['oversized bytes', { byteSize: 50 * 1024 * 1024 + 1 }],
+    ['wrong format', { format: 'm4a' }],
+    ['wrong owner context', { context: {} }],
+  ] satisfies Array<[string, Partial<StoredVideoResource>]>)(
+    'rejects invalid video completion: %s',
+    async (_label, overrides) => {
+      const created = await createUpload(
+        validUploadInput({
+          purpose: 'message_attachment',
+          contentType: 'video/mp4',
+        }),
+      );
+      const pending = mediaRepository.findByClientUpload(
+        userId,
+        CLIENT_UPLOAD_ID,
+      )!;
+      storage.videoResources.set(pending.cloudinaryPublicId, {
+        ...createStoredAudio(pending, { format: 'mp4' }),
+        width: 640,
+        height: 480,
+        videoCodec: 'h264',
+        ...overrides,
+      });
+      await authorized(
+        request(app.getHttpServer()).post(
+          `/v1/media/uploads/${created.media.id}/complete`,
+        ),
+      ).expect(409);
+      expect(
+        mediaRepository.findByClientUpload(userId, CLIENT_UPLOAD_ID)?.status,
+      ).toBe('FAILED');
+    },
+  );
+
+  it.each(['invalid bytes', 'wrong size', 'wrong format', 'wrong context'])(
+    'never readies a document with %s',
+    async (reason) => {
+      const created = await createUpload(
+        validUploadInput({
+          purpose: 'message_attachment',
+          contentType: 'application/pdf',
+        }),
+      );
+      const pending = mediaRepository.findByClientUpload(
+        userId,
+        CLIENT_UPLOAD_ID,
+      )!;
+      storage.documentContentValid = reason !== 'invalid bytes';
+      storage.documentResources.set(pending.cloudinaryPublicId, {
+        ...createStoredImage(pending),
+        resourceType: 'raw',
+        format: reason === 'wrong format' ? 'exe' : 'pdf',
+        byteSize: pending.byteSize + (reason === 'wrong size' ? 1 : 0),
+        context:
+          reason === 'wrong context'
+            ? {}
+            : {
+                media_id: pending.id,
+                upload_fingerprint: pending.uploadFingerprint,
+              },
+        secureUrl: `https://res.cloudinary.com/classroom/raw/upload/${pending.cloudinaryPublicId}`,
+      });
+      await authorized(
+        request(app.getHttpServer()).post(
+          `/v1/media/uploads/${created.media.id}/complete`,
+        ),
+      ).expect(409);
+      expect(
+        mediaRepository.findByClientUpload(userId, CLIENT_UPLOAD_ID)?.status,
+      ).toBe('FAILED');
+    },
+  );
+
+  it('rejects oversized and unsupported new uploads at the API boundary', async () => {
+    for (const overrides of [
+      { contentType: 'video/mp4', sizeBytes: 50 * 1024 * 1024 + 1 },
+      { contentType: 'application/pdf', sizeBytes: 25 * 1024 * 1024 + 1 },
+      { contentType: 'application/zip' },
+      { contentType: 'application/msword' },
+      { contentType: 'video/mp4', purpose: 'group_avatar' },
+      { contentType: 'application/pdf', purpose: 'profile_avatar' },
+    ]) {
+      await authorized(request(app.getHttpServer()).post('/v1/media/uploads'))
+        .send(validUploadInput({ purpose: 'message_attachment', ...overrides }))
+        .expect(400);
+    }
+  });
+
   it('protects every media and profile-avatar action with bearer authentication', async () => {
     await request(app.getHttpServer())
       .post('/v1/media/uploads')
@@ -719,69 +969,75 @@ describe('Media API (e2e, in memory)', () => {
     });
   });
 
-  it('creates and completes a verified message-attachment image upload', async () => {
-    const created = await createUpload(
-      validUploadInput({
-        purpose: 'message_attachment',
+  it.each([
+    ['message_attachment', 'MESSAGE_ATTACHMENT', 'message-images'],
+    ['group_avatar', 'GROUP_AVATAR', 'group-avatars'],
+  ] as const)(
+    'creates and completes a verified %s image upload',
+    async (purpose, storedPurpose, folder) => {
+      const created = await createUpload(
+        validUploadInput({
+          purpose,
+          contentType: 'image/webp',
+          sizeBytes: 198_765,
+          originalFilename: 'chat-photo.webp',
+        }),
+      );
+      expect(created.media).toMatchObject({
+        purpose,
+        status: 'pending',
+        type: 'image',
         contentType: 'image/webp',
         sizeBytes: 198_765,
         originalFilename: 'chat-photo.webp',
-      }),
-    );
-    expect(created.media).toMatchObject({
-      purpose: 'message_attachment',
-      status: 'pending',
-      type: 'image',
-      contentType: 'image/webp',
-      sizeBytes: 198_765,
-      originalFilename: 'chat-photo.webp',
-    });
-    expect(created.upload.fields.public_id).toMatch(
-      /^chateo\/message-images\/[0-9a-f-]{36}$/,
-    );
+      });
+      expect(created.upload.fields.public_id).toMatch(
+        new RegExp(`^chateo/${folder}/[0-9a-f-]{36}$`),
+      );
 
-    const pending = mediaRepository.findByClientUpload(
-      userId,
-      CLIENT_UPLOAD_ID,
-    ) as MediaAssetRecord;
-    expect(pending.purpose).toBe('MESSAGE_ATTACHMENT');
-    const stored = createStoredImage(pending, {
-      byteSize: 150_000,
-      width: 1280,
-      height: 720,
-      secureUrl:
-        'https://res.cloudinary.com/classroom/image/upload/message-photo.webp',
-    });
-    storage.seedImage(stored);
+      const pending = mediaRepository.findByClientUpload(
+        userId,
+        CLIENT_UPLOAD_ID,
+      ) as MediaAssetRecord;
+      expect(pending.purpose).toBe(storedPurpose);
+      const stored = createStoredImage(pending, {
+        byteSize: 150_000,
+        width: 1280,
+        height: 720,
+        secureUrl:
+          'https://res.cloudinary.com/classroom/image/upload/message-photo.webp',
+      });
+      storage.seedImage(stored);
 
-    const completed = await authorized(
-      request(app.getHttpServer()).post(
-        `/v1/media/uploads/${created.media.id}/complete`,
-      ),
-    ).expect(HttpStatus.OK);
-    expect(completed.body).toMatchObject({
-      id: created.media.id,
-      purpose: 'message_attachment',
-      status: 'ready',
-      type: 'image',
-      contentType: 'image/webp',
-      sizeBytes: 150_000,
-      width: 1280,
-      height: 720,
-      durationMs: null,
-      secureUrl: stored.secureUrl,
-      completedAt: NOW.toISOString(),
-    });
+      const completed = await authorized(
+        request(app.getHttpServer()).post(
+          `/v1/media/uploads/${created.media.id}/complete`,
+        ),
+      ).expect(HttpStatus.OK);
+      expect(completed.body).toMatchObject({
+        id: created.media.id,
+        purpose,
+        status: 'ready',
+        type: 'image',
+        contentType: 'image/webp',
+        sizeBytes: 150_000,
+        width: 1280,
+        height: 720,
+        durationMs: null,
+        secureUrl: stored.secureUrl,
+        completedAt: NOW.toISOString(),
+      });
 
-    const avatarAttempt = await authorized(
-      request(app.getHttpServer()).put('/v1/me/avatar'),
-    )
-      .send({ mediaId: created.media.id })
-      .expect(HttpStatus.NOT_FOUND);
-    expect(avatarAttempt.body as ApiErrorBody).toMatchObject({
-      code: 'MEDIA_UPLOAD_NOT_FOUND',
-    });
-  });
+      const avatarAttempt = await authorized(
+        request(app.getHttpServer()).put('/v1/me/avatar'),
+      )
+        .send({ mediaId: created.media.id })
+        .expect(HttpStatus.NOT_FOUND);
+      expect(avatarAttempt.body as ApiErrorBody).toMatchObject({
+        code: 'MEDIA_UPLOAD_NOT_FOUND',
+      });
+    },
+  );
 
   it('creates and completes a signed Cloudinary audio upload with verified duration metadata', async () => {
     const created = await createUpload(
@@ -972,11 +1228,15 @@ describe('Media API (e2e, in memory)', () => {
   it.each([
     ['unknown property', validUploadInput({ debug: true })],
     ['invalid idempotency UUID', validUploadInput({ clientUploadId: 'bad' })],
-    ['unsupported purpose', validUploadInput({ purpose: 'group_avatar' })],
+    ['unsupported purpose', validUploadInput({ purpose: 'message_video' })],
     ['unsupported media type', validUploadInput({ contentType: 'image/gif' })],
     [
       'audio used as a profile avatar',
       validUploadInput({ contentType: 'audio/m4a' }),
+    ],
+    [
+      'audio used as a group avatar',
+      validUploadInput({ purpose: 'group_avatar', contentType: 'audio/m4a' }),
     ],
     ['zero-byte file', validUploadInput({ sizeBytes: 0 })],
     ['oversized file', validUploadInput({ sizeBytes: 5 * 1024 * 1024 + 1 })],

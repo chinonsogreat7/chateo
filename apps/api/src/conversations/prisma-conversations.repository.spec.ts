@@ -8,6 +8,7 @@ const SECOND_PARTICIPANT_ID = '55555555-5555-4555-8555-555555555555';
 const NEW_PARTICIPANT_ID = '77777777-7777-4777-8777-777777777777';
 const CONVERSATION_ID = '33333333-3333-4333-8333-333333333333';
 const MESSAGE_ID = '44444444-4444-4444-8444-444444444444';
+const AVATAR_ID = '550e8400-e29b-41d4-a716-446655440000';
 const NOW = new Date('2026-08-12T12:00:00.000Z');
 
 interface RawConversationOptions {
@@ -80,6 +81,7 @@ function rawGroupConversation() {
     directUserOneId: null,
     directUserTwoId: null,
     name: 'Study Group',
+    avatarMediaId: AVATAR_ID as string | null,
     avatarUrl: 'https://example.com/groups/study.jpg',
     createdById: USER_ID,
     lastActivityAt: NOW,
@@ -306,6 +308,13 @@ describe('PrismaConversationsRepository', () => {
     const create = jest.fn().mockResolvedValue(rawGroupConversation());
     const client = {
       conversation: { create },
+      mediaAsset: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findFirst: jest.fn().mockResolvedValue({
+          id: AVATAR_ID,
+          secureUrl: rawGroupConversation().avatarUrl,
+        }),
+      },
       user: { findMany },
       userBlock: { findFirst: blockFindFirst },
     };
@@ -318,7 +327,7 @@ describe('PrismaConversationsRepository', () => {
       repository.createGroup({
         creatorId: USER_ID,
         name: 'Study Group',
-        avatarUrl: 'https://example.com/groups/study.jpg',
+        avatarMediaId: AVATAR_ID,
         participantIds: [PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
         now: NOW,
       }),
@@ -365,6 +374,7 @@ describe('PrismaConversationsRepository', () => {
         data: expect.objectContaining({
           type: 'GROUP',
           name: 'Study Group',
+          avatarMediaId: AVATAR_ID,
           avatarUrl: 'https://example.com/groups/study.jpg',
           createdById: USER_ID,
           members: {
@@ -405,7 +415,7 @@ describe('PrismaConversationsRepository', () => {
       repository.createGroup({
         creatorId: USER_ID,
         name: 'Study Group',
-        avatarUrl: null,
+        avatarMediaId: null,
         participantIds: [PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
         now: NOW,
       }),
@@ -433,7 +443,7 @@ describe('PrismaConversationsRepository', () => {
       repository.createGroup({
         creatorId: USER_ID,
         name: 'Study Group',
-        avatarUrl: null,
+        avatarMediaId: null,
         participantIds: [PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
         now: NOW,
       }),
@@ -744,6 +754,7 @@ describe('PrismaConversationsRepository', () => {
               senderId: true,
               kind: true,
               text: true,
+              deletedAt: true,
               createdAt: true,
             },
             orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -785,6 +796,7 @@ describe('PrismaConversationsRepository', () => {
     const updated = {
       ...rawGroupConversation(),
       name: 'Renamed Group',
+      avatarMediaId: null,
       avatarUrl: null,
       updatedAt: NOW,
     };
@@ -800,7 +812,7 @@ describe('PrismaConversationsRepository', () => {
         conversationId: CONVERSATION_ID.toUpperCase(),
         actorId: USER_ID.toUpperCase(),
         name: 'Renamed Group',
-        avatarUrl: null,
+        avatarMediaId: null,
         now: NOW,
       }),
     ).resolves.toMatchObject({
@@ -817,6 +829,7 @@ describe('PrismaConversationsRepository', () => {
         where: { id: CONVERSATION_ID },
         data: {
           name: 'Renamed Group',
+          avatarMediaId: null,
           avatarUrl: null,
           updatedAt: NOW,
         },
@@ -845,11 +858,195 @@ describe('PrismaConversationsRepository', () => {
         conversationId: CONVERSATION_ID,
         actorId: USER_ID,
         name: 'Study Group',
-        avatarUrl: 'https://example.com/groups/study.jpg',
         now: NOW,
       }),
     ).resolves.toMatchObject({ status: 'updated', changed: false });
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it.each(['OWNER', 'ADMIN'])(
+    'assigns an owned verified group image as %s and detects retries',
+    async (role) => {
+      const { repository, transaction } = createRepository();
+      const group = rawGroupConversation();
+      group.members[0]!.role = role;
+      group.avatarMediaId = null;
+      const mediaFindFirst = jest
+        .fn()
+        .mockResolvedValue({ id: AVATAR_ID, secureUrl: group.avatarUrl });
+      const findUnique = jest.fn().mockResolvedValue(group);
+      const update = jest
+        .fn()
+        .mockResolvedValue({ ...group, avatarMediaId: AVATAR_ID });
+      transaction.mockImplementation(
+        async (operation: (client: unknown) => Promise<unknown>) =>
+          operation({
+            conversation: { findUnique, update },
+            mediaAsset: {
+              findFirst: mediaFindFirst,
+              updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+            },
+          }),
+      );
+      const input = {
+        conversationId: CONVERSATION_ID,
+        actorId: USER_ID,
+        avatarMediaId: AVATAR_ID.toUpperCase(),
+        now: NOW,
+      };
+      await expect(repository.updateGroup(input)).resolves.toMatchObject({
+        status: 'updated',
+        changed: true,
+      });
+      expect(mediaFindFirst).toHaveBeenCalledWith({
+        where: {
+          id: AVATAR_ID,
+          ownerId: USER_ID,
+          purpose: 'GROUP_AVATAR',
+          status: 'READY',
+          resourceType: 'image',
+          deliveryType: 'upload',
+          completedAt: { not: null },
+          deletedAt: null,
+          byteSize: { gt: 0 },
+          width: { gt: 0 },
+          height: { gt: 0 },
+          OR: [
+            { format: { in: ['jpg', 'jpeg'] }, mimeType: 'image/jpeg' },
+            { format: 'png', mimeType: 'image/png' },
+            { format: 'webp', mimeType: 'image/webp' },
+          ],
+        },
+        select: { id: true, secureUrl: true },
+      });
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: {
+            avatarMediaId: AVATAR_ID,
+            avatarUrl: group.avatarUrl,
+            updatedAt: NOW,
+          },
+        }),
+      );
+      group.avatarMediaId = AVATAR_ID;
+      await expect(repository.updateGroup(input)).resolves.toMatchObject({
+        status: 'updated',
+        changed: false,
+      });
+      expect(update).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    null,
+    { id: AVATAR_ID, secureUrl: null },
+    { id: AVATAR_ID, secureUrl: 'http://example.com/photo.jpg' },
+    { id: AVATAR_ID, secureUrl: 'not-a-url' },
+  ])(
+    'rejects unavailable or invalid group photos atomically (%j)',
+    async (asset) => {
+      const { repository, transaction } = createRepository();
+      const update = jest.fn();
+      const create = jest.fn();
+      transaction.mockImplementation(
+        async (operation: (client: unknown) => Promise<unknown>) =>
+          operation({
+            conversation: {
+              findUnique: jest.fn().mockResolvedValue(rawGroupConversation()),
+              update,
+              create,
+            },
+            mediaAsset: { findFirst: jest.fn().mockResolvedValue(asset) },
+            userBlock: { findFirst: jest.fn().mockResolvedValue(null) },
+            user: {
+              findMany: jest.fn().mockResolvedValue([{ id: PARTICIPANT_ID }]),
+            },
+          }),
+      );
+      await expect(
+        repository.updateGroup({
+          conversationId: CONVERSATION_ID,
+          actorId: USER_ID,
+          name: 'Must not be applied',
+          avatarMediaId: AVATAR_ID,
+          now: NOW,
+        }),
+      ).resolves.toEqual({ status: 'avatar-unavailable' });
+      await expect(
+        repository.createGroup({
+          creatorId: USER_ID,
+          name: 'Must not be created',
+          participantIds: [PARTICIPANT_ID],
+          avatarMediaId: AVATAR_ID,
+          now: NOW,
+        }),
+      ).resolves.toEqual({ status: 'avatar-unavailable' });
+      expect(update).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [PARTICIPANT_ID, 'forbidden'],
+    [NEW_PARTICIPANT_ID, 'conversation-not-found'],
+  ])(
+    'rejects unauthorized photo changes before media lookup for %s',
+    async (actorId, status) => {
+      const { repository, transaction } = createRepository();
+      const mediaFindFirst = jest.fn();
+      const update = jest.fn();
+      transaction.mockImplementation(
+        async (operation: (client: unknown) => Promise<unknown>) =>
+          operation({
+            conversation: {
+              findUnique: jest.fn().mockResolvedValue(rawGroupConversation()),
+              update,
+            },
+            mediaAsset: { findFirst: mediaFindFirst },
+          }),
+      );
+      for (const avatarMediaId of [AVATAR_ID, null]) {
+        await expect(
+          repository.updateGroup({
+            conversationId: CONVERSATION_ID,
+            actorId,
+            avatarMediaId,
+            now: NOW,
+          }),
+        ).resolves.toEqual({ status });
+      }
+      expect(mediaFindFirst).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    },
+  );
+
+  it('removes a legacy URL and treats a second removal as a no-op', async () => {
+    const { repository, transaction } = createRepository();
+    const group = rawGroupConversation();
+    group.avatarMediaId = null;
+    const findUnique = jest.fn().mockResolvedValue(group);
+    const update = jest.fn().mockResolvedValue({ ...group, avatarUrl: null });
+    transaction.mockImplementation(
+      async (operation: (client: unknown) => Promise<unknown>) =>
+        operation({ conversation: { findUnique, update } }),
+    );
+    const input = {
+      conversationId: CONVERSATION_ID,
+      actorId: USER_ID,
+      avatarMediaId: null,
+      now: NOW,
+    };
+    await expect(repository.updateGroup(input)).resolves.toMatchObject({
+      status: 'updated',
+      changed: true,
+      conversation: { avatarUrl: null },
+    });
+    findUnique.mockResolvedValue({ ...group, avatarUrl: null });
+    await expect(repository.updateGroup(input)).resolves.toMatchObject({
+      status: 'updated',
+      changed: false,
+    });
+    expect(update).toHaveBeenCalledTimes(1);
   });
 
   it('adds validated members as members and returns post-add recipients', async () => {

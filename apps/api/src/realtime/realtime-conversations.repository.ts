@@ -10,6 +10,7 @@ export abstract class RealtimeConversationsRepository {
   abstract findAccessibleConversation(
     conversationId: string,
     userId: string,
+    message?: { id: string; createdAt: Date },
   ): Promise<RealtimeConversationAccess | null>;
 
   abstract findGroupParticipantIds(
@@ -26,6 +27,7 @@ export class PrismaRealtimeConversationsRepository extends RealtimeConversations
   async findAccessibleConversation(
     conversationId: string,
     userId: string,
+    message?: { id: string; createdAt: Date },
   ): Promise<RealtimeConversationAccess | null> {
     const conversation = await this.prisma.conversation.findFirst({
       where: {
@@ -36,7 +38,12 @@ export class PrismaRealtimeConversationsRepository extends RealtimeConversations
         id: true,
         type: true,
         members: {
-          select: { userId: true },
+          select: {
+            userId: true,
+            ...(message
+              ? { clearedAt: true, clearedThroughMessageId: true }
+              : {}),
+          },
           orderBy: { userId: 'asc' },
         },
       },
@@ -63,7 +70,17 @@ export class PrismaRealtimeConversationsRepository extends RealtimeConversations
     }
     return {
       conversationId: conversation.id,
-      participantIds: conversation.members.map((member) => member.userId),
+      participantIds: conversation.members
+        .filter(
+          (member) =>
+            !message ||
+            !member.clearedAt ||
+            !member.clearedThroughMessageId ||
+            message.createdAt > member.clearedAt ||
+            (message.createdAt.getTime() === member.clearedAt.getTime() &&
+              message.id > member.clearedThroughMessageId),
+        )
+        .map((member) => member.userId),
     };
   }
 

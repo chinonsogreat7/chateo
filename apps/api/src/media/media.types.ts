@@ -1,4 +1,5 @@
 export const PROFILE_AVATAR_PURPOSE = 'PROFILE_AVATAR' as const;
+export const GROUP_AVATAR_PURPOSE = 'GROUP_AVATAR' as const;
 export const MESSAGE_ATTACHMENT_PURPOSE = 'MESSAGE_ATTACHMENT' as const;
 export const PENDING_MEDIA_STATUS = 'PENDING' as const;
 export const READY_MEDIA_STATUS = 'READY' as const;
@@ -7,14 +8,15 @@ export const DELETED_MEDIA_STATUS = 'DELETED' as const;
 
 export type MediaPurpose =
   | typeof PROFILE_AVATAR_PURPOSE
+  | typeof GROUP_AVATAR_PURPOSE
   | typeof MESSAGE_ATTACHMENT_PURPOSE;
 export type MediaStatus =
   | typeof PENDING_MEDIA_STATUS
   | typeof READY_MEDIA_STATUS
   | typeof FAILED_MEDIA_STATUS
   | typeof DELETED_MEDIA_STATUS;
-export type MediaResourceType = 'image' | 'video';
-export type MediaType = 'image' | 'audio';
+export type MediaResourceType = 'image' | 'video' | 'raw';
+export type MediaType = 'image' | 'audio' | 'video' | 'document';
 
 export interface MediaAssetRecord {
   id: string;
@@ -102,6 +104,25 @@ export interface SignedAudioUpload {
     overwrite: 'false';
     allowed_formats: 'aac,m4a,mp3,ogg,wav';
     upload_preset: string;
+  };
+}
+
+export interface StoredVideoResource extends StoredAudioResource {
+  width: number;
+  height: number;
+  videoCodec: string;
+}
+
+export type StoredDocumentResource = Omit<
+  StoredImageResource,
+  'width' | 'height'
+>;
+
+export interface SignedFileUpload {
+  url: string;
+  method: 'POST';
+  fields: Omit<SignedAudioUpload['fields'], 'allowed_formats'> & {
+    allowed_formats: 'mp4,mov,webm' | 'pdf,txt,docx,xlsx,pptx';
   };
 }
 

@@ -1,4 +1,9 @@
-import { ApiExtraModels, ApiProperty, getSchemaPath } from '@nestjs/swagger';
+import {
+  ApiExtraModels,
+  ApiProperty,
+  OmitType,
+  getSchemaPath,
+} from '@nestjs/swagger';
 
 export class MessageAttachmentResponseDto {
   @ApiProperty({ format: 'uuid' })
@@ -47,7 +52,52 @@ export class AudioMessageAttachmentResponseDto {
   url!: string;
 }
 
-@ApiExtraModels(MessageAttachmentResponseDto, AudioMessageAttachmentResponseDto)
+export class VideoMessageAttachmentResponseDto extends OmitType(
+  AudioMessageAttachmentResponseDto,
+  ['type', 'sizeBytes', 'durationMs'] as const,
+) {
+  @ApiProperty({ enum: ['video'] })
+  type!: 'video';
+  @ApiProperty({ minimum: 1, maximum: 50 * 1024 * 1024 })
+  sizeBytes!: number;
+  @ApiProperty({ minimum: 1, maximum: 300000 })
+  durationMs!: number;
+
+  @ApiProperty({ minimum: 1, maximum: 1920 })
+  width!: number;
+
+  @ApiProperty({ minimum: 1, maximum: 1920 })
+  height!: number;
+}
+
+export class DocumentMessageAttachmentResponseDto {
+  @ApiProperty({ format: 'uuid' })
+  mediaId!: string;
+  @ApiProperty({ enum: ['document'] })
+  type!: 'document';
+  @ApiProperty()
+  contentType!: string;
+  @ApiProperty({ minimum: 1, maximum: 25 * 1024 * 1024 })
+  sizeBytes!: number;
+  @ApiProperty({ maxLength: 255 })
+  filename!: string;
+  @ApiProperty({ format: 'uri' })
+  url!: string;
+}
+
+export class MessageReactionResponseDto {
+  @ApiProperty({ format: 'uuid' })
+  userId!: string;
+  @ApiProperty({ example: '👍' })
+  emoji!: string;
+}
+
+@ApiExtraModels(
+  MessageAttachmentResponseDto,
+  AudioMessageAttachmentResponseDto,
+  VideoMessageAttachmentResponseDto,
+  DocumentMessageAttachmentResponseDto,
+)
 export class MessageResponseDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
@@ -61,8 +111,11 @@ export class MessageResponseDto {
   @ApiProperty({ format: 'uuid' })
   senderId!: string;
 
-  @ApiProperty({ enum: ['text', 'image', 'audio'], example: 'text' })
-  kind!: 'text' | 'image' | 'audio';
+  @ApiProperty({
+    enum: ['text', 'image', 'audio', 'video', 'document'],
+    example: 'text',
+  })
+  kind!: 'text' | 'image' | 'audio' | 'video' | 'document';
 
   @ApiProperty({
     type: String,
@@ -77,22 +130,50 @@ export class MessageResponseDto {
       oneOf: [
         { $ref: getSchemaPath(MessageAttachmentResponseDto) },
         { $ref: getSchemaPath(AudioMessageAttachmentResponseDto) },
+        { $ref: getSchemaPath(VideoMessageAttachmentResponseDto) },
+        { $ref: getSchemaPath(DocumentMessageAttachmentResponseDto) },
       ],
       discriminator: {
         propertyName: 'type',
         mapping: {
           image: getSchemaPath(MessageAttachmentResponseDto),
           audio: getSchemaPath(AudioMessageAttachmentResponseDto),
+          video: getSchemaPath(VideoMessageAttachmentResponseDto),
+          document: getSchemaPath(DocumentMessageAttachmentResponseDto),
         },
       },
     },
   })
   attachments!: Array<
-    MessageAttachmentResponseDto | AudioMessageAttachmentResponseDto
+    | MessageAttachmentResponseDto
+    | AudioMessageAttachmentResponseDto
+    | VideoMessageAttachmentResponseDto
+    | DocumentMessageAttachmentResponseDto
   >;
 
   @ApiProperty({ format: 'date-time' })
   createdAt!: string;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Fetch the referenced message with GET messages/:messageId; hidden/deleted content is never embedded in replies.',
+  })
+  replyToMessageId!: string | null;
+  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  editedAt!: string | null;
+  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  deletedAt!: string | null;
+  @ApiProperty({
+    minimum: 0,
+    description:
+      'Monotonic revision for edits, deletion, and reactions. Ignore older socket snapshots.',
+  })
+  version!: number;
+  @ApiProperty({ type: [MessageReactionResponseDto] })
+  reactions!: MessageReactionResponseDto[];
 }
 
 export class MessagePageInfoDto {

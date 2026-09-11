@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { CloudinaryMediaProvider } from './cloudinary-media.provider';
 import { MediaStorageError } from './media-storage.provider';
+import { createHash } from 'node:crypto';
 
 const API_SECRET = 'cloudinary-secret-at-least-16';
 
@@ -14,6 +15,8 @@ function createProvider(
     CLOUDINARY_API_SECRET: API_SECRET,
     CLOUDINARY_PROFILE_AVATAR_UPLOAD_PRESET: 'chateo_profile_avatars',
     CLOUDINARY_CHAT_AUDIO_UPLOAD_PRESET: 'chateo_chat_audio',
+    CLOUDINARY_CHAT_VIDEO_UPLOAD_PRESET: 'chateo_chat_video',
+    CLOUDINARY_CHAT_DOCUMENT_UPLOAD_PRESET: 'chateo_chat_documents',
     ...overrides,
   };
   const config = {
@@ -42,6 +45,220 @@ async function expectStorageError(
 
 describe('CloudinaryMediaProvider', () => {
   afterEach(() => jest.restoreAllMocks());
+
+  it.each(['video', 'document'] as const)(
+    'signs %s formats and the exact purpose-specific preset, without leaking secrets',
+    async (kind) => {
+      const provider = createProvider();
+      const input = {
+        publicId:
+          kind === 'video'
+            ? 'chateo/message-videos/id'
+            : 'chateo/message-documents/id.pdf',
+        timestamp: new Date('2026-09-09T12:00:00.000Z'),
+        context: { media_id: 'id' },
+      };
+      const result =
+        kind === 'video'
+          ? await provider.signVideoUpload(input)
+          : await provider.signDocumentUpload(input);
+      const { signature, api_key: key, ...fields } = result.fields;
+      const canonical = Object.entries(fields)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, value]) => `${name}=${value}`)
+        .join('&');
+      expect(signature).toBe(
+        createHash('sha256')
+          .update(canonical + API_SECRET)
+          .digest('hex'),
+      );
+      expect(key).toBe('public-api-key');
+      expect(result.url).toBe(
+        `https://api.cloudinary.com/v1_1/demo/${kind === 'video' ? 'video' : 'raw'}/upload`,
+      );
+      expect(result.fields.allowed_formats).toBe(
+        kind === 'video' ? 'mp4,mov,webm' : 'pdf,txt,docx,xlsx,pptx',
+      );
+      expect(JSON.stringify(result)).not.toContain(API_SECRET);
+      const disabled = createProvider({
+        [kind === 'video'
+          ? 'CLOUDINARY_CHAT_VIDEO_UPLOAD_PRESET'
+          : 'CLOUDINARY_CHAT_DOCUMENT_UPLOAD_PRESET']: '',
+      });
+      await expectStorageError(
+        kind === 'video'
+          ? disabled.signVideoUpload(input)
+          : disabled.signDocumentUpload(input),
+        kind === 'video' ? 'video-not-configured' : 'document-not-configured',
+      );
+    },
+  );
+
+  it('verifies raw document bytes only from the expected Cloudinary asset without forwarding credentials', async () => {
+    const bytes = Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n');
+    const resource = {
+      assetId: 'asset',
+      publicId: 'chateo/message-documents/id.pdf',
+      resourceType: 'raw',
+      deliveryType: 'upload',
+      format: 'pdf',
+      byteSize: bytes.length,
+      secureUrl:
+        'https://res.cloudinary.com/demo/raw/upload/v123/chateo/message-documents/id.pdf',
+      etag: null,
+      context: {},
+    };
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation(async () => new Response(bytes));
+    const provider = createProvider();
+    await expect(
+      provider.verifyDocumentContent(
+        resource,
+        'application/pdf',
+        createHash('sha256').update(bytes).digest('hex'),
+      ),
+    ).resolves.toBe(true);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      new URL(resource.secureUrl),
+      expect.objectContaining({ redirect: 'error' }),
+    );
+    expect(fetchSpy.mock.calls[0]?.[1]).not.toHaveProperty('headers');
+    for (const secureUrl of [
+      'http://127.0.0.1/x',
+      'https://res.cloudinary.com.evil.test/demo/raw/upload/id.pdf',
+      'https://res.cloudinary.com/demo/raw/upload/another.pdf',
+      resource.secureUrl + '?redirect=x',
+    ]) {
+      await expect(
+        provider.verifyDocumentContent(
+          { ...resource, secureUrl },
+          'application/pdf',
+          null,
+        ),
+      ).resolves.toBe(false);
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await expect(
+      provider.verifyDocumentContent(
+        resource,
+        'application/pdf',
+        'a'.repeat(64),
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      provider.verifyDocumentContent(
+        { ...resource, byteSize: bytes.length - 1 },
+        'application/pdf',
+        null,
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it('bounds document verification concurrency and releases capacity after failed downloads', async () => {
+    const provider = createProvider();
+    const resource = {
+      assetId: 'asset',
+      publicId: 'docs/id.pdf',
+      resourceType: 'raw',
+      deliveryType: 'upload',
+      format: 'pdf',
+      byteSize: 30,
+      secureUrl: 'https://res.cloudinary.com/demo/raw/upload/docs/id.pdf',
+      etag: null,
+      context: {},
+    };
+    let rejectDownload!: (reason: Error) => void;
+    const pending = new Promise<Response>((_resolve, reject) => {
+      rejectDownload = reject;
+    });
+    const fetchSpy = jest.spyOn(global, 'fetch').mockReturnValue(pending);
+    const first = expectStorageError(
+      provider.verifyDocumentContent(resource, 'application/pdf', null),
+      'unavailable',
+    );
+    const second = expectStorageError(
+      provider.verifyDocumentContent(resource, 'application/pdf', null),
+      'unavailable',
+    );
+    await expectStorageError(
+      provider.verifyDocumentContent(resource, 'application/pdf', null),
+      'unavailable',
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    rejectDownload(new Error('timeout'));
+    await Promise.all([first, second]);
+    fetchSpy.mockResolvedValue(new Response('not a PDF'));
+    await expect(
+      provider.verifyDocumentContent(resource, 'application/pdf', null),
+    ).resolves.toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('deletes rejected raw documents using the signed raw destroy endpoint', async () => {
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response('{"result":"ok"}'));
+    await createProvider().deleteDocument('docs/id.pdf');
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://api.cloudinary.com/v1_1/demo/raw/destroy',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.any(URLSearchParams),
+      }),
+    );
+    const body = fetchSpy.mock.calls[0]?.[1]?.body as URLSearchParams;
+    expect(body.get('public_id')).toBe('docs/id.pdf');
+    expect(body.get('invalidate')).toBe('true');
+    expect(body.get('signature')).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('parses raw resource extensions when Cloudinary omits format, and retains visual video metadata', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          asset_id: 'asset',
+          public_id: 'docs/id.pdf',
+          resource_type: 'raw',
+          type: 'upload',
+          bytes: 50,
+          secure_url: 'https://res.cloudinary.com/demo/raw/upload/docs/id.pdf',
+          context: { custom: { media_id: 'id' } },
+        }),
+      ),
+    );
+    const provider = createProvider();
+    await expect(provider.findDocument('docs/id.pdf')).resolves.toMatchObject({
+      resourceType: 'raw',
+      format: 'pdf',
+      context: { media_id: 'id' },
+    });
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          asset_id: 'video',
+          public_id: 'videos/id',
+          resource_type: 'video',
+          type: 'upload',
+          format: 'mp4',
+          bytes: 1000,
+          width: 1280,
+          height: 720,
+          duration: 12,
+          video: { codec: 'h264' },
+          secure_url:
+            'https://res.cloudinary.com/demo/video/upload/videos/id.mp4',
+        }),
+      ),
+    );
+    await expect(provider.findVideo('videos/id')).resolves.toMatchObject({
+      width: 1280,
+      height: 720,
+      durationSeconds: 12,
+      videoCodec: 'h264',
+    });
+  });
 
   it('returns exact multipart fields signed with deterministic SHA-256', async () => {
     const provider = createProvider();

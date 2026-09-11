@@ -8,14 +8,21 @@ import { MediaStorageProvider } from './media-storage.provider';
 const NOW = new Date('2026-09-06T12:00:00.000Z');
 const SIGNATURE_SAFE_CUTOFF = new Date('2026-09-06T10:55:00.000Z');
 
-function createService(enabled = true) {
+function createService(enabled = true, unusedEnabled = false) {
   const repository: jest.Mocked<MediaCleanupRepository> = {
     findCandidates: jest.fn().mockResolvedValue([]),
     claimExpiredPending: jest.fn(),
     markDeleted: jest.fn(),
+    claimUnusedReady: jest.fn(),
   };
   const storage: jest.Mocked<MediaStorageProvider> = {
     signImageUpload: jest.fn(),
+    signVideoUpload: jest.fn(),
+    signDocumentUpload: jest.fn(),
+    findVideo: jest.fn(),
+    findDocument: jest.fn(),
+    verifyDocumentContent: jest.fn(),
+    deleteDocument: jest.fn(),
     signAudioUpload: jest.fn(),
     findImage: jest.fn(),
     findAudio: jest.fn(),
@@ -25,7 +32,11 @@ function createService(enabled = true) {
   const clock: MediaClock = { now: () => new Date(NOW.getTime()) };
   const config = {
     get: jest.fn((key: string, defaultValue: unknown) =>
-      key === 'MEDIA_UPLOADS_ENABLED' ? enabled : defaultValue,
+      key === 'MEDIA_UPLOADS_ENABLED'
+        ? enabled
+        : key === 'MEDIA_UNUSED_CLEANUP_ENABLED'
+          ? unusedEnabled
+          : defaultValue,
     ),
   } as unknown as ConfigService;
 
@@ -37,6 +48,32 @@ function createService(enabled = true) {
 }
 
 describe('MediaCleanupService', () => {
+  it('deletes ready unused media only after a successful retirement claim', async () => {
+    const { service, repository, storage } = createService(true, true);
+    const candidate = {
+      id: 'unused',
+      cloudinaryPublicId: 'chateo/doc.pdf',
+      resourceType: 'raw' as const,
+      status: 'READY' as const,
+    };
+    repository.findCandidates.mockResolvedValue([candidate]);
+    repository.claimUnusedReady
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    await service.sweepOnce();
+    expect(storage.deleteDocument).not.toHaveBeenCalled();
+    await service.sweepOnce();
+    expect(storage.deleteDocument).toHaveBeenCalledWith(
+      candidate.cloudinaryPublicId,
+    );
+    expect(repository.claimUnusedReady).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unusedBefore: new Date(NOW.getTime() - 86400000),
+      }),
+    );
+    expect(repository.markDeleted).toHaveBeenCalledTimes(1);
+  });
+
   it('claims an expired pending upload before deleting and marking it deleted', async () => {
     const { repository, storage, service } = createService();
     repository.findCandidates.mockResolvedValue([

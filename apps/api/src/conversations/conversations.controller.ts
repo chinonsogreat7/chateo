@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UseInterceptors,
 } from '@nestjs/common';
@@ -45,6 +46,7 @@ import { GroupMemberParamsDto } from './dto/group-member-params.dto';
 import { ListArchivedConversationsQueryDto } from './dto/list-archived-conversations-query.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
 import { ListFavoriteConversationsQueryDto } from './dto/list-favorite-conversations-query.dto';
+import { SetGroupAvatarDto } from './dto/set-group-avatar.dto';
 import { TransferGroupOwnershipDto } from './dto/transfer-group-ownership.dto';
 import { UpdateGroupConversationDto } from './dto/update-group-conversation.dto';
 import { UpdateGroupMemberRoleDto } from './dto/update-group-member-role.dto';
@@ -57,6 +59,7 @@ const PARTICIPANT_ID_EXAMPLE = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
   CreateDirectConversationDto,
   CreateGroupConversationDto,
   UpdateGroupConversationDto,
+  SetGroupAvatarDto,
   AddGroupMembersDto,
   UpdateGroupMemberRoleDto,
   TransferGroupOwnershipDto,
@@ -112,6 +115,10 @@ export class ConversationsController {
     },
   })
   @ApiCreatedResponse({ type: GroupConversationResponseDto })
+  @ApiConflictResponse({
+    description:
+      'GROUP_AVATAR_UNAVAILABLE: the media is not an owned, verified group photo.',
+  })
   @ApiBadRequestResponse({
     description:
       'The group name or participant list is invalid, duplicated, or includes the creator.',
@@ -137,7 +144,7 @@ export class ConversationsController {
     examples: {
       default: {
         summary: 'Rename a group and remove its avatar',
-        value: { name: 'Project Team', avatarUrl: null },
+        value: { name: 'Project Team', avatarMediaId: null },
       },
     },
   })
@@ -152,6 +159,10 @@ export class ConversationsController {
     description:
       'The group conversation is missing or the user is not a member.',
   })
+  @ApiConflictResponse({
+    description:
+      'GROUP_AVATAR_UNAVAILABLE: the media is not an owned, verified group photo.',
+  })
   updateGroup(
     @CurrentUser() user: AuthenticatedUser,
     @Param() params: ConversationParamsDto,
@@ -161,6 +172,73 @@ export class ConversationsController {
       user.sub,
       params.conversationId,
       input,
+    );
+  }
+
+  @Put(':conversationId/avatar')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Set a verified group photo (owner or admin)',
+    description:
+      'First create a group_avatar upload and complete verification. Repeating the same assignment is idempotent.',
+  })
+  @ApiBody({
+    schema: { $ref: getSchemaPath(SetGroupAvatarDto) },
+    examples: {
+      default: {
+        summary: 'Select your verified group photo',
+        value: { mediaId: '550e8400-e29b-41d4-a716-446655440000' },
+      },
+    },
+  })
+  @ApiOkResponse({ type: GroupConversationResponseDto })
+  @ApiBadRequestResponse({
+    description: 'The media or conversation ID is invalid.',
+  })
+  @ApiForbiddenResponse({
+    description: 'Only group owners and admins can change the photo.',
+  })
+  @ApiNotFoundResponse({
+    description: 'The group is missing or the user is not a member.',
+  })
+  @ApiConflictResponse({
+    description:
+      'GROUP_AVATAR_UNAVAILABLE: missing, foreign, incomplete, deleted, or wrong-purpose media.',
+  })
+  setGroupAvatar(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationParamsDto,
+    @Body() input: SetGroupAvatarDto,
+  ): Promise<GroupConversationResponseDto> {
+    return this.conversationsService.setGroupAvatar(
+      user.sub,
+      params.conversationId,
+      input.mediaId,
+    );
+  }
+
+  @Delete(':conversationId/avatar')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Remove a group photo (owner or admin)',
+    description:
+      'Idempotently clears the group photo reference. Does not delete the uploaded asset or the group.',
+  })
+  @ApiOkResponse({ type: GroupConversationResponseDto })
+  @ApiBadRequestResponse({ description: 'The conversation ID is invalid.' })
+  @ApiForbiddenResponse({
+    description: 'Only group owners and admins can remove the photo.',
+  })
+  @ApiNotFoundResponse({
+    description: 'The group is missing or the user is not a member.',
+  })
+  clearGroupAvatar(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationParamsDto,
+  ): Promise<GroupConversationResponseDto> {
+    return this.conversationsService.clearGroupAvatar(
+      user.sub,
+      params.conversationId,
     );
   }
 

@@ -60,6 +60,17 @@ export class MediaController {
           originalFilename: 'profile-photo.jpg',
         },
       },
+      groupAvatar: {
+        summary:
+          'Authorize a group photo upload before creating or editing a group',
+        value: {
+          clientUploadId: '6c333739-8cbf-40c0-a134-4eecbd63eac1',
+          purpose: 'group_avatar',
+          contentType: 'image/jpeg',
+          sizeBytes: 245000,
+          originalFilename: 'group-photo.jpg',
+        },
+      },
       messageAttachment: {
         summary: 'Authorize a PNG chat image upload',
         value: {
@@ -78,6 +89,27 @@ export class MediaController {
           contentType: 'audio/mp4',
           sizeBytes: 1250000,
           originalFilename: 'voice-note.m4a',
+        },
+      },
+      video: {
+        summary:
+          'Authorize an MP4 chat video (max 50 MiB, five minutes, 1920px per axis)',
+        value: {
+          clientUploadId: '9f666062-bfe2-43f3-b467-711ef0960bf5',
+          purpose: 'message_attachment',
+          contentType: 'video/mp4',
+          sizeBytes: 2000000,
+          originalFilename: 'lesson.mp4',
+        },
+      },
+      document: {
+        summary: 'Authorize a PDF chat document (max 25 MiB)',
+        value: {
+          clientUploadId: '9f666062-bfe2-43f3-b467-711ef0960bf6',
+          purpose: 'message_attachment',
+          contentType: 'application/pdf',
+          sizeBytes: 12000,
+          originalFilename: 'lesson.pdf',
         },
       },
     },
@@ -99,7 +131,7 @@ export class MediaController {
   })
   @ApiServiceUnavailableResponse({
     description:
-      'Media uploads are disabled, or the audio upload preset is not configured.',
+      'Media uploads are disabled, or the requested audio/video/document upload preset is not configured.',
   })
   create(
     @CurrentUser() user: AuthenticatedUser,

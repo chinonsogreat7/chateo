@@ -14,6 +14,13 @@ import {
   type ValidatorConstraintInterface,
 } from 'class-validator';
 import { IsPostgresText } from '../../messages/validators/is-postgres-text.decorator';
+import {
+  DOCUMENT_FORMAT_BY_MIME,
+  VIDEO_FORMAT_BY_MIME,
+  MAX_VIDEO_UPLOAD_BYTES,
+  MAX_DOCUMENT_UPLOAD_BYTES,
+  mediaType,
+} from '../attachment-formats';
 
 export const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const MAX_AUDIO_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -35,9 +42,16 @@ export const AUDIO_UPLOAD_CONTENT_TYPES = [
 export const MEDIA_UPLOAD_CONTENT_TYPES = [
   ...IMAGE_UPLOAD_CONTENT_TYPES,
   ...AUDIO_UPLOAD_CONTENT_TYPES,
+  ...(Object.keys(VIDEO_FORMAT_BY_MIME) as Array<
+    keyof typeof VIDEO_FORMAT_BY_MIME
+  >),
+  ...(Object.keys(DOCUMENT_FORMAT_BY_MIME) as Array<
+    keyof typeof DOCUMENT_FORMAT_BY_MIME
+  >),
 ] as const;
 export const MEDIA_UPLOAD_PURPOSES = [
   'profile_avatar',
+  'group_avatar',
   'message_attachment',
 ] as const;
 export type MediaUploadPurpose = (typeof MEDIA_UPLOAD_PURPOSES)[number];
@@ -68,13 +82,12 @@ class MediaPurposeSupportsContentTypeConstraint
       return true;
     }
     return (
-      value === 'message_attachment' ||
-      !isAudioUploadContentType(input.contentType)
+      value === 'message_attachment' || mediaType(input.contentType) === 'image'
     );
   }
 
   defaultMessage(): string {
-    return 'profile_avatar uploads only support JPEG, PNG, or WebP images';
+    return 'Avatar uploads only support JPEG, PNG, or WebP images';
   }
 }
 
@@ -83,21 +96,24 @@ class MediaUploadSizeConstraint implements ValidatorConstraintInterface {
   validate(value: unknown, args: ValidationArguments): boolean {
     if (!Number.isInteger(value)) return true;
     const input = args.object as Partial<CreateMediaUploadDto>;
-    const maximum =
-      typeof input.contentType === 'string' &&
-      isAudioUploadContentType(input.contentType)
-        ? MAX_AUDIO_UPLOAD_BYTES
-        : MAX_IMAGE_UPLOAD_BYTES;
+    const maximum = this.maximum(input.contentType);
     return (value as number) <= maximum;
   }
 
   defaultMessage(args: ValidationArguments): string {
     const input = args.object as Partial<CreateMediaUploadDto>;
-    const isAudio =
-      typeof input.contentType === 'string' &&
-      isAudioUploadContentType(input.contentType);
-    const maximum = isAudio ? MAX_AUDIO_UPLOAD_BYTES : MAX_IMAGE_UPLOAD_BYTES;
-    return `sizeBytes must not be greater than ${maximum} for ${isAudio ? 'audio' : 'image'} uploads`;
+    return `sizeBytes must not be greater than ${this.maximum(input.contentType)} for this upload type`;
+  }
+
+  private maximum(contentType?: string): number {
+    const type = mediaType(contentType ?? '');
+    return type === 'video'
+      ? MAX_VIDEO_UPLOAD_BYTES
+      : type === 'document'
+        ? MAX_DOCUMENT_UPLOAD_BYTES
+        : type === 'audio'
+          ? MAX_AUDIO_UPLOAD_BYTES
+          : MAX_IMAGE_UPLOAD_BYTES;
   }
 }
 
@@ -134,10 +150,10 @@ export class CreateMediaUploadDto {
 
   @ApiProperty({
     minimum: 1,
-    maximum: MAX_AUDIO_UPLOAD_BYTES,
+    maximum: MAX_VIDEO_UPLOAD_BYTES,
     example: 245000,
     description:
-      'Declared input size in bytes. Images are limited to 5 MiB and audio recordings to 20 MiB before configured limits are applied.',
+      'Declared size: images 5 MiB, audio 20 MiB, video 50 MiB, documents 25 MiB, before configured limits are applied.',
   })
   @IsInt()
   @Min(1)
@@ -148,7 +164,7 @@ export class CreateMediaUploadDto {
     pattern: '^[0-9a-f]{64}$',
     example: 'a'.repeat(64),
     description:
-      'Optional client-calculated SHA-256 used to strengthen idempotency. Cloudinary metadata does not independently verify it.',
+      'Optional client-calculated SHA-256 strengthens idempotency. Document completion additionally verifies it against downloaded bytes; image/audio/video metadata does not independently verify it.',
   })
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>

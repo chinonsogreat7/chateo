@@ -14,8 +14,9 @@ export interface GroupConversationParticipantRecord
 export interface ConversationLatestMessageRecord {
   id: string;
   senderId: string;
-  kind: 'TEXT' | 'IMAGE' | 'AUDIO';
+  kind: 'TEXT' | 'IMAGE' | 'AUDIO' | 'VIDEO' | 'DOCUMENT';
   text: string | null;
+  deletedAt?: Date | null;
   createdAt: Date;
 }
 
@@ -73,14 +74,15 @@ export type CreateDirectConversationResult =
 export interface CreateGroupConversationInput {
   creatorId: string;
   name: string;
-  avatarUrl: string | null;
+  avatarMediaId: string | null;
   participantIds: string[];
   now: Date;
 }
 
 export type CreateGroupConversationResult =
   | { status: 'created'; conversation: GroupConversationRecord }
-  | { status: 'participant-not-found' };
+  | { status: 'participant-not-found' }
+  | { status: 'avatar-unavailable' };
 
 interface GroupMutationInputBase {
   conversationId: string;
@@ -99,7 +101,7 @@ interface GroupMutationWithConversationSuccess
 
 export interface UpdateGroupInput extends GroupMutationInputBase {
   name?: string;
-  avatarUrl?: string | null;
+  avatarMediaId?: string | null;
 }
 
 export type UpdateGroupResult =
@@ -107,7 +109,7 @@ export type UpdateGroupResult =
       status: 'updated';
       changed: boolean;
     })
-  | { status: 'conversation-not-found' | 'forbidden' };
+  | { status: 'conversation-not-found' | 'forbidden' | 'avatar-unavailable' };
 
 export interface AddGroupMembersInput extends GroupMutationInputBase {
   participantIds: string[];

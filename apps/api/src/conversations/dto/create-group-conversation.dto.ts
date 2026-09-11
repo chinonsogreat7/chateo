@@ -7,10 +7,8 @@ import {
   IsArray,
   IsOptional,
   IsString,
-  IsUrl,
   IsUUID,
   Length,
-  MaxLength,
 } from 'class-validator';
 
 export class CreateGroupConversationDto {
@@ -49,12 +47,12 @@ export class CreateGroupConversationDto {
   @ApiPropertyOptional({
     type: String,
     nullable: true,
-    format: 'uri',
-    example: 'https://example.com/groups/study-group.jpg',
-    description: 'An optional URL supplied by the future media-upload service.',
+    format: 'uuid',
+    example: '550e8400-e29b-41d4-a716-446655440000',
+    description:
+      'An optional ready group_avatar media ID owned by the creator. Arbitrary avatarUrl inputs are not accepted.',
   })
   @IsOptional()
-  @IsUrl({ require_protocol: true })
-  @MaxLength(2048)
-  avatarUrl?: string | null;
+  @IsUUID()
+  avatarMediaId?: string | null;
 }

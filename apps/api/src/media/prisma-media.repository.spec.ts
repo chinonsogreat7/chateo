@@ -78,7 +78,7 @@ function createRepository() {
   const mediaCreate = jest.fn();
   const mediaFindUnique = jest.fn();
   const mediaFindFirst = jest.fn();
-  const mediaUpdateMany = jest.fn();
+  const mediaUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
   const userUpdate = jest.fn();
   const transactionClient = {
     mediaAsset: {
@@ -114,6 +114,20 @@ function createRepository() {
 }
 
 describe('PrismaMediaRepository', () => {
+  it('does not assign an avatar that a cleanup worker already retired', async () => {
+    const { repository, mediaFindFirst, mediaUpdateMany, userUpdate } =
+      createRepository();
+    mediaFindFirst.mockResolvedValue({
+      id: MEDIA_ID,
+      status: 'READY',
+      secureUrl: 'https://res.cloudinary.com/demo/image/upload/avatar.jpg',
+    });
+    mediaUpdateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      repository.setProfileAvatar(USER_ID, MEDIA_ID),
+    ).resolves.toEqual({ status: 'media-not-ready' });
+    expect(userUpdate).not.toHaveBeenCalled();
+  });
   it('creates a normalized pending profile-avatar record', async () => {
     const { repository, mediaCreate } = createRepository();
     mediaCreate.mockResolvedValue(pendingAsset());
@@ -142,31 +156,34 @@ describe('PrismaMediaRepository', () => {
     );
   });
 
-  it('persists the requested message-attachment purpose', async () => {
+  it.each([
+    [MediaPurpose.MESSAGE_ATTACHMENT, 'message-images'],
+    [MediaPurpose.GROUP_AVATAR, 'group-avatars'],
+  ] as const)('persists and maps the %s purpose', async (purpose, folder) => {
     const { repository, mediaCreate } = createRepository();
     mediaCreate.mockResolvedValue(
       pendingAsset({
-        purpose: MediaPurpose.MESSAGE_ATTACHMENT,
-        cloudinaryPublicId: `chateo/message-images/${MEDIA_ID}`,
+        purpose,
+        cloudinaryPublicId: `chateo/${folder}/${MEDIA_ID}`,
       }),
     );
 
     await expect(
       repository.createPending(
         createInput({
-          purpose: 'MESSAGE_ATTACHMENT',
-          cloudinaryPublicId: `chateo/message-images/${MEDIA_ID}`,
+          purpose,
+          cloudinaryPublicId: `chateo/${folder}/${MEDIA_ID}`,
         }),
       ),
     ).resolves.toMatchObject({
       status: 'created',
-      asset: { purpose: 'MESSAGE_ATTACHMENT' },
+      asset: { purpose },
     });
     expect(mediaCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          purpose: MediaPurpose.MESSAGE_ATTACHMENT,
-          cloudinaryPublicId: `chateo/message-images/${MEDIA_ID}`,
+          purpose,
+          cloudinaryPublicId: `chateo/${folder}/${MEDIA_ID}`,
         }),
       }),
     );
@@ -259,7 +276,11 @@ describe('PrismaMediaRepository', () => {
           id: MEDIA_ID,
           ownerId: USER_ID,
           purpose: {
-            in: [MediaPurpose.PROFILE_AVATAR, MediaPurpose.MESSAGE_ATTACHMENT],
+            in: [
+              MediaPurpose.PROFILE_AVATAR,
+              MediaPurpose.GROUP_AVATAR,
+              MediaPurpose.MESSAGE_ATTACHMENT,
+            ],
           },
         },
       }),
@@ -447,7 +468,11 @@ describe('PrismaMediaRepository', () => {
         id: MEDIA_ID,
         ownerId: USER_ID,
         purpose: {
-          in: [MediaPurpose.PROFILE_AVATAR, MediaPurpose.MESSAGE_ATTACHMENT],
+          in: [
+            MediaPurpose.PROFILE_AVATAR,
+            MediaPurpose.GROUP_AVATAR,
+            MediaPurpose.MESSAGE_ATTACHMENT,
+          ],
         },
         status: MediaStatus.PENDING,
       },
@@ -499,7 +524,9 @@ describe('PrismaMediaRepository', () => {
         },
       }),
     );
-    expect(transaction).toHaveBeenCalledWith(expect.any(Function));
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
   });
 
   it.each([

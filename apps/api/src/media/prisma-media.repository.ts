@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { MediaPurpose, MediaStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { serializable } from '../common/serializable';
 import {
   MediaRepository,
   type CompletePendingMediaInput,
@@ -58,6 +59,7 @@ const mediaProfileUserSelect = {
 
 const supportedMediaPurposes = [
   MediaPurpose.PROFILE_AVATAR,
+  MediaPurpose.GROUP_AVATAR,
   MediaPurpose.MESSAGE_ATTACHMENT,
 ] as const;
 
@@ -150,6 +152,7 @@ export class PrismaMediaRepository extends MediaRepository {
           secureUrl: input.secureUrl,
           etag: input.etag,
           completedAt: input.now,
+          unusedSince: input.now,
         },
       });
       const asset = await transaction.mediaAsset.findFirst({
@@ -194,7 +197,7 @@ export class PrismaMediaRepository extends MediaRepository {
   ): Promise<SetProfileAvatarResult> {
     const normalizedOwnerId = ownerId.toLowerCase();
     const normalizedMediaId = mediaId.toLowerCase();
-    return this.prisma.$transaction(async (transaction) => {
+    return serializable(this.prisma, async (transaction) => {
       const asset = await transaction.mediaAsset.findFirst({
         where: {
           id: normalizedMediaId,
@@ -208,6 +211,12 @@ export class PrismaMediaRepository extends MediaRepository {
       if (asset.status !== MediaStatus.READY || !asset.secureUrl) {
         return { status: 'media-not-ready' } as const;
       }
+
+      const claimed = await transaction.mediaAsset.updateMany({
+        where: { id: asset.id, status: MediaStatus.READY },
+        data: { unusedSince: null },
+      });
+      if (claimed.count !== 1) return { status: 'media-not-ready' } as const;
 
       const user = await transaction.user.update({
         where: { id: normalizedOwnerId },
@@ -240,14 +249,16 @@ export class PrismaMediaRepository extends MediaRepository {
     const purpose =
       asset.purpose === MediaPurpose.PROFILE_AVATAR
         ? ('PROFILE_AVATAR' as const)
-        : asset.purpose === MediaPurpose.MESSAGE_ATTACHMENT
-          ? ('MESSAGE_ATTACHMENT' as const)
-          : null;
+        : asset.purpose === MediaPurpose.GROUP_AVATAR
+          ? ('GROUP_AVATAR' as const)
+          : asset.purpose === MediaPurpose.MESSAGE_ATTACHMENT
+            ? ('MESSAGE_ATTACHMENT' as const)
+            : null;
     if (
       !purpose ||
-      (asset.resourceType !== 'image' && asset.resourceType !== 'video') ||
+      !['image', 'video', 'raw'].includes(asset.resourceType) ||
       asset.deliveryType !== 'upload' ||
-      (purpose === 'PROFILE_AVATAR' && asset.resourceType !== 'image')
+      (purpose !== 'MESSAGE_ATTACHMENT' && asset.resourceType !== 'image')
     ) {
       throw new Error('Media invariants are invalid.');
     }
@@ -255,7 +266,7 @@ export class PrismaMediaRepository extends MediaRepository {
       ...asset,
       purpose,
       status: asset.status,
-      resourceType: asset.resourceType,
+      resourceType: asset.resourceType as MediaAssetRecord['resourceType'],
       deliveryType: 'upload',
     };
   }

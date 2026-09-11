@@ -88,6 +88,7 @@ interface StoredGroup {
   id: string;
   name: string;
   avatarUrl: string | null;
+  avatarMediaId: string | null;
   members: Map<string, ConversationMemberRoleRecord>;
   createdAt: Date;
   updatedAt: Date;
@@ -95,7 +96,15 @@ interface StoredGroup {
 
 class InMemoryGroupLifecycleRepository {
   private readonly users = new Map<string, SeedGroupUser>();
+  private readonly avatars = new Map<
+    string,
+    { ownerId: string; secureUrl: string }
+  >();
   private group: StoredGroup | null = null;
+
+  seedAvatar(mediaId: string, ownerId: string, secureUrl: string): void {
+    this.avatars.set(mediaId, { ownerId, secureUrl });
+  }
 
   seedUser(user: SeedGroupUser): void {
     this.users.set(user.id.toLowerCase(), {
@@ -130,6 +139,7 @@ class InMemoryGroupLifecycleRepository {
       id: id.toLowerCase(),
       name: 'Socket Study Group',
       avatarUrl: null,
+      avatarMediaId: null,
       members,
       createdAt: new Date(createdAt),
       updatedAt: new Date(createdAt),
@@ -174,11 +184,21 @@ class InMemoryGroupLifecycleRepository {
       return { status: 'forbidden' };
     }
 
+    const avatar = input.avatarMediaId
+      ? this.avatars.get(input.avatarMediaId)
+      : null;
+    if (input.avatarMediaId && (!avatar || avatar.ownerId !== input.actorId)) {
+      return { status: 'avatar-unavailable' };
+    }
     const nameChanged = input.name !== undefined && input.name !== group.name;
     const avatarChanged =
-      input.avatarUrl !== undefined && input.avatarUrl !== group.avatarUrl;
+      input.avatarMediaId !== undefined &&
+      input.avatarMediaId !== group.avatarMediaId;
     if (nameChanged) group.name = input.name ?? group.name;
-    if (avatarChanged) group.avatarUrl = input.avatarUrl ?? null;
+    if (avatarChanged) {
+      group.avatarMediaId = input.avatarMediaId ?? null;
+      group.avatarUrl = avatar?.secureUrl ?? null;
+    }
     const changed = nameChanged || avatarChanged;
     if (changed) group.updatedAt = new Date(input.now);
     return {
@@ -626,6 +646,12 @@ describe('Group lifecycle REST and realtime API (e2e, in memory)', () => {
   }
 
   it('updates metadata through REST and publishes the exact change to every current member only', async () => {
+    const mediaId = '550e8400-e29b-41d4-a716-446655440000';
+    groupRepository.seedAvatar(
+      mediaId,
+      ALICE_ID,
+      'https://example.com/project-team.jpg',
+    );
     const aliceSocket = await connectSocket(aliceToken);
     const bobSocket = await connectSocket(bobToken);
     const carolSocket = await connectSocket(carolToken);
@@ -647,7 +673,7 @@ describe('Group lifecycle REST and realtime API (e2e, in memory)', () => {
       .set('Authorization', `Bearer ${aliceToken}`)
       .send({
         name: 'Realtime Project Team',
-        avatarUrl: 'https://example.com/project-team.jpg',
+        avatarMediaId: mediaId,
       })
       .expect(HttpStatus.OK);
     await waitUntil(
@@ -673,6 +699,97 @@ describe('Group lifecycle REST and realtime API (e2e, in memory)', () => {
       expect(events).toEqual([expectedEvent]);
     }
     expect(eventLists[3]).toEqual([]);
+  });
+
+  it('sets and removes group photos idempotently and only broadcasts real changes', async () => {
+    const mediaId = '550e8400-e29b-41d4-a716-446655440000';
+    const photoUrl =
+      'https://res.cloudinary.com/classroom/image/upload/group-photo.jpg';
+    groupRepository.seedAvatar(mediaId, BOB_ID, photoUrl);
+    const bobSocket = await connectSocket(bobToken);
+    const daveSocket = await connectSocket(daveToken);
+    await waitForRoutedSocketCount([BOB_ID, DAVE_ID], 2);
+    const events: ConversationMetadataUpdatedEventPayload[] = [];
+    const outsiderEvents: ConversationMetadataUpdatedEventPayload[] = [];
+    bobSocket.on(
+      CONVERSATION_METADATA_UPDATED_EVENT,
+      (payload: ConversationMetadataUpdatedEventPayload) =>
+        events.push(payload),
+    );
+    daveSocket.on(
+      CONVERSATION_METADATA_UPDATED_EVENT,
+      (payload: ConversationMetadataUpdatedEventPayload) =>
+        outsiderEvents.push(payload),
+    );
+
+    const endpoint = `/v1/conversations/${GROUP_ID}/avatar`;
+    await request(app.getHttpServer())
+      .put(endpoint)
+      .send({ mediaId })
+      .expect(HttpStatus.UNAUTHORIZED);
+    await request(app.getHttpServer())
+      .put(endpoint)
+      .set('Authorization', `Bearer ${daveToken}`)
+      .send({ mediaId })
+      .expect(HttpStatus.NOT_FOUND);
+    await request(app.getHttpServer())
+      .put(endpoint)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ mediaId })
+      .expect(HttpStatus.FORBIDDEN);
+    await request(app.getHttpServer())
+      .delete(endpoint)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.FORBIDDEN);
+    const foreign = await request(app.getHttpServer())
+      .put(endpoint)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ mediaId })
+      .expect(HttpStatus.CONFLICT);
+    expect(foreign.body).toMatchObject({ code: 'GROUP_AVATAR_UNAVAILABLE' });
+
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${GROUP_ID}/members/${BOB_ID}/role`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ role: 'admin' })
+      .expect(HttpStatus.OK);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await request(app.getHttpServer())
+        .put(endpoint)
+        .set('Authorization', `Bearer ${bobToken}`)
+        .send({ mediaId: mediaId.toUpperCase() })
+        .expect(HttpStatus.OK);
+      expect(response.body).toMatchObject({
+        id: GROUP_ID,
+        avatarUrl: photoUrl,
+        role: 'admin',
+      });
+    }
+    await waitUntil(
+      () => events.length === 1,
+      'Expected exactly one photo assignment event.',
+    );
+    expect(events[0]).toMatchObject({
+      conversationId: GROUP_ID,
+      actorId: BOB_ID,
+      avatarUrl: photoUrl,
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await request(app.getHttpServer())
+        .delete(endpoint)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .expect(HttpStatus.OK);
+      expect(response.body).toMatchObject({ id: GROUP_ID, avatarUrl: null });
+    }
+    // Allow queued events to arrive before asserting there were no no-op broadcasts.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      conversationId: GROUP_ID,
+      actorId: ALICE_ID,
+      avatarUrl: null,
+    });
+    expect(outsiderEvents).toEqual([]);
   });
 
   it('updates a member role through REST and publishes the exact change to every current member only', async () => {

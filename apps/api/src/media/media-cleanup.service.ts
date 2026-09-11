@@ -53,10 +53,23 @@ export class MediaCleanupService implements OnModuleInit, OnModuleDestroy {
     const signatureIssuedBefore = new Date(
       now.getTime() - CLOUDINARY_SIGNATURE_VALIDITY_MS - MEDIA_CLEANUP_GRACE_MS,
     );
+    const unused = this.config.get<boolean>(
+      'MEDIA_UNUSED_CLEANUP_ENABLED',
+      false,
+    )
+      ? {
+          unusedBefore: new Date(
+            now.getTime() -
+              this.config.get<number>('MEDIA_UNUSED_RETENTION_HOURS', 24) *
+                3600_000,
+          ),
+        }
+      : {};
     const candidates = await this.repository.findCandidates({
       signatureIssuedBefore,
       expiredBefore: now,
       limit: MEDIA_CLEANUP_BATCH_SIZE,
+      ...unused,
     });
 
     for (const candidate of candidates) {
@@ -65,15 +78,21 @@ export class MediaCleanupService implements OnModuleInit, OnModuleDestroy {
         signatureIssuedBefore,
         expiredBefore: now,
         now,
+        ...unused,
       };
 
       try {
+        if (candidate.status === 'READY') {
+          if (!(await this.repository.claimUnusedReady(transition))) continue;
+        }
         if (candidate.status === 'PENDING') {
           const claimed = await this.repository.claimExpiredPending(transition);
           if (!claimed) continue;
         }
 
-        if (candidate.resourceType === 'video') {
+        if (candidate.resourceType === 'raw') {
+          await this.storage.deleteDocument(candidate.cloudinaryPublicId);
+        } else if (candidate.resourceType === 'video') {
           await this.storage.deleteAudio(candidate.cloudinaryPublicId);
         } else {
           await this.storage.deleteImage(candidate.cloudinaryPublicId);

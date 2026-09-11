@@ -20,7 +20,7 @@ function input(overrides: Record<string, unknown> = {}): CreateMediaUploadDto {
 }
 
 describe('CreateMediaUploadDto', () => {
-  it.each(['profile_avatar', 'message_attachment'] as const)(
+  it.each(['profile_avatar', 'group_avatar', 'message_attachment'] as const)(
     'accepts the supported %s image purpose',
     async (purpose) => {
       await expect(validate(input({ purpose }))).resolves.toEqual([]);
@@ -40,7 +40,7 @@ describe('CreateMediaUploadDto', () => {
     });
   });
 
-  it.each(['group_avatar', 'audio_recording', 'message_video'])(
+  it.each(['audio_recording', 'message_video'])(
     'rejects unsupported purpose %s',
     async (purpose) => {
       const errors = await validate(input({ purpose }));
@@ -64,13 +64,16 @@ describe('CreateMediaUploadDto', () => {
     },
   );
 
-  it('rejects audio when the purpose is profile_avatar', async () => {
-    const errors = await validate(
-      input({ purpose: 'profile_avatar', contentType: 'audio/mp4' }),
-    );
+  it.each(['profile_avatar', 'group_avatar'])(
+    'rejects audio when the purpose is %s',
+    async (purpose) => {
+      const errors = await validate(
+        input({ purpose, contentType: 'audio/mp4' }),
+      );
 
-    expect(errors.some((error) => error.property === 'purpose')).toBe(true);
-  });
+      expect(errors.some((error) => error.property === 'purpose')).toBe(true);
+    },
+  );
 
   it('retains the five MiB image limit', async () => {
     const errors = await validate(

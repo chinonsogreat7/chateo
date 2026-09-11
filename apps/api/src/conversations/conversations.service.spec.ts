@@ -231,13 +231,13 @@ describe('ConversationsService', () => {
         PARTICIPANT_ID.toUpperCase(),
         SECOND_PARTICIPANT_ID.toUpperCase(),
       ],
-      avatarUrl: 'https://example.com/groups/study.jpg',
+      avatarMediaId: '550E8400-E29B-41D4-A716-446655440000',
     });
 
     expect(repository.createGroup).toHaveBeenCalledWith({
       creatorId: USER_ID,
       name: 'Study Group',
-      avatarUrl: 'https://example.com/groups/study.jpg',
+      avatarMediaId: '550e8400-e29b-41d4-a716-446655440000',
       participantIds: [PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
       now: NOW,
     });
@@ -342,14 +342,14 @@ describe('ConversationsService', () => {
 
     const response = await service.updateGroup(USER_ID, CONVERSATION_ID, {
       name: '  Project Team  ',
-      avatarUrl: 'https://example.com/groups/project.jpg',
+      avatarMediaId: '550E8400-E29B-41D4-A716-446655440000',
     });
 
     expect(repository.updateGroup).toHaveBeenCalledWith({
       conversationId: CONVERSATION_ID,
       actorId: USER_ID,
       name: 'Project Team',
-      avatarUrl: 'https://example.com/groups/project.jpg',
+      avatarMediaId: '550e8400-e29b-41d4-a716-446655440000',
       now: NOW,
     });
     expect(response).toMatchObject({
@@ -387,6 +387,32 @@ describe('ConversationsService', () => {
     await service.updateGroup(USER_ID, CONVERSATION_ID, {
       name: 'Study Group',
     });
+    expect(eventsPublisher.publishGroupChanged).not.toHaveBeenCalled();
+  });
+
+  it('maps unavailable group photos to a conflict without publishing events', async () => {
+    const { repository, eventsPublisher, service } = createService();
+    repository.createGroup.mockResolvedValue({ status: 'avatar-unavailable' });
+    repository.updateGroup.mockResolvedValue({ status: 'avatar-unavailable' });
+    await expectApiError(
+      service.createGroup(USER_ID, {
+        name: 'Study Group',
+        participantIds: [PARTICIPANT_ID],
+        avatarMediaId: '550e8400-e29b-41d4-a716-446655440000',
+      }),
+      HttpStatus.CONFLICT,
+      'GROUP_AVATAR_UNAVAILABLE',
+    );
+    await expectApiError(
+      service.setGroupAvatar(
+        USER_ID,
+        CONVERSATION_ID,
+        '550e8400-e29b-41d4-a716-446655440000',
+      ),
+      HttpStatus.CONFLICT,
+      'GROUP_AVATAR_UNAVAILABLE',
+    );
+    expect(eventsPublisher.publishCreated).not.toHaveBeenCalled();
     expect(eventsPublisher.publishGroupChanged).not.toHaveBeenCalled();
   });
 

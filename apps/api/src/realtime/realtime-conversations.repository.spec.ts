@@ -16,6 +16,53 @@ function createRepository() {
 }
 
 describe('PrismaRealtimeConversationsRepository', () => {
+  it('excludes members who cleared the changed message, including the UUID tie-break boundary', async () => {
+    const { repository, conversationFindFirst } = createRepository();
+    const at = new Date('2026-09-09T12:00:00.000Z');
+    const id = '44444444-4444-4444-8444-444444444444';
+    conversationFindFirst.mockResolvedValue({
+      id: CONVERSATION_ID,
+      type: 'GROUP',
+      members: [
+        { userId: USER_ID, clearedAt: null, clearedThroughMessageId: null },
+        { userId: OTHER_USER_ID, clearedAt: at, clearedThroughMessageId: id },
+        {
+          userId: 'older-boundary',
+          clearedAt: at,
+          clearedThroughMessageId: '33333333-3333-4333-8333-333333333333',
+        },
+        {
+          userId: 'newer-boundary',
+          clearedAt: new Date(at.getTime() + 1),
+          clearedThroughMessageId: id,
+        },
+      ],
+    });
+    await expect(
+      repository.findAccessibleConversation(CONVERSATION_ID, USER_ID, {
+        id,
+        createdAt: at,
+      }),
+    ).resolves.toEqual({
+      conversationId: CONVERSATION_ID,
+      participantIds: [USER_ID, 'older-boundary'],
+    });
+    expect(conversationFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          members: {
+            select: {
+              userId: true,
+              clearedAt: true,
+              clearedThroughMessageId: true,
+            },
+            orderBy: { userId: 'asc' },
+          },
+        }),
+      }),
+    );
+  });
+
   it('returns active direct participants when neither user has blocked the other', async () => {
     const { repository, conversationFindFirst, blockFindFirst } =
       createRepository();

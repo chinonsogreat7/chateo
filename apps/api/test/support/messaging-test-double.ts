@@ -1,4 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import {
+  documentFormat,
+  mediaType,
+  videoFormat,
+} from '../../src/media/attachment-formats';
+import { messageFingerprint } from '../../src/messages/message-mapping';
+import type { MessagesRepository } from '../../src/messages/messages.repository';
 import type {
   ConversationMemberRoleRecord,
   ConversationPageCursor,
@@ -18,6 +25,8 @@ import type {
   MessageRecord,
   SendMessageResult,
   SendTextMessageResult,
+  GetMessageResult,
+  MutateMessageResult,
 } from '../../src/messages/messages.types';
 import type { RealtimeConversationAccess } from '../../src/realtime/realtime-conversations.repository';
 import type { MarkReceiptThroughInput } from '../../src/receipts/receipts.repository';
@@ -63,6 +72,7 @@ interface SeedMessageAttachmentMedia {
   deliveryType?: 'upload' | 'authenticated';
   contentType?: string;
   format?: string;
+  filename?: string;
   sizeBytes?: number;
   width?: number | null;
   height?: number | null;
@@ -81,6 +91,7 @@ interface StoredMessageAttachmentMedia {
   deliveryType: 'upload' | 'authenticated';
   contentType: string;
   format: string;
+  filename: string;
   sizeBytes: number;
   width: number | null;
   height: number | null;
@@ -162,6 +173,7 @@ export class InMemoryMessagingRepository {
   private readonly users = new Map<string, SeedMessagingUser>();
   private readonly conversations = new Map<string, StoredConversation>();
   private readonly messages = new Map<string, MessageRecord>();
+  private readonly fingerprints = new Map<string, string>();
   private readonly messageIdsByIdempotencyKey = new Map<string, string>();
   private readonly memberStates = new Map<string, StoredMemberState>();
   private readonly receipts = new Map<string, StoredReceipt>();
@@ -283,6 +295,8 @@ export class InMemoryMessagingRepository {
       deliveryType: input.deliveryType ?? 'upload',
       contentType,
       format: input.format ?? this.defaultFormat(contentType),
+      filename:
+        input.filename ?? `document.${documentFormat(contentType) ?? 'bin'}`,
       sizeBytes: input.sizeBytes ?? 120_000,
       width:
         input.width === undefined
@@ -432,6 +446,7 @@ export class InMemoryMessagingRepository {
   async findAccessibleConversation(
     conversationId: string,
     userId: string,
+    message?: { id: string; createdAt: Date },
   ): Promise<RealtimeConversationAccess | null> {
     const normalizedConversationId = conversationId.toLowerCase();
     const normalizedUserId = userId.toLowerCase();
@@ -440,7 +455,16 @@ export class InMemoryMessagingRepository {
 
     return {
       conversationId: conversation.id,
-      participantIds: [...conversation.memberIds].sort(),
+      participantIds: [...conversation.memberIds]
+        .filter(
+          (id) =>
+            !message ||
+            isAfterClearBoundary(
+              message,
+              this.requiredMemberState(conversation.id, id),
+            ),
+        )
+        .sort(),
     };
   }
 
@@ -466,17 +490,7 @@ export class InMemoryMessagingRepository {
       const existing = this.messages.get(existingId);
       if (!existing)
         throw new Error('Message idempotency index is inconsistent.');
-      if (
-        existing.conversationId !== conversationId ||
-        (attachmentMediaIds.length === 0
-          ? existing.kind !== 'TEXT'
-          : existing.kind === 'TEXT') ||
-        existing.text !== input.text ||
-        !this.sameOrderedIds(
-          existing.attachments.map((attachment) => attachment.mediaId),
-          attachmentMediaIds,
-        )
-      ) {
+      if (this.fingerprints.get(existing.id) !== messageFingerprint(input)) {
         return { status: 'idempotency-conflict' };
       }
       return { status: 'existing', message: this.copyMessage(existing) };
@@ -484,6 +498,19 @@ export class InMemoryMessagingRepository {
 
     if (input.text === null && attachmentMediaIds.length === 0) {
       return { status: 'idempotency-conflict' };
+    }
+    if (input.replyToMessageId) {
+      const parent = this.messages.get(input.replyToMessageId);
+      if (
+        !parent ||
+        parent.conversationId !== conversationId ||
+        parent.deletedAt ||
+        !isAfterClearBoundary(
+          parent,
+          this.requiredMemberState(conversationId, senderId),
+        )
+      )
+        return { status: 'reply-unavailable' };
     }
 
     const media = attachmentMediaIds.map((mediaId) =>
@@ -493,7 +520,8 @@ export class InMemoryMessagingRepository {
     if (
       new Set(attachmentMediaIds).size !== attachmentMediaIds.length ||
       attachmentType === null ||
-      (attachmentType === 'audio' && attachmentMediaIds.length !== 1) ||
+      (['audio', 'video', 'document'].includes(attachmentType ?? '') &&
+        attachmentMediaIds.length !== 1) ||
       media.some(
         (asset) => !asset || !this.isAvailableAttachment(asset, senderId),
       )
@@ -522,6 +550,31 @@ export class InMemoryMessagingRepository {
       if (!asset || !this.isAvailableAttachment(asset, senderId)) {
         throw new Error('Verified attachment media became unavailable.');
       }
+      if (mediaType(asset.contentType) === 'document') {
+        return {
+          mediaId: asset.id,
+          type: 'document',
+          contentType: asset.contentType,
+          sizeBytes: asset.sizeBytes,
+          filename: asset.filename,
+          url: (asset.url as string).replace(
+            '/raw/upload/',
+            '/raw/upload/fl_attachment/',
+          ),
+        };
+      }
+      if (mediaType(asset.contentType) === 'video') {
+        return {
+          mediaId: asset.id,
+          type: 'video',
+          contentType: asset.contentType,
+          sizeBytes: asset.sizeBytes,
+          width: asset.width as number,
+          height: asset.height as number,
+          durationMs: asset.durationMs as number,
+          url: asset.url as string,
+        };
+      }
       if (asset.resourceType === 'video') {
         return {
           mediaId: asset.id,
@@ -548,12 +601,21 @@ export class InMemoryMessagingRepository {
       senderId,
       clientMessageId,
       kind:
-        attachmentType === 'audio'
-          ? 'AUDIO'
-          : attachmentType === 'image'
-            ? 'IMAGE'
-            : 'TEXT',
+        attachmentType === 'video'
+          ? 'VIDEO'
+          : attachmentType === 'document'
+            ? 'DOCUMENT'
+            : attachmentType === 'audio'
+              ? 'AUDIO'
+              : attachmentType === 'image'
+                ? 'IMAGE'
+                : 'TEXT',
       text: input.text,
+      replyToMessageId: input.replyToMessageId ?? null,
+      editedAt: null,
+      deletedAt: null,
+      version: 0,
+      reactions: [],
       attachments,
       createdAt: copyDate(createdAt),
       participantIds: [...conversation.memberIds],
@@ -562,6 +624,7 @@ export class InMemoryMessagingRepository {
       if (asset) asset.claimedMessageId = messageId;
     }
     this.messages.set(message.id, message);
+    this.fingerprints.set(message.id, messageFingerprint(input));
     this.messageIdsByIdempotencyKey.set(key, message.id);
     if (createdAt.getTime() > conversation.lastActivityAt.getTime()) {
       conversation.lastActivityAt = copyDate(createdAt);
@@ -585,12 +648,14 @@ export class InMemoryMessagingRepository {
     userId: string,
     cursor: MessagePageCursor | null,
     take: number,
+    query?: string,
   ): Promise<ListMessagesResult>;
   async listForMember(
     conversationId: string,
     userId: string,
     cursor?: MessagePageCursor | null,
     take?: number,
+    query?: string,
   ): Promise<ListMessagesResult | ListReceiptFrontiersResult> {
     const normalizedConversationId = conversationId.toLowerCase();
     const normalizedUserId = userId.toLowerCase();
@@ -611,6 +676,11 @@ export class InMemoryMessagingRepository {
       .filter(
         (message) =>
           message.conversationId === normalizedConversationId &&
+          (query === undefined ||
+            (!message.deletedAt &&
+              Boolean(
+                message.text?.toLowerCase().includes(query.toLowerCase()),
+              ))) &&
           isAfterClearBoundary(message, state),
       )
       .sort(
@@ -629,6 +699,96 @@ export class InMemoryMessagingRepository {
       .slice(0, take)
       .map((message) => this.copyMessage(message));
     return { status: 'found', messages };
+  }
+
+  async getForMember(
+    conversationId: string,
+    userId: string,
+    messageId: string,
+  ): Promise<GetMessageResult> {
+    const conversation = this.conversations.get(conversationId);
+    const message = this.messages.get(messageId);
+    if (
+      !conversation?.memberIds.includes(userId) ||
+      !message ||
+      message.conversationId !== conversationId ||
+      !isAfterClearBoundary(
+        message,
+        this.requiredMemberState(conversationId, userId),
+      )
+    )
+      return { status: 'message-not-found' };
+    return { status: 'found', message: this.copyMessage(message) };
+  }
+
+  async mutate(
+    input: Parameters<MessagesRepository['mutate']>[0],
+  ): Promise<MutateMessageResult> {
+    const access = await this.getForMember(
+      input.conversationId,
+      input.actorId,
+      input.messageId,
+    );
+    if (access.status !== 'found') return access;
+    const message = this.messages.get(input.messageId)!;
+    const mutation = input.mutation;
+    if (mutation.kind !== 'reaction' && message.senderId !== input.actorId)
+      return { status: 'forbidden' };
+    if (message.deletedAt && mutation.kind !== 'delete')
+      return { status: 'deleted' };
+    const previous =
+      message.reactions?.find((reaction) => reaction.userId === input.actorId)
+        ?.emoji ?? null;
+    const changed =
+      mutation.kind === 'delete'
+        ? !message.deletedAt
+        : mutation.kind === 'edit'
+          ? message.text !== mutation.text
+          : previous !== mutation.emoji;
+    if (mutation.kind === 'edit') {
+      if (message.kind === 'TEXT' && !mutation.text)
+        return { status: 'empty-text' };
+      if (changed && (message.version ?? 0) !== mutation.expectedVersion)
+        return { status: 'version-conflict' };
+    }
+    if (changed) {
+      message.version = (message.version ?? 0) + 1;
+      if (mutation.kind === 'delete') {
+        message.text = null;
+        message.deletedAt = input.now;
+        message.reactions = [];
+      }
+      if (mutation.kind === 'edit') {
+        message.text = mutation.text;
+        message.editedAt = input.now;
+      }
+      if (mutation.kind === 'reaction') {
+        message.reactions = (message.reactions ?? []).filter(
+          (reaction) => reaction.userId !== input.actorId,
+        );
+        if (mutation.emoji)
+          message.reactions.push({
+            userId: input.actorId,
+            emoji: mutation.emoji,
+          });
+        message.reactions.sort((a, b) => a.userId.localeCompare(b.userId));
+      }
+    }
+    return {
+      status: 'updated',
+      changed,
+      event: {
+        kind:
+          mutation.kind === 'delete'
+            ? 'deleted'
+            : mutation.kind === 'edit'
+              ? 'updated'
+              : 'reaction-updated',
+        actorId: input.actorId,
+        message: this.copyMessage(message),
+        occurredAt: input.now,
+      },
+    };
   }
 
   async markThrough(
@@ -858,6 +1018,31 @@ export class InMemoryMessagingRepository {
       asset.claimedMessageId === null;
     if (!common) return false;
 
+    if (videoFormat(asset.contentType))
+      return (
+        asset.resourceType === 'video' &&
+        asset.format === videoFormat(asset.contentType) &&
+        asset.sizeBytes <= 50 * 1024 * 1024 &&
+        asset.width !== null &&
+        asset.width > 0 &&
+        asset.width <= 1920 &&
+        asset.height !== null &&
+        asset.height > 0 &&
+        asset.height <= 1920 &&
+        asset.durationMs !== null &&
+        asset.durationMs > 0 &&
+        asset.durationMs <= 300000
+      );
+    if (documentFormat(asset.contentType))
+      return (
+        asset.resourceType === 'raw' &&
+        asset.format === documentFormat(asset.contentType) &&
+        asset.sizeBytes <= 25 * 1024 * 1024 &&
+        asset.width === null &&
+        asset.height === null &&
+        asset.durationMs === null
+      );
+
     if (asset.resourceType === 'image') {
       return (
         ['image/jpeg', 'image/png', 'image/webp'].includes(asset.contentType) &&
@@ -882,22 +1067,18 @@ export class InMemoryMessagingRepository {
 
   private homogeneousAttachmentType(
     media: Array<StoredMessageAttachmentMedia | undefined>,
-  ): 'image' | 'audio' | 'none' | null {
+  ): 'image' | 'audio' | 'video' | 'document' | 'none' | null {
     if (media.length === 0) return 'none';
     const types = new Set(
-      media.map((asset) =>
-        asset?.resourceType === 'image'
-          ? 'image'
-          : asset?.resourceType === 'video'
-            ? 'audio'
-            : 'invalid',
-      ),
+      media.map((asset) => (asset ? mediaType(asset.contentType) : 'invalid')),
     );
     if (types.size !== 1 || types.has('invalid')) return null;
-    return types.has('audio') ? 'audio' : 'image';
+    return [...types][0] as 'image' | 'audio' | 'video' | 'document';
   }
 
   private defaultFormat(contentType: string): string {
+    if (videoFormat(contentType) || documentFormat(contentType))
+      return videoFormat(contentType) ?? documentFormat(contentType)!;
     switch (contentType) {
       case 'image/jpeg':
         return 'jpg';
@@ -1067,6 +1248,7 @@ export class InMemoryMessagingRepository {
             senderId: latestMessage.senderId,
             kind: latestMessage.kind,
             text: latestMessage.text,
+            deletedAt: latestMessage.deletedAt,
             createdAt: copyDate(latestMessage.createdAt),
           }
         : null,
@@ -1121,7 +1303,10 @@ export class InMemoryMessagingRepository {
   private copyMessage(message: MessageRecord): MessageRecord {
     return {
       ...message,
-      attachments: message.attachments.map((attachment) => ({ ...attachment })),
+      attachments: message.deletedAt
+        ? []
+        : message.attachments.map((attachment) => ({ ...attachment })),
+      reactions: (message.reactions ?? []).map((reaction) => ({ ...reaction })),
       createdAt: copyDate(message.createdAt),
       participantIds: [...message.participantIds],
     };

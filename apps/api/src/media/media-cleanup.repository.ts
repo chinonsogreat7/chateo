@@ -1,9 +1,9 @@
-export type MediaCleanupCandidateStatus = 'PENDING' | 'FAILED';
+export type MediaCleanupCandidateStatus = 'PENDING' | 'FAILED' | 'READY';
 
 export interface MediaCleanupCandidate {
   id: string;
   cloudinaryPublicId: string;
-  resourceType: 'image' | 'video';
+  resourceType: 'image' | 'video' | 'raw';
   status: MediaCleanupCandidateStatus;
 }
 
@@ -11,6 +11,7 @@ export interface FindMediaCleanupCandidatesInput {
   signatureIssuedBefore: Date;
   expiredBefore: Date;
   limit: number;
+  unusedBefore?: Date;
 }
 
 export interface TransitionMediaCleanupInput {
@@ -18,6 +19,7 @@ export interface TransitionMediaCleanupInput {
   signatureIssuedBefore: Date;
   expiredBefore: Date;
   now: Date;
+  unusedBefore?: Date;
 }
 
 export abstract class MediaCleanupRepository {
@@ -30,4 +32,7 @@ export abstract class MediaCleanupRepository {
   ): Promise<boolean>;
 
   abstract markDeleted(input: TransitionMediaCleanupInput): Promise<boolean>;
+  abstract claimUnusedReady(
+    input: TransitionMediaCleanupInput,
+  ): Promise<boolean>;
 }

@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import {
   ConversationMemberRole,
   ConversationType,
+  MediaPurpose,
+  MediaStatus,
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
@@ -61,6 +63,7 @@ const conversationWithMembers = {
       senderId: true,
       kind: true,
       text: true,
+      deletedAt: true,
       createdAt: true,
     },
     orderBy: [{ createdAt: 'desc' as const }, { id: 'desc' as const }],
@@ -237,11 +240,23 @@ export class PrismaConversationsRepository extends ConversationsRepository {
               return { status: 'participant-not-found' } as const;
             }
 
+            const avatar = input.avatarMediaId
+              ? await this.findReadyGroupAvatar(
+                  transaction,
+                  input.creatorId,
+                  input.avatarMediaId,
+                )
+              : null;
+            if (input.avatarMediaId && !avatar) {
+              return { status: 'avatar-unavailable' } as const;
+            }
+
             const conversation = await transaction.conversation.create({
               data: {
                 type: ConversationType.GROUP,
                 name: input.name,
-                avatarUrl: input.avatarUrl,
+                avatarMediaId: avatar?.id ?? null,
+                avatarUrl: avatar?.secureUrl ?? null,
                 createdById: input.creatorId,
                 lastActivityAt: input.now,
                 createdAt: input.now,
@@ -313,12 +328,25 @@ export class PrismaConversationsRepository extends ConversationsRepository {
           return { status: 'forbidden' } as const;
         }
 
+        // Authorize membership/role before looking up media, and resolve both
+        // in this serializable transaction so failed assignment is atomic.
+        const avatar = normalizedInput.avatarMediaId
+          ? await this.findReadyGroupAvatar(
+              transaction,
+              normalizedInput.actorId,
+              normalizedInput.avatarMediaId,
+            )
+          : null;
+        if (normalizedInput.avatarMediaId && !avatar) {
+          return { status: 'avatar-unavailable' } as const;
+        }
         const nameChanged =
           normalizedInput.name !== undefined &&
           normalizedInput.name !== conversation.name;
         const avatarChanged =
-          normalizedInput.avatarUrl !== undefined &&
-          normalizedInput.avatarUrl !== conversation.avatarUrl;
+          normalizedInput.avatarMediaId !== undefined &&
+          ((avatar?.id ?? null) !== conversation.avatarMediaId ||
+            (avatar?.secureUrl ?? null) !== conversation.avatarUrl);
         const changed = nameChanged || avatarChanged;
         const eventRecipientIds = this.memberIds(conversation);
         if (!changed) {
@@ -337,7 +365,12 @@ export class PrismaConversationsRepository extends ConversationsRepository {
           where: { id: normalizedInput.conversationId },
           data: {
             ...(nameChanged ? { name: normalizedInput.name } : {}),
-            ...(avatarChanged ? { avatarUrl: normalizedInput.avatarUrl } : {}),
+            ...(avatarChanged
+              ? {
+                  avatarMediaId: avatar?.id ?? null,
+                  avatarUrl: avatar?.secureUrl ?? null,
+                }
+              : {}),
             updatedAt: normalizedInput.now,
           },
           include: conversationWithMembers,
@@ -981,6 +1014,46 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     };
   }
 
+  private async findReadyGroupAvatar(
+    transaction: Prisma.TransactionClient,
+    ownerId: string,
+    mediaId: string,
+  ): Promise<{ id: string; secureUrl: string } | null> {
+    const asset = await transaction.mediaAsset.findFirst({
+      where: {
+        id: mediaId.toLowerCase(),
+        ownerId: ownerId.toLowerCase(),
+        purpose: MediaPurpose.GROUP_AVATAR,
+        status: MediaStatus.READY,
+        resourceType: 'image',
+        deliveryType: 'upload',
+        completedAt: { not: null },
+        deletedAt: null,
+        byteSize: { gt: 0 },
+        width: { gt: 0 },
+        height: { gt: 0 },
+        OR: [
+          { format: { in: ['jpg', 'jpeg'] }, mimeType: 'image/jpeg' },
+          { format: 'png', mimeType: 'image/png' },
+          { format: 'webp', mimeType: 'image/webp' },
+        ],
+      },
+      select: { id: true, secureUrl: true },
+    });
+    if (!asset?.secureUrl) return null;
+    try {
+      if (new URL(asset.secureUrl).protocol !== 'https:') return null;
+    } catch {
+      return null;
+    }
+    const claimed = await transaction.mediaAsset.updateMany({
+      where: { id: asset.id, status: MediaStatus.READY },
+      data: { unusedSince: null },
+    });
+    if (claimed.count !== 1) return null;
+    return { id: asset.id, secureUrl: asset.secureUrl };
+  }
+
   private async runSerializable<T>(
     operation: (transaction: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T> {
@@ -1033,6 +1106,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
             senderId: latestMessage.senderId,
             kind: latestMessage.kind,
             text: latestMessage.text,
+            deletedAt: latestMessage.deletedAt,
             createdAt: latestMessage.createdAt,
           }
         : null,
