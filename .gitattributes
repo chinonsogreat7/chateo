@@ -1,1 +1,8 @@
 *.pdf binary
+
+# Keep byte-level tooling integrity checks consistent across operating systems.
+apps/api/eslint.config.mjs text eol=lf
+apps/api/jest.config.js text eol=lf
+apps/api/test/jest-e2e.config.js text eol=lf
+apps/api/test/jest-integration.config.js text eol=lf
+apps/api/prisma.config.ts text eol=lf
