@@ -66,6 +66,7 @@ Prerequisites:
 Install dependencies from the repository root:
 
 ```bash
+node scripts/verify-tooling.mjs
 npm install
 ```
 
@@ -137,6 +138,8 @@ The seed is manual and idempotent. It never creates sessions or authentication t
 ## Verification
 
 ```bash
+npm run security:check
+npm run test:security
 npm run format:check
 npm run lint
 npm run typecheck
@@ -148,5 +151,8 @@ npm audit --omit=dev
 
 The real-PostgreSQL concurrency suite is opt-in because it requires an isolated,
 migrated database. See `apps/api/README.md` for the `test:integration` setup.
+
+Executable tooling configs have a reviewed integrity baseline. See [SECURITY.md](SECURITY.md)
+before approving a changed baseline or running an older/untrusted checkout.
 
 See [apps/api/README.md](apps/api/README.md) for the endpoint contract, environment settings, security behavior, and Figma-to-API mapping.

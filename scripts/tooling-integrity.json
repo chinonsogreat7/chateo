@@ -1,0 +1,7 @@
+{
+  "apps/api/eslint.config.mjs": "2793519d08961c24b8f13819c9da64716079e2b2a107431623d1a0601d0960d5",
+  "apps/api/jest.config.js": "f898c5484660f5260aa8beae49c4c6ea41e54914dd35cee99195ae772957e3df",
+  "apps/api/test/jest-e2e.config.js": "c190fc787b8abe70acb9ed0f33b18e9a8e9a85673430774d88c1cc79defe8970",
+  "apps/api/test/jest-integration.config.js": "9134d4fc00257638b6b6ebb7ed45994e3efdbb93d2f3e950b8405c0e171c90d6",
+  "apps/api/prisma.config.ts": "9d3dd18fd7eec734c0abe5337578328977559fe37989ec92293e066b651116ad"
+}
