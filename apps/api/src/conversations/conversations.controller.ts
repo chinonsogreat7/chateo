@@ -42,6 +42,7 @@ import {
 import type { ConversationResponseDto } from './dto/conversation-response.dto';
 import { CreateDirectConversationDto } from './dto/create-direct-conversation.dto';
 import { CreateGroupConversationDto } from './dto/create-group-conversation.dto';
+import { DeleteDirectChatResponseDto } from './dto/delete-direct-chat-response.dto';
 import { GroupMemberParamsDto } from './dto/group-member-params.dto';
 import { ListArchivedConversationsQueryDto } from './dto/list-archived-conversations-query.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
@@ -405,6 +406,31 @@ export class ConversationsController {
     @Param() params: ConversationParamsDto,
   ): Promise<void> {
     return this.conversationsService.leaveGroup(
+      user.sub,
+      params.conversationId,
+    );
+  }
+
+  @Delete(':conversationId/for-me')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete a direct chat for the signed-in user only',
+    description:
+      'Hides the chat from all your lists and clears your current history. The other participant is unaffected. Clears archive/pin/favorite, preserves mute. A new message from either participant restores the chat without restoring cleared history. Repeating while hidden is a no-op. No request body.',
+  })
+  @ApiOkResponse({ type: DeleteDirectChatResponseDto })
+  @ApiBadRequestResponse({
+    description:
+      'Invalid ID or a group conversation (CONVERSATION_DIRECT_REQUIRED).',
+  })
+  @ApiNotFoundResponse({
+    description: 'Conversation missing or caller is not a member.',
+  })
+  deleteForMe(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param() params: ConversationParamsDto,
+  ): Promise<DeleteDirectChatResponseDto> {
+    return this.conversationsService.deleteForMe(
       user.sub,
       params.conversationId,
     );

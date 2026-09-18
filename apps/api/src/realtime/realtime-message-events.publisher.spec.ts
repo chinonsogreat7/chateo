@@ -15,6 +15,7 @@ const NOW = new Date('2026-08-12T12:00:00.000Z');
 const USER_ONE_ID = '11111111-1111-4111-8111-111111111111';
 const USER_TWO_ID = '22222222-2222-4222-8222-222222222222';
 const CONVERSATION_ID = '44444444-4444-4444-8444-444444444444';
+const MESSAGE_ID = '33333333-3333-4333-8333-333333333333';
 
 function message(overrides: Partial<MessageRecord> = {}): MessageRecord {
   return {
@@ -80,6 +81,22 @@ function createPublisher(sockets: RealtimeSocketTarget[]) {
 }
 
 describe('RealtimeMessageEventsPublisher', () => {
+  it('suppresses a delayed creation event for a participant who already cleared/deleted that history', async () => {
+    const { findAccessibleConversation, findSocketsForUsers, publisher } =
+      createPublisher([]);
+    findAccessibleConversation.mockResolvedValue({
+      conversationId: CONVERSATION_ID,
+      participantIds: [USER_TWO_ID],
+    });
+    await publisher.publishCreated(message());
+    expect(findAccessibleConversation).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      USER_ONE_ID,
+      expect.objectContaining({ id: MESSAGE_ID, createdAt: NOW }),
+    );
+    expect(findSocketsForUsers).toHaveBeenCalledWith([USER_TWO_ID]);
+  });
+
   it.each(['updated', 'deleted', 'reaction-updated'] as const)(
     'publishes %s only to currently authorized visible-history recipients',
     async (kind) => {
@@ -239,6 +256,7 @@ describe('RealtimeMessageEventsPublisher', () => {
     expect(findAccessibleConversation).toHaveBeenCalledWith(
       CONVERSATION_ID,
       USER_ONE_ID,
+      expect.objectContaining({ id: MESSAGE_ID, createdAt: NOW }),
     );
   });
 
@@ -341,6 +359,7 @@ describe('RealtimeMessageEventsPublisher', () => {
     expect(findAccessibleConversation).toHaveBeenCalledWith(
       CONVERSATION_ID,
       USER_ONE_ID,
+      expect.objectContaining({ id: MESSAGE_ID, createdAt: NOW }),
     );
     expect(isSessionActive).toHaveBeenCalledTimes(2);
     expect(first.emit).toHaveBeenCalledWith(
@@ -406,6 +425,7 @@ describe('RealtimeMessageEventsPublisher', () => {
     expect(findAccessibleConversation).toHaveBeenCalledWith(
       CONVERSATION_ID,
       USER_ONE_ID,
+      expect.objectContaining({ id: MESSAGE_ID, createdAt: NOW }),
     );
     expect(removedMember.emit).not.toHaveBeenCalled();
     expect(removedMember.disconnect).not.toHaveBeenCalled();

@@ -105,6 +105,11 @@ describe('Prisma messaging persistence', () => {
         unreadCount: 0,
         lastReadAt: null,
         archivedAt: null,
+        deletedAt: null,
+        pinnedAt: null,
+        favoritedAt: null,
+        mutedAt: null,
+        mutedUntil: null,
         clearedAt: null,
         clearedThroughMessageId: null,
       },
@@ -118,6 +123,377 @@ describe('Prisma messaging persistence', () => {
   afterAll(async () => {
     await cleanup();
     await prisma.$disconnect();
+  });
+
+  it.each([SENDER_ID, RECIPIENT_ID])(
+    'restores a deleted direct chat only for a new message from %s, keeping old history cleared',
+    async (newSender) => {
+      const old = await sendMessage(
+        SENDER_ID,
+        CLIENT_MESSAGE_ONE,
+        'Old history',
+        MESSAGE_TIME_ONE,
+      );
+      await prisma.conversationMember.update({
+        where: {
+          conversationId_userId: { conversationId, userId: RECIPIENT_ID },
+        },
+        data: {
+          archivedAt: BASE_TIME,
+          pinnedAt: BASE_TIME,
+          favoritedAt: BASE_TIME,
+          mutedAt: BASE_TIME,
+        },
+      });
+      const peerBefore = await prisma.conversationMember.findUniqueOrThrow({
+        where: { conversationId_userId: { conversationId, userId: SENDER_ID } },
+      });
+      const deletion = await conversationsService.deleteForMe(
+        RECIPIENT_ID,
+        conversationId,
+      );
+      expect(deletion).toMatchObject({
+        changed: true,
+        clearedAt: old.createdAt.toISOString(),
+        clearedThroughMessageId: old.id,
+      });
+      expect(
+        await conversationsService.deleteForMe(RECIPIENT_ID, conversationId),
+      ).toEqual({ ...deletion, changed: false });
+      for (const archived of [false, true]) {
+        expect(
+          await conversationsRepository.listForUser(
+            RECIPIENT_ID,
+            null,
+            10,
+            archived,
+          ),
+        ).toEqual([]);
+        expect(
+          await conversationsRepository.listForUser(
+            RECIPIENT_ID,
+            null,
+            10,
+            archived,
+            true,
+          ),
+        ).toEqual([]);
+      }
+      expect(
+        await conversationsRepository.listForUser(SENDER_ID, null, 10),
+      ).toHaveLength(1);
+      expect(
+        await prisma.conversationMember.findUniqueOrThrow({
+          where: {
+            conversationId_userId: { conversationId, userId: SENDER_ID },
+          },
+        }),
+      ).toEqual(peerBefore);
+      expect(
+        await conversationsService.get(RECIPIENT_ID, conversationId),
+      ).toMatchObject({
+        latestMessage: null,
+        unreadCount: 0,
+        settings: {
+          deletedAt: deletion.deletedAt,
+          archived: false,
+          pinned: false,
+          favorited: false,
+          muted: true,
+        },
+      });
+      expect(
+        await messagesRepository.listForMember(
+          conversationId,
+          RECIPIENT_ID,
+          null,
+          10,
+        ),
+      ).toMatchObject({ messages: [] });
+      expect(
+        await messagesRepository.getForMember(
+          conversationId,
+          RECIPIENT_ID,
+          old.id,
+        ),
+      ).toEqual({ status: 'message-not-found' });
+      expect(
+        await messagesRepository.listForMember(
+          conversationId,
+          RECIPIENT_ID,
+          null,
+          10,
+          'Old',
+        ),
+      ).toMatchObject({ messages: [] });
+
+      await conversationsRepository.createOrGetDirect(
+        RECIPIENT_ID,
+        SENDER_ID,
+        MESSAGE_TIME_TWO,
+      );
+      await messagesRepository.sendText({
+        conversationId,
+        senderId: SENDER_ID,
+        clientMessageId: CLIENT_MESSAGE_ONE,
+        text: 'Old history',
+        now: MESSAGE_TIME_TWO,
+      });
+      expect(
+        await conversationsRepository.listForUser(RECIPIENT_ID, null, 10),
+      ).toEqual([]);
+      // A lower client clock still produces a message beyond the old clear boundary.
+      const next = await sendMessage(
+        newSender,
+        CLIENT_MESSAGE_TWO,
+        'New message',
+        BASE_TIME,
+      );
+      expect(next.createdAt > old.createdAt).toBe(true);
+      expect(
+        await conversationsRepository.listForUser(RECIPIENT_ID, null, 10),
+      ).toHaveLength(1);
+      expect(
+        await conversationsService.get(RECIPIENT_ID, conversationId),
+      ).toMatchObject({
+        settings: {
+          deletedAt: null,
+          clearedThroughMessageId: old.id,
+          muted: true,
+        },
+        unreadCount: newSender === RECIPIENT_ID ? 0 : 1,
+        latestMessage: { id: next.id },
+      });
+      expect(
+        await messagesRepository.listForMember(
+          conversationId,
+          RECIPIENT_ID,
+          null,
+          10,
+        ),
+      ).toMatchObject({ messages: [{ id: next.id }] });
+      const peerHistory = await messagesRepository.listForMember(
+        conversationId,
+        SENDER_ID,
+        null,
+        10,
+      );
+      expect(
+        peerHistory.status === 'found' && peerHistory.messages.length,
+      ).toBe(2);
+      expect(await prisma.message.count({ where: { conversationId } })).toBe(2);
+    },
+  );
+
+  it('keeps deletion private and rejects group deletion through the for-me route', async () => {
+    await expect(
+      conversationsService.deleteForMe(OUTSIDER_ID, conversationId),
+    ).rejects.toMatchObject({ response: { code: 'CONVERSATION_NOT_FOUND' } });
+    const group = await conversationsService.createGroup(SENDER_ID, {
+      name: 'Not a direct chat',
+      participantIds: [RECIPIENT_ID],
+    });
+    await expect(
+      conversationsService.deleteForMe(SENDER_ID, group.id),
+    ).rejects.toMatchObject({
+      response: { code: 'CONVERSATION_DIRECT_REQUIRED' },
+    });
+    await expect(
+      conversationsService.deleteForMe(OUTSIDER_ID, group.id),
+    ).rejects.toMatchObject({ response: { code: 'CONVERSATION_NOT_FOUND' } });
+    await conversationsService.deleteGroup(SENDER_ID, group.id);
+  });
+
+  it('handles empty chats, independent deletion by both users, and first-message restoration', async () => {
+    const deleted = await conversationsService.deleteForMe(
+      SENDER_ID,
+      conversationId,
+    );
+    expect(deleted).toMatchObject({
+      changed: true,
+      clearedAt: null,
+      clearedThroughMessageId: null,
+    });
+    await conversationsService.deleteForMe(RECIPIENT_ID, conversationId);
+    const newMessage = await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_ONE,
+      'First',
+      BASE_TIME,
+    );
+    for (const userId of [SENDER_ID, RECIPIENT_ID]) {
+      expect(await conversationsService.list(userId, 10)).toMatchObject({
+        items: [
+          {
+            id: conversationId,
+            settings: { deletedAt: null },
+            latestMessage: { id: newMessage.id },
+          },
+        ],
+      });
+    }
+  });
+
+  it('allows local deletion after blocking, but a blocked send cannot restore it', async () => {
+    await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_ONE,
+      'Before block',
+      MESSAGE_TIME_ONE,
+    );
+    await prisma.userBlock.create({
+      data: { blockerId: RECIPIENT_ID, blockedId: SENDER_ID },
+    });
+    try {
+      await conversationsService.deleteForMe(RECIPIENT_ID, conversationId);
+      expect(
+        await messagesRepository.sendText({
+          conversationId,
+          senderId: SENDER_ID,
+          clientMessageId: CLIENT_MESSAGE_TWO,
+          text: 'Blocked',
+          now: MESSAGE_TIME_TWO,
+        }),
+      ).toEqual({ status: 'conversation-not-found' });
+      expect(
+        await conversationsRepository.listForUser(RECIPIENT_ID, null, 10),
+      ).toEqual([]);
+    } finally {
+      await prisma.userBlock.delete({
+        where: {
+          blockerId_blockedId: {
+            blockerId: RECIPIENT_ID,
+            blockedId: SENDER_ID,
+          },
+        },
+      });
+    }
+  });
+
+  it.each([SENDER_ID, RECIPIENT_ID])(
+    'serializes concurrent deletion and send from %s without an inconsistent boundary',
+    async (newSender) => {
+      const old = await sendMessage(
+        SENDER_ID,
+        CLIENT_MESSAGE_ONE,
+        'Before race',
+        MESSAGE_TIME_ONE,
+      );
+      const [, next] = await Promise.all([
+        conversationsRepository.deleteDirectForMember(
+          conversationId,
+          RECIPIENT_ID,
+          MESSAGE_TIME_TWO,
+        ),
+        sendMessage(
+          newSender,
+          CLIENT_MESSAGE_TWO,
+          'Concurrent new message',
+          MESSAGE_TIME_TWO,
+        ),
+      ]);
+      const state = await conversationsService.get(
+        RECIPIENT_ID,
+        conversationId,
+      );
+      const history = await messagesRepository.listForMember(
+        conversationId,
+        RECIPIENT_ID,
+        null,
+        10,
+      );
+      if (state.settings.deletedAt) {
+        expect(state.settings.clearedThroughMessageId).toBe(next.id);
+        expect(state.unreadCount).toBe(0);
+        expect(history).toMatchObject({ messages: [] });
+        expect(
+          await conversationsRepository.listForUser(RECIPIENT_ID, null, 10),
+        ).toEqual([]);
+      } else {
+        expect(state.settings.clearedThroughMessageId).toBe(old.id);
+        expect(state.unreadCount).toBe(newSender === RECIPIENT_ID ? 0 : 1);
+        expect(history).toMatchObject({ messages: [{ id: next.id }] });
+        expect(
+          await conversationsRepository.listForUser(RECIPIENT_ID, null, 10),
+        ).toHaveLength(1);
+      }
+      expect(await prisma.message.count({ where: { conversationId } })).toBe(2);
+    },
+  );
+
+  it('keeps both independent history boundaries when both users delete a populated chat', async () => {
+    const old = await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_ONE,
+      'Old for both',
+      MESSAGE_TIME_ONE,
+    );
+    await Promise.all([
+      conversationsService.deleteForMe(SENDER_ID, conversationId),
+      conversationsService.deleteForMe(RECIPIENT_ID, conversationId),
+    ]);
+    for (const userId of [SENDER_ID, RECIPIENT_ID]) {
+      expect(
+        await conversationsRepository.listForUser(userId, null, 10),
+      ).toEqual([]);
+    }
+    const next = await sendMessage(
+      RECIPIENT_ID,
+      CLIENT_MESSAGE_TWO,
+      'Fresh for both',
+      MESSAGE_TIME_TWO,
+    );
+    for (const userId of [SENDER_ID, RECIPIENT_ID]) {
+      expect(
+        await messagesRepository.listForMember(
+          conversationId,
+          userId,
+          null,
+          10,
+        ),
+      ).toMatchObject({ messages: [{ id: next.id }] });
+      expect(
+        await conversationsService.get(userId, conversationId),
+      ).toMatchObject({
+        settings: { deletedAt: null, clearedThroughMessageId: old.id },
+      });
+    }
+  });
+
+  it('does not restore on a rejected attachment, but restores when verified media is sent', async () => {
+    await sendMessage(
+      SENDER_ID,
+      CLIENT_MESSAGE_ONE,
+      'Before photo',
+      MESSAGE_TIME_ONE,
+    );
+    await conversationsService.deleteForMe(RECIPIENT_ID, conversationId);
+    const input = {
+      conversationId,
+      senderId: SENDER_ID,
+      clientMessageId: CLIENT_MESSAGE_TWO,
+      text: null,
+      attachmentMediaIds: [MEDIA_ONE],
+      now: MESSAGE_TIME_TWO,
+    };
+    expect(await messagesRepository.send(input)).toEqual({
+      status: 'attachment-unavailable',
+    });
+    expect(
+      await conversationsRepository.listForUser(RECIPIENT_ID, null, 10),
+    ).toEqual([]);
+    await seedMessageImage(MEDIA_ONE);
+    const result = await messagesRepository.send(input);
+    expect(result.status).toBe('created');
+    expect(
+      await conversationsService.get(RECIPIENT_ID, conversationId),
+    ).toMatchObject({
+      settings: { deletedAt: null },
+      latestMessage: { kind: 'image' },
+    });
+    expect(
+      await conversationsRepository.listForUser(RECIPIENT_ID, null, 10),
+    ).toHaveLength(1);
   });
 
   it('converges concurrent identical sends to one row and one unread increment', async () => {

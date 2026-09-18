@@ -54,6 +54,7 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 | `POST`   | `/v1/conversations/:conversationId/transfer-ownership`           | Bearer | Transfer group ownership                                     |
 | `POST`   | `/v1/conversations/:conversationId/leave`                        | Bearer | Leave a group                                                |
 | `DELETE` | `/v1/conversations/:conversationId`                              | Bearer | Delete an owned group                                        |
+| `DELETE` | `/v1/conversations/:conversationId/for-me`                       | Bearer | Delete a direct chat from only the caller's lists/history    |
 | `PUT`    | `/v1/conversations/:conversationId/archive`                      | Bearer | Archive for the caller                                       |
 | `DELETE` | `/v1/conversations/:conversationId/archive`                      | Bearer | Unarchive for the caller                                     |
 | `PATCH`  | `/v1/conversations/:conversationId/settings`                     | Bearer | Archive, always mute/unmute, or pin for caller               |
@@ -138,6 +139,10 @@ images must pass through the verified media lifecycle below.
 
 ### Upload media
 
+For a standalone walkthrough with request/response examples, Swagger/Postman
+steps, a client-side reference, retries and troubleshooting, see
+[Media uploads: end-to-end integration guide](MEDIA_UPLOADS.md).
+
 Video/document upload configuration and the advanced messaging contracts
 (replies, edits, reactions, deletion, search, and socket revisions) are in
 [MESSAGING.md](MESSAGING.md). All attachment kinds use the lifecycle below.
@@ -160,8 +165,9 @@ service-unavailable response. Cloudinary classifies audio as its `video`
 resource type, so audio upload and cleanup URLs use `/video/` even though this
 API exposes the asset as `type: "audio"`.
 
-The API signs metadata but never receives the media bytes. Start with an
-authenticated JSON request:
+The app transfers media bytes directly to Cloudinary; the API authorizes and
+verifies the upload. Document verification additionally downloads the stored file
+for bounded content checks. Start with an authenticated JSON request:
 
 ```http
 POST /v1/media/uploads
@@ -180,8 +186,9 @@ Content-Type: application/json
 `clientUploadId` is an owner-scoped idempotency key. Retrying the same request
 returns the same media record and upload target; reusing it for different
 metadata returns `409 MEDIA_UPLOAD_IDEMPOTENCY_CONFLICT`. An optional lowercase
-64-character `contentSha256` may strengthen that fingerprint, but it is
-client-declared metadata and is not presented as server-verified content.
+64-character `contentSha256` may strengthen that fingerprint. Document completion
+also verifies the hash against downloaded bytes when provided; image/audio/video
+completion does not independently verify this client-declared hash.
 
 The `201` response contains a pending `media` object and an `upload` object:
 
@@ -362,6 +369,7 @@ The operation is idempotent: repeated requests, including a reversed request fro
   "latestMessage": null,
   "unreadCount": 0,
   "settings": {
+    "deletedAt": null,
     "archived": false,
     "muted": false,
     "pinned": false,
@@ -747,6 +755,66 @@ Items are ordered newest first. Pass `pageInfo.nextCursor` unchanged on the
 same conversation route to load older messages; clients must not inspect or
 construct it.
 
+### Delete a one-to-one chat for me
+
+```http
+DELETE /v1/conversations/550e8400-e29b-41d4-a716-446655440000/for-me
+Authorization: Bearer <access-token>
+```
+
+No request body. Returns **200**:
+
+```json
+{
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  "changed": true,
+  "deletedAt": "2026-09-18T12:00:00.000Z",
+  "clearedAt": "2026-09-18T11:59:00.000Z",
+  "clearedThroughMessageId": "9b2a35a6-6542-48b1-8232-0ac6476db74b"
+}
+```
+
+- Applies only to direct conversations and only to the signed-in member. The
+  other user's chat, messages, unread count and preferences are unchanged.
+- Hides the chat from active, archived and favorite lists. Clears the caller's
+  unread count, archive, pin and favorite flags; preserves mute preferences.
+- Hides existing history using the same `(clearedAt, clearedThroughMessageId)`
+  boundary as clear chat. For a never-messaged chat, both boundary values are null.
+  Shared messages and Cloudinary files are not physically deleted or revoked.
+- A **newly persisted message from either participant** restores the same chat
+  to the active list, without restoring cleared messages. Text and all supported
+  attachment kinds behave alike. Block rules still apply to sends.
+- Repeating deletion while still hidden returns `changed: false` and the original
+  deletion timestamp; it emits no new event. A later deletion after a new message
+  is a new delete action and clears that newer history too. After a lost response,
+  refetch state before retrying if new messages may have arrived.
+- Reopening through `POST /v1/conversations/direct`, reading by ID, editing or
+  reacting to an old message, and retrying an old send do **not** restore the chat.
+  Existing idempotent sends may return their original message; clients must not
+  reinsert messages at/before their persisted clear boundary.
+- `GET /v1/conversations/:conversationId` remains accessible to the member for
+  composing/refetching, with `settings.deletedAt` non-null while hidden and null
+  after restoration. Do not insert a hidden detail response into the chat list.
+- Missing chats and nonmembers receive `404 CONVERSATION_NOT_FOUND`; a member
+  trying this on a group receives `400 CONVERSATION_DIRECT_REQUIRED`. Local
+  deletion remains available if either participant has blocked the other.
+
+The `/chat` event `conversation.deleted_for_me` goes **only to the deleting user's
+active devices**, never to the peer. It includes the response boundary plus
+`userId` and `occurredAt` (not `changed`). Persist the greatest clear boundary,
+remove matching cached messages, and refetch detail/lists. Do not blindly apply
+`deletedAt` from delayed events or HTTP responses: a newer send may already have
+restored the chat. On `message.created`, ignore messages at/before the boundary
+and refetch the conversation; `settings.deletedAt` is the current authority.
+Reconnects should also refetch lists because socket events are best-effort.
+
+This does not replace `DELETE /v1/conversations/:conversationId`, which remains
+owner-only group deletion for everyone, or the clear-history endpoint below.
+Deploy migration `20260918120000_add_direct_chat_deletion` before starting this
+API build. The mobile UI is unchanged; wire its Delete chat action to `/for-me`.
+
+### Clear history without deleting the chat
+
 Clear the caller's current history with:
 
 ```http
@@ -880,7 +948,7 @@ token.
 
 There is intentionally no client-to-server socket event for sending messages or
 writing receipts. REST stays authoritative; socket events are low-latency hints.
-Conversation creation, settings, clear-history, and group-lifecycle writes
+Conversation creation, settings, per-user chat deletion, clear-history, and group-lifecycle writes
 return after their database transaction commits and do not wait for socket
 delivery, so a delayed realtime path cannot turn a successful write into an
 ambiguous HTTP timeout.

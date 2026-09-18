@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { DirectChatDeletedRecord } from '../conversations/conversations.types';
 import { AuthRepository } from '../auth/auth.repository';
 import { Clock } from '../auth/providers/clock';
 import {
@@ -13,6 +14,8 @@ import { RealtimeConversationsRepository } from './realtime-conversations.reposi
 import {
   CONVERSATION_CREATED_EVENT,
   CONVERSATION_DELETED_EVENT,
+  CONVERSATION_DELETED_FOR_ME_EVENT,
+  type ConversationDeletedForMeEventPayload,
   CONVERSATION_MEMBERS_ADDED_EVENT,
   CONVERSATION_MEMBER_REMOVED_EVENT,
   CONVERSATION_MEMBER_ROLE_UPDATED_EVENT,
@@ -32,6 +35,7 @@ import {
 } from './realtime.types';
 
 type ConversationEventName =
+  | typeof CONVERSATION_DELETED_FOR_ME_EVENT
   | typeof CONVERSATION_CREATED_EVENT
   | typeof CONVERSATION_SETTINGS_UPDATED_EVENT
   | typeof CONVERSATION_METADATA_UPDATED_EVENT
@@ -41,6 +45,7 @@ type ConversationEventName =
   | typeof CONVERSATION_OWNER_TRANSFERRED_EVENT
   | typeof CONVERSATION_DELETED_EVENT;
 type ConversationEventPayload =
+  | ConversationDeletedForMeEventPayload
   | ConversationCreatedEventPayload
   | ConversationSettingsUpdatedEventPayload
   | ConversationMetadataUpdatedEventPayload
@@ -71,6 +76,21 @@ export class RealtimeConversationEventsPublisher extends ConversationEventsPubli
     private readonly clock: Clock,
   ) {
     super();
+  }
+
+  async publishDeletedForMember(event: DirectChatDeletedRecord): Promise<void> {
+    await this.publishToUsers(
+      [event.userId],
+      CONVERSATION_DELETED_FOR_ME_EVENT,
+      {
+        conversationId: event.conversationId,
+        userId: event.userId,
+        deletedAt: event.deletedAt.toISOString(),
+        clearedAt: event.clearedAt?.toISOString() ?? null,
+        clearedThroughMessageId: event.clearedThroughMessageId,
+        occurredAt: event.occurredAt.toISOString(),
+      },
+    );
   }
 
   async publishCreated(event: ConversationCreatedEventRecord): Promise<void> {

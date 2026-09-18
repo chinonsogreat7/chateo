@@ -4,6 +4,18 @@ This guide creates a reusable Postman Socket.IO request for the ChatMe `/chat`
 namespace. Use the Postman desktop app because its Socket.IO client supports
 named events, JSON arguments, listeners, and acknowledgement callbacks.
 
+To upload a file before testing its message event, follow the
+[media upload Swagger/Postman exercise](../MEDIA_UPLOADS.md#7-swagger-and-postman-exercise).
+Binary uploads use a separate HTTP multipart request to Cloudinary, not this
+Socket.IO request.
+
+For direct-chat deletion, listen for `conversation.deleted_for_me` on the deleting
+user's connection and call `DELETE /v1/conversations/:conversationId/for-me` in
+an authenticated HTTP request. The peer must not receive that event or lose their
+chat. Send a new message from either account to restore the deleting user's chat;
+their old history must remain hidden. Refetch current state after events rather
+than applying stale deletion flags. See the [full contract](../README.md#delete-a-one-to-one-chat-for-me).
+
 Postman stores Socket.IO requests in a multi-protocol collection. That
 collection must be separate from the HTTP collection used for login, message
 history, message sending, and receipt updates.

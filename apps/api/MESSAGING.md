@@ -4,6 +4,10 @@ These backend features work in both direct and group conversations. The mobile
 UI is unchanged. All routes below require a valid bearer token and current
 conversation membership. Swagger includes request examples.
 
+For the full authorize → transfer → verify → send walkthrough across all media
+types, including avatars, client examples and retries, start with
+[MEDIA_UPLOADS.md](MEDIA_UPLOADS.md).
+
 ## Deployment
 
 Apply `20260909100000_add_advanced_messages` before running the new API build.

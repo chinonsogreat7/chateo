@@ -18,6 +18,7 @@ import type {
   CreateGroupConversationResult,
   DeleteGroupInput,
   DeleteGroupResult,
+  DeleteDirectChatResult,
   GroupConversationRecord,
   LeaveGroupInput,
   LeaveGroupResult,
@@ -44,6 +45,7 @@ const conversationWithMembers = {
       mutedUntil: true,
       pinnedAt: true,
       favoritedAt: true,
+      deletedAt: true,
       clearedAt: true,
       clearedThroughMessageId: true,
       unreadCount: true,
@@ -813,6 +815,89 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     });
   }
 
+  async deleteDirectForMember(
+    conversationId: string,
+    userId: string,
+    now: Date,
+  ): Promise<DeleteDirectChatResult> {
+    const normalizedConversationId = conversationId.toLowerCase();
+    const normalizedUserId = userId.toLowerCase();
+    return this.runSerializable(async (transaction) => {
+      const where = {
+        conversationId_userId: {
+          conversationId: normalizedConversationId,
+          userId: normalizedUserId,
+        },
+      };
+      const member = await transaction.conversationMember.findUnique({
+        where,
+        select: {
+          deletedAt: true,
+          clearedAt: true,
+          clearedThroughMessageId: true,
+          conversation: { select: { type: true } },
+        },
+      });
+      if (!member) return { status: 'conversation-not-found' };
+      if (member.conversation.type !== ConversationType.DIRECT) {
+        return { status: 'not-direct' };
+      }
+      const common = {
+        status: 'deleted' as const,
+        conversationId: normalizedConversationId,
+        userId: normalizedUserId,
+        occurredAt: now,
+      };
+      if (member.deletedAt) {
+        return {
+          ...common,
+          changed: false,
+          deletedAt: member.deletedAt,
+          clearedAt: member.clearedAt,
+          clearedThroughMessageId: member.clearedThroughMessageId,
+        };
+      }
+
+      const latest = await transaction.message.findFirst({
+        where: { conversationId: normalizedConversationId },
+        select: { id: true, createdAt: true },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+      const advancesBoundary =
+        latest &&
+        (!member.clearedAt ||
+          !member.clearedThroughMessageId ||
+          latest.createdAt > member.clearedAt ||
+          (latest.createdAt.getTime() === member.clearedAt.getTime() &&
+            latest.id > member.clearedThroughMessageId));
+      const clearedAt = advancesBoundary ? latest.createdAt : member.clearedAt;
+      const clearedThroughMessageId = advancesBoundary
+        ? latest.id
+        : member.clearedThroughMessageId;
+      // This transaction conflicts with message sends on the same memberships.
+      // A retry observes either the new message or the completed deletion.
+      await transaction.conversationMember.update({
+        where,
+        data: {
+          deletedAt: now,
+          clearedAt,
+          clearedThroughMessageId,
+          unreadCount: 0,
+          archivedAt: null,
+          pinnedAt: null,
+          favoritedAt: null,
+        },
+      });
+      return {
+        ...common,
+        changed: true,
+        deletedAt: now,
+        clearedAt,
+        clearedThroughMessageId,
+      };
+    });
+  }
+
   async listForUser(
     userId: string,
     cursor: ConversationPageCursor | null,
@@ -875,6 +960,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
         members: {
           some: {
             userId,
+            deletedAt: null,
             archivedAt: archived ? { not: null } : null,
             pinnedAt: pinned ? { not: null } : null,
             ...(favoritedOnly ? { favoritedAt: { not: null } } : {}),
@@ -1092,6 +1178,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
     const common = {
       id: conversation.id,
       settings: {
+        deletedAt: actorMember.deletedAt,
         archivedAt: actorMember.archivedAt,
         mutedAt: actorMember.mutedAt,
         mutedUntil: actorMember.mutedUntil,

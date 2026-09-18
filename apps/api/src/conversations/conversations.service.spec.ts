@@ -79,6 +79,7 @@ function createService() {
     transferGroupOwnership: jest.fn(),
     leaveGroup: jest.fn(),
     deleteGroup: jest.fn(),
+    deleteDirectForMember: jest.fn(),
     listForUser: jest.fn(),
     findForUser: jest.fn(),
   };
@@ -87,6 +88,7 @@ function createService() {
     publishCreated: jest.fn().mockResolvedValue(undefined),
     publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
     publishGroupChanged: jest.fn().mockResolvedValue(undefined),
+    publishDeletedForMember: jest.fn().mockResolvedValue(undefined),
   };
   return {
     repository,
@@ -113,6 +115,78 @@ async function expectApiError(
 }
 
 describe('ConversationsService', () => {
+  it.each([true, false])(
+    'returns per-user deletion and publishes only when changed=%s',
+    async (changed) => {
+      const { repository, service, eventsPublisher } = createService();
+      repository.deleteDirectForMember.mockResolvedValue({
+        status: 'deleted',
+        conversationId: CONVERSATION_ID,
+        userId: USER_ID,
+        changed,
+        deletedAt: NOW,
+        clearedAt: null,
+        clearedThroughMessageId: null,
+        occurredAt: NOW,
+      });
+      await expect(
+        service.deleteForMe(
+          USER_ID.toUpperCase(),
+          CONVERSATION_ID.toUpperCase(),
+        ),
+      ).resolves.toEqual({
+        conversationId: CONVERSATION_ID,
+        changed,
+        deletedAt: NOW.toISOString(),
+        clearedAt: null,
+        clearedThroughMessageId: null,
+      });
+      expect(repository.deleteDirectForMember).toHaveBeenCalledWith(
+        CONVERSATION_ID,
+        USER_ID,
+        NOW,
+      );
+      expect(eventsPublisher.publishDeletedForMember).toHaveBeenCalledTimes(
+        changed ? 1 : 0,
+      );
+      expect(eventsPublisher.publishGroupChanged).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['conversation-not-found', HttpStatus.NOT_FOUND, 'CONVERSATION_NOT_FOUND'],
+    ['not-direct', HttpStatus.BAD_REQUEST, 'CONVERSATION_DIRECT_REQUIRED'],
+  ] as const)('maps delete-for-me rejection %s', async (status, http, code) => {
+    const { repository, service, eventsPublisher } = createService();
+    repository.deleteDirectForMember.mockResolvedValue({ status });
+    await expectApiError(
+      service.deleteForMe(USER_ID, CONVERSATION_ID),
+      http,
+      code,
+    );
+    expect(eventsPublisher.publishDeletedForMember).not.toHaveBeenCalled();
+  });
+
+  it('does not fail a persisted deletion when socket publishing fails', async () => {
+    const { repository, service, eventsPublisher } = createService();
+    repository.deleteDirectForMember.mockResolvedValue({
+      status: 'deleted',
+      conversationId: CONVERSATION_ID,
+      userId: USER_ID,
+      changed: true,
+      deletedAt: NOW,
+      clearedAt: null,
+      clearedThroughMessageId: null,
+      occurredAt: NOW,
+    });
+    eventsPublisher.publishDeletedForMember.mockRejectedValue(
+      new Error('offline'),
+    );
+    await expect(
+      service.deleteForMe(USER_ID, CONVERSATION_ID),
+    ).resolves.toMatchObject({ changed: true });
+  });
+
   it('rejects starting a direct conversation with yourself', async () => {
     const { repository, service } = createService();
 
@@ -191,6 +265,7 @@ describe('ConversationsService', () => {
       latestMessage: null,
       unreadCount: 0,
       settings: {
+        deletedAt: null,
         archived: false,
         muted: false,
         pinned: false,
@@ -264,6 +339,7 @@ describe('ConversationsService', () => {
       latestMessage: null,
       unreadCount: 0,
       settings: {
+        deletedAt: null,
         archived: false,
         muted: false,
         pinned: false,

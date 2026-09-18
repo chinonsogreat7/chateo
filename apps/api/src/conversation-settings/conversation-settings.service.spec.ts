@@ -25,6 +25,7 @@ function createService() {
     publishCreated: jest.fn().mockResolvedValue(undefined),
     publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
     publishGroupChanged: jest.fn().mockResolvedValue(undefined),
+    publishDeletedForMember: jest.fn().mockResolvedValue(undefined),
   };
   return {
     repository,

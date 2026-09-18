@@ -97,6 +97,49 @@ describe('OpenAPI request examples', () => {
     );
   });
 
+  it('documents private direct-chat deletion separately from owner-only group deletion', () => {
+    const operation =
+      document.paths['/v1/conversations/{conversationId}/for-me']?.delete;
+    expect(operation?.security).toEqual([{ bearer: [] }]);
+    expect(operation?.requestBody).toBeUndefined();
+    expect(operation?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'conversationId',
+          in: 'path',
+          required: true,
+          schema: expect.objectContaining({ format: 'uuid' }),
+        }),
+      ]),
+    );
+    expect(operation?.responses['200']).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/DeleteDirectChatResponseDto' },
+        },
+      },
+    });
+    expect(operation?.responses).toHaveProperty('400');
+    expect(operation?.responses).toHaveProperty('404');
+    expect(
+      document.components?.schemas?.DeleteDirectChatResponseDto,
+    ).toMatchObject({
+      properties: {
+        changed: { type: 'boolean' },
+        deletedAt: { format: 'date-time' },
+        clearedThroughMessageId: { format: 'uuid', nullable: true },
+      },
+    });
+    expect(
+      document.components?.schemas?.ConversationMemberSettingsDto,
+    ).toMatchObject({
+      properties: { deletedAt: { format: 'date-time', nullable: true } },
+    });
+    expect(
+      document.paths['/v1/conversations/{conversationId}']?.delete?.responses,
+    ).toHaveProperty('204');
+  });
+
   afterAll(async () => {
     await app.close();
   });

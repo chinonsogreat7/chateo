@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { DirectChatDeletedRecord } from './conversations.types';
 
 export interface ConversationCreatedEventRecord {
   conversationId: string;
@@ -55,6 +56,10 @@ export type GroupChangedEventRecord =
     });
 
 export abstract class ConversationEventsPublisher {
+  abstract publishDeletedForMember(
+    event: DirectChatDeletedRecord,
+  ): Promise<void>;
+
   abstract publishCreated(event: ConversationCreatedEventRecord): Promise<void>;
 
   abstract publishSettingsUpdated(
@@ -66,6 +71,10 @@ export abstract class ConversationEventsPublisher {
 
 @Injectable()
 export class NoopConversationEventsPublisher extends ConversationEventsPublisher {
+  publishDeletedForMember(_event: DirectChatDeletedRecord): Promise<void> {
+    return Promise.resolve();
+  }
+
   publishCreated(_event: ConversationCreatedEventRecord): Promise<void> {
     return Promise.resolve();
   }

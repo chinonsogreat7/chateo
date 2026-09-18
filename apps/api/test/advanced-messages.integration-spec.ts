@@ -228,6 +228,8 @@ describe('Prisma advanced messaging persistence', () => {
           secureUrl: `https://res.cloudinary.com/classroom/${video ? 'video' : 'raw'}/upload/lesson.${video ? 'mp4' : 'pdf'}`,
           completedAt: NOW,
           expiresAt: new Date(NOW.getTime() + 600000),
+          createdAt: NOW,
+          updatedAt: NOW,
         },
       });
       const input = { ...sendInput(), attachmentMediaIds: [id] };

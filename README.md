@@ -39,9 +39,18 @@ Unused completed uploads and replaced avatars can be cleaned up after a
 configurable grace period. Both workers are opt-in; see
 [push and cleanup setup](apps/api/BACKGROUND_WORKERS.md).
 
+For the mobile integration and classroom walkthrough, see the
+[end-to-end media upload guide](apps/api/MEDIA_UPLOADS.md): authorization,
+Cloudinary transfer, verification, chat/avatar assignment, and retry handling.
+
 Archive changes are idempotent and affect only the signed-in member. Dedicated
 archive routes coexist with the legacy conversation-list `archived=true` query
 and conversation-settings `PATCH` route so existing clients keep working.
+
+Direct chats support `DELETE /v1/conversations/:conversationId/for-me`: hide the
+chat and existing history only for the caller, keeping the peer's copy intact.
+A new message restores the chat without restoring cleared history. See the
+[API deletion contract](apps/api/README.md#delete-a-one-to-one-chat-for-me).
 Favorites have their own paginated active/archived list, and pin/unpin now have
 explicit idempotent action routes while remaining compatible with the settings
 route.

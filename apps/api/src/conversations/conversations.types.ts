@@ -23,6 +23,7 @@ export interface ConversationLatestMessageRecord {
 interface ConversationRecordBase {
   id: string;
   settings?: {
+    deletedAt?: Date | null;
     archivedAt: Date | null;
     mutedAt: Date | null;
     mutedUntil: Date | null;
@@ -184,3 +185,16 @@ export type DeleteGroupInput = GroupMutationInputBase;
 export type DeleteGroupResult =
   | (GroupMutationSuccessBase & { status: 'deleted' })
   | { status: 'conversation-not-found' | 'forbidden' };
+
+export interface DirectChatDeletedRecord {
+  conversationId: string;
+  userId: string;
+  deletedAt: Date;
+  clearedAt: Date | null;
+  clearedThroughMessageId: string | null;
+  occurredAt: Date;
+}
+
+export type DeleteDirectChatResult =
+  | (DirectChatDeletedRecord & { status: 'deleted'; changed: boolean })
+  | { status: 'conversation-not-found' | 'not-direct' };

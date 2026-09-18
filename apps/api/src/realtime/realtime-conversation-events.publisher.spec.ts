@@ -8,6 +8,7 @@ import { RealtimeConversationEventsPublisher } from './realtime-conversation-eve
 import {
   CONVERSATION_CREATED_EVENT,
   CONVERSATION_DELETED_EVENT,
+  CONVERSATION_DELETED_FOR_ME_EVENT,
   CONVERSATION_MEMBERS_ADDED_EVENT,
   CONVERSATION_MEMBER_REMOVED_EVENT,
   CONVERSATION_MEMBER_ROLE_UPDATED_EVENT,
@@ -80,6 +81,59 @@ function createPublisher(sockets: RealtimeSocketTarget[]) {
 }
 
 describe('RealtimeConversationEventsPublisher', () => {
+  it('sends deletion only to the deleting user active devices, never their peer', async () => {
+    const first = target({
+      userId: USER_ONE_ID,
+      sessionId: 'one',
+      tokenExpiresAt: NOW.getTime() + 60000,
+    });
+    const second = target({
+      userId: USER_ONE_ID,
+      sessionId: 'two',
+      tokenExpiresAt: NOW.getTime() + 60000,
+    });
+    const revoked = target({
+      userId: USER_ONE_ID,
+      sessionId: 'revoked',
+      tokenExpiresAt: NOW.getTime() + 60000,
+    });
+    const peer = target({
+      userId: USER_TWO_ID,
+      sessionId: 'peer',
+      tokenExpiresAt: NOW.getTime() + 60000,
+    });
+    const state = createPublisher([first, second, revoked, peer]);
+    state.isSessionActive.mockImplementation(
+      async (id: string) => id !== 'revoked',
+    );
+    await state.publisher.publishDeletedForMember({
+      conversationId: CONVERSATION_ID,
+      userId: USER_ONE_ID,
+      deletedAt: NOW,
+      clearedAt: NOW,
+      clearedThroughMessageId: 'message-id',
+      occurredAt: NOW,
+    });
+    expect(state.findSocketsForUsers).toHaveBeenCalledWith([USER_ONE_ID]);
+    for (const socket of [first, second]) {
+      expect(socket.emit).toHaveBeenCalledWith(
+        CONVERSATION_DELETED_FOR_ME_EVENT,
+        {
+          conversationId: CONVERSATION_ID,
+          userId: USER_ONE_ID,
+          deletedAt: NOW.toISOString(),
+          clearedAt: NOW.toISOString(),
+          clearedThroughMessageId: 'message-id',
+          occurredAt: NOW.toISOString(),
+        },
+      );
+    }
+    expect(revoked.emit).not.toHaveBeenCalled();
+    expect(revoked.disconnect).toHaveBeenCalledWith(true);
+    expect(peer.emit).not.toHaveBeenCalled();
+    expect(state.refreshConversationAccess).not.toHaveBeenCalled();
+  });
+
   it('notifies every participant device that a group was created', async () => {
     const first = target({
       userId: USER_ONE_ID,

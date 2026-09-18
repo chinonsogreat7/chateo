@@ -822,6 +822,18 @@ export class PrismaMessagesRepository extends MessagesRepository {
       data: { unreadCount: { increment: 1 } },
     });
 
+    if (conversation?.type === 'DIRECT') {
+      // Only a genuinely new persisted message restores the chat. Idempotent
+      // replays and failed sends return/roll back before this point.
+      await transaction.conversationMember.updateMany({
+        where: {
+          conversationId: input.conversationId,
+          deletedAt: { not: null },
+        },
+        data: { deletedAt: null, archivedAt: null },
+      });
+    }
+
     if (this.config?.get<boolean>('PUSH_NOTIFICATIONS_ENABLED', false)) {
       await enqueueMessagePush(
         transaction,

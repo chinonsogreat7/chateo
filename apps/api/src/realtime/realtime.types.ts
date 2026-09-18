@@ -19,6 +19,7 @@ export const CONVERSATION_MEMBER_ROLE_UPDATED_EVENT =
 export const CONVERSATION_OWNER_TRANSFERRED_EVENT =
   'conversation.owner.transferred';
 export const CONVERSATION_DELETED_EVENT = 'conversation.deleted';
+export const CONVERSATION_DELETED_FOR_ME_EVENT = 'conversation.deleted_for_me';
 export const RECEIPT_DELIVERED_EVENT = 'receipt.delivered';
 export const RECEIPT_READ_EVENT = 'receipt.read';
 export const PRESENCE_SUBSCRIBE_COMMAND = 'presence.subscribe';
@@ -139,6 +140,9 @@ export interface ChatServerToClientEvents {
     payload: ConversationOwnerTransferredEventPayload,
   ): void;
   [CONVERSATION_DELETED_EVENT](payload: ConversationDeletedEventPayload): void;
+  [CONVERSATION_DELETED_FOR_ME_EVENT](
+    payload: ConversationDeletedForMeEventPayload,
+  ): void;
   [MESSAGE_CREATED_EVENT](payload: MessageCreatedEventPayload): void;
   [MESSAGE_UPDATED_EVENT](payload: MessageChangedEventPayload): void;
   [MESSAGE_DELETED_EVENT](payload: MessageChangedEventPayload): void;
@@ -210,6 +214,15 @@ export interface ConversationOwnerTransferredEventPayload
 }
 
 export type ConversationDeletedEventPayload = GroupChangedEventPayloadBase;
+
+export interface ConversationDeletedForMeEventPayload {
+  conversationId: string;
+  userId: string;
+  deletedAt: string;
+  clearedAt: string | null;
+  clearedThroughMessageId: string | null;
+  occurredAt: string;
+}
 
 export type AuthenticatedChatSocket = Socket<
   ChatClientToServerEvents,

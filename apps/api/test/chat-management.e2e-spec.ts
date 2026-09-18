@@ -252,6 +252,7 @@ describe('Chat management API (e2e, in memory)', () => {
       publishCreated: jest.fn().mockResolvedValue(undefined),
       publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
       publishGroupChanged: jest.fn().mockResolvedValue(undefined),
+      publishDeletedForMember: jest.fn().mockResolvedValue(undefined),
     };
     const clock: Clock = { now: jest.fn().mockReturnValue(NOW) };
 

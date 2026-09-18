@@ -170,6 +170,7 @@ model ConversationMember {
   mutedUntil              DateTime?              @map("muted_until") @db.Timestamptz(3)
   pinnedAt                DateTime?              @map("pinned_at") @db.Timestamptz(3)
   favoritedAt             DateTime?              @map("favorited_at") @db.Timestamptz(3)
+  deletedAt               DateTime?              @map("deleted_at") @db.Timestamptz(3)
   clearedAt               DateTime?              @map("cleared_at") @db.Timestamptz(3)
   clearedThroughMessageId String?                @map("cleared_through_message_id") @db.Uuid
   unreadCount             Int                    @default(0) @map("unread_count")
@@ -184,6 +185,7 @@ model ConversationMember {
   @@index([userId, archivedAt])
   @@index([userId, pinnedAt])
   @@index([userId, favoritedAt])
+  @@index([userId, deletedAt])
   @@map("conversation_members")
 }
 

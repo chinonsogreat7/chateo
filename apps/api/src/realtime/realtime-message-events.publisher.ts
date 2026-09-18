@@ -46,6 +46,7 @@ export class RealtimeMessageEventsPublisher extends MessageEventsPublisher {
         await this.conversations.findAccessibleConversation(
           message.conversationId,
           message.senderId,
+          message,
         );
       if (!currentConversation) return;
       currentParticipantIds = new Set(currentConversation.participantIds);

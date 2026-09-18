@@ -3,6 +3,7 @@ import { Clock } from '../auth/providers/clock';
 import { ApiException } from '../common/errors/api.exception';
 import { ConversationEventsPublisher } from './conversation-events.publisher';
 import { ConversationsRepository } from './conversations.repository';
+import type { DeleteDirectChatResponseDto } from './dto/delete-direct-chat-response.dto';
 import type {
   ConversationListResponseDto,
   ConversationResponseDto,
@@ -475,6 +476,48 @@ export class ConversationsService {
     });
   }
 
+  async deleteForMe(
+    userId: string,
+    conversationId: string,
+  ): Promise<DeleteDirectChatResponseDto> {
+    const result = await this.repository.deleteDirectForMember(
+      conversationId.toLowerCase(),
+      userId.toLowerCase(),
+      this.clock.now(),
+    );
+    if (result.status === 'conversation-not-found')
+      throw this.notFoundException();
+    if (result.status === 'not-direct') {
+      throw new ApiException(
+        HttpStatus.BAD_REQUEST,
+        'CONVERSATION_DIRECT_REQUIRED',
+        'Delete for me is only supported for direct conversations.',
+      );
+    }
+    if (result.status !== 'deleted')
+      throw new Error('Unexpected delete-chat status.');
+    if (result.changed) {
+      try {
+        void this.eventsPublisher.publishDeletedForMember(result).catch(() => {
+          this.logger.warn(
+            `Failed to publish conversation.deleted_for_me for ${result.conversationId}`,
+          );
+        });
+      } catch {
+        this.logger.warn(
+          `Failed to publish conversation.deleted_for_me for ${result.conversationId}`,
+        );
+      }
+    }
+    return {
+      conversationId: result.conversationId,
+      changed: result.changed,
+      deletedAt: result.deletedAt.toISOString(),
+      clearedAt: result.clearedAt?.toISOString() ?? null,
+      clearedThroughMessageId: result.clearedThroughMessageId,
+    };
+  }
+
   async deleteGroup(actorId: string, conversationId: string): Promise<void> {
     const normalizedActorId = actorId.toLowerCase();
     const normalizedConversationId = conversationId.toLowerCase();
@@ -654,6 +697,7 @@ export class ConversationsService {
     const common = {
       id: record.id,
       settings: {
+        deletedAt: record.settings?.deletedAt?.toISOString() ?? null,
         archived: record.settings?.archivedAt != null,
         muted,
         pinned: record.settings?.pinnedAt != null,

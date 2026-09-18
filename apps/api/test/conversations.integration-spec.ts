@@ -661,6 +661,7 @@ describe('Prisma direct-conversation concurrency', () => {
         expect.objectContaining({
           id: created.conversation.id,
           settings: {
+            deletedAt: null,
             archivedAt: NOW,
             mutedAt: NOW,
             mutedUntil: null,

@@ -214,7 +214,7 @@ describe('PostgreSQL unused media and durable push', () => {
           userId: RECIPIENT,
         },
       },
-      data: { mutedUntil: NOW },
+      data: { mutedAt: new Date(NOW.getTime() - 1000), mutedUntil: NOW },
     });
     await prisma.authSession.update({
       where: { id: sessionId },

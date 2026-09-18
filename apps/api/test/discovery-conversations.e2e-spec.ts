@@ -140,6 +140,7 @@ describe('Discovery and direct conversations API (e2e, in memory)', () => {
       publishCreated: jest.fn().mockResolvedValue(undefined),
       publishSettingsUpdated: jest.fn().mockResolvedValue(undefined),
       publishGroupChanged: jest.fn().mockResolvedValue(undefined),
+      publishDeletedForMember: jest.fn().mockResolvedValue(undefined),
     };
 
     for (const record of [alice, bob, carol]) {
@@ -246,6 +247,84 @@ describe('Discovery and direct conversations API (e2e, in memory)', () => {
 
   afterEach(async () => {
     await app.close();
+  });
+
+  it('deletes a direct chat only for its caller through the authenticated HTTP route', async () => {
+    const created = await request(app.getHttpServer())
+      .post('/v1/conversations/direct')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ participantId: BOB_ID })
+      .expect(200);
+    const id = (created.body as ConversationBody).id;
+    const route = `/v1/conversations/${id}/for-me`;
+    await request(app.getHttpServer()).delete(route).expect(401);
+    await request(app.getHttpServer())
+      .delete('/v1/conversations/not-a-uuid/for-me')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(400);
+    await request(app.getHttpServer())
+      .delete(route)
+      .set('Authorization', `Bearer ${carolToken}`)
+      .expect(404);
+    const deleted = await request(app.getHttpServer())
+      .delete(route)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(200)
+      .expect('Cache-Control', 'no-store');
+    expect(deleted.body).toEqual({
+      conversationId: id,
+      changed: true,
+      deletedAt: INITIAL_TIME.toISOString(),
+      clearedAt: null,
+      clearedThroughMessageId: null,
+    });
+    const replay = await request(app.getHttpServer())
+      .delete(route)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+    expect(replay.body).toEqual({
+      ...(deleted.body as object),
+      changed: false,
+    });
+    expect(events.publishDeletedForMember).toHaveBeenCalledTimes(1);
+    expect(events.publishDeletedForMember).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: ALICE_ID, conversationId: id }),
+    );
+    expect(events.publishGroupChanged).not.toHaveBeenCalled();
+    for (const path of [
+      '/v1/conversations',
+      '/v1/conversations/archived',
+      '/v1/conversations/favorites',
+    ]) {
+      const list = await request(app.getHttpServer())
+        .get(path)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .expect(200);
+      expect(list.body).toMatchObject({ items: [] });
+    }
+    const peer = await request(app.getHttpServer())
+      .get('/v1/conversations')
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(200);
+    expect(peer.body).toMatchObject({
+      items: [{ id, settings: { deletedAt: null } }],
+    });
+    const state = await request(app.getHttpServer())
+      .get(`/v1/conversations/${id}`)
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .expect(200);
+    expect(state.body).toMatchObject({
+      settings: { deletedAt: INITIAL_TIME.toISOString() },
+    });
+    const opened = await request(app.getHttpServer())
+      .post('/v1/conversations/direct')
+      .set('Authorization', `Bearer ${aliceToken}`)
+      .send({ participantId: BOB_ID })
+      .expect(200);
+    expect(opened.body).toMatchObject({
+      id,
+      settings: { deletedAt: INITIAL_TIME.toISOString() },
+    });
   });
 
   it('requires a valid access token for discovery and conversations', async () => {

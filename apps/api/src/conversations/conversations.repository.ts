@@ -8,6 +8,7 @@ import type {
   CreateGroupConversationResult,
   DeleteGroupInput,
   DeleteGroupResult,
+  DeleteDirectChatResult,
   LeaveGroupInput,
   LeaveGroupResult,
   RemoveGroupMemberInput,
@@ -52,6 +53,12 @@ export abstract class ConversationsRepository {
   abstract leaveGroup(input: LeaveGroupInput): Promise<LeaveGroupResult>;
 
   abstract deleteGroup(input: DeleteGroupInput): Promise<DeleteGroupResult>;
+
+  abstract deleteDirectForMember(
+    conversationId: string,
+    userId: string,
+    now: Date,
+  ): Promise<DeleteDirectChatResult>;
 
   abstract listForUser(
     userId: string,

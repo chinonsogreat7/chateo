@@ -513,6 +513,7 @@ describe('PrismaConversationsRepository', () => {
           members: {
             some: {
               userId: USER_ID,
+              deletedAt: null,
               archivedAt: null,
               pinnedAt: { not: null },
             },
@@ -529,6 +530,7 @@ describe('PrismaConversationsRepository', () => {
           members: {
             some: {
               userId: USER_ID,
+              deletedAt: null,
               archivedAt: null,
               pinnedAt: null,
             },
@@ -561,6 +563,7 @@ describe('PrismaConversationsRepository', () => {
           members: {
             some: {
               userId: USER_ID,
+              deletedAt: null,
               archivedAt: null,
               pinnedAt: { not: null },
             },
@@ -584,6 +587,7 @@ describe('PrismaConversationsRepository', () => {
           members: {
             some: {
               userId: USER_ID,
+              deletedAt: null,
               archivedAt: null,
               pinnedAt: null,
             },
@@ -613,6 +617,7 @@ describe('PrismaConversationsRepository', () => {
           members: {
             some: {
               userId: USER_ID,
+              deletedAt: null,
               archivedAt: null,
               pinnedAt: null,
             },
@@ -644,6 +649,7 @@ describe('PrismaConversationsRepository', () => {
           members: {
             some: {
               userId: USER_ID,
+              deletedAt: null,
               archivedAt: { not: null },
               pinnedAt: { not: null },
             },
@@ -666,6 +672,7 @@ describe('PrismaConversationsRepository', () => {
           members: {
             some: {
               userId: USER_ID,
+              deletedAt: null,
               archivedAt: null,
               pinnedAt: { not: null },
               favoritedAt: { not: null },
@@ -681,6 +688,7 @@ describe('PrismaConversationsRepository', () => {
           members: {
             some: {
               userId: USER_ID,
+              deletedAt: null,
               archivedAt: null,
               pinnedAt: null,
               favoritedAt: { not: null },

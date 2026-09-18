@@ -3,6 +3,7 @@ import type {
   ConversationPageCursor,
   ConversationRecord,
   CreateDirectConversationResult,
+  DeleteDirectChatResult,
 } from '../../src/conversations/conversations.types';
 import type { UpdateConversationSettingsInput } from '../../src/conversation-settings/conversation-settings.repository';
 import type {
@@ -65,6 +66,7 @@ export class InMemoryDiscoveryConversationsRepository {
   private readonly users = new Map<string, SeedUser>();
   private readonly conversations = new Map<string, StoredConversation>();
   private readonly conversationIdsByPair = new Map<string, string>();
+  private readonly deletedByMember = new Map<string, Date>();
   private readonly settingsByMember = new Map<
     string,
     ConversationSettingsRecord
@@ -183,6 +185,37 @@ export class InMemoryDiscoveryConversationsRepository {
     };
   }
 
+  async deleteDirectForMember(
+    conversationId: string,
+    userId: string,
+    now: Date,
+  ): Promise<DeleteDirectChatResult> {
+    const conversation = await this.findForUser(conversationId, userId);
+    if (!conversation) return { status: 'conversation-not-found' };
+    const key = this.memberKey(conversationId, userId);
+    const existing = this.deletedByMember.get(key);
+    if (!existing) {
+      this.deletedByMember.set(key, copyDate(now));
+      const settings = this.requiredSettings(conversationId, userId);
+      this.settingsByMember.set(key, {
+        ...settings,
+        archivedAt: null,
+        pinnedAt: null,
+        favoritedAt: null,
+      });
+    }
+    return {
+      status: 'deleted',
+      conversationId,
+      userId,
+      changed: !existing,
+      deletedAt: existing ?? now,
+      clearedAt: null,
+      clearedThroughMessageId: null,
+      occurredAt: now,
+    };
+  }
+
   async listForUser(
     userId: string,
     cursor: ConversationPageCursor | null,
@@ -195,6 +228,7 @@ export class InMemoryDiscoveryConversationsRepository {
         (conversation) =>
           (conversation.directUserOneId === userId ||
             conversation.directUserTwoId === userId) &&
+          !this.deletedByMember.has(this.memberKey(conversation.id, userId)) &&
           (this.requiredSettings(conversation.id, userId).archivedAt !==
             null) ===
             archived &&
@@ -315,9 +349,13 @@ export class InMemoryDiscoveryConversationsRepository {
       },
       latestMessage: null,
       unreadCount: 0,
-      settings: copySettings(
-        this.requiredSettings(conversation.id, currentUserId),
-      ),
+      settings: {
+        ...copySettings(this.requiredSettings(conversation.id, currentUserId)),
+        deletedAt:
+          this.deletedByMember.get(
+            this.memberKey(conversation.id, currentUserId),
+          ) ?? null,
+      },
       lastActivityAt: copyDate(conversation.lastActivityAt),
       createdAt: copyDate(conversation.createdAt),
       updatedAt: copyDate(conversation.updatedAt),

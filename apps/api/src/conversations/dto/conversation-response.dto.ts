@@ -42,6 +42,15 @@ export class ConversationLatestMessageDto {
 }
 
 export class ConversationMemberSettingsDto {
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description:
+      'Deleted from your chat lists until a new message is sent. Direct chats only.',
+  })
+  deletedAt!: string | null;
+
   @ApiProperty()
   archived!: boolean;
 
