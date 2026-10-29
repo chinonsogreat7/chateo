@@ -14,7 +14,7 @@
   "scripts": {
     "security:check": "node scripts/verify-tooling.mjs",
     "test:security": "node --test scripts/verify-tooling.test.mjs",
-    "build": "node api.js && npm run build --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
     "dev:api": "npm run start:dev --workspace @chateo/api",
     "format": "npm run format --workspaces --if-present",
     "format:check": "npm run format:check --workspaces --if-present",
