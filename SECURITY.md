@@ -36,6 +36,11 @@ parents, author timestamp, and subject while changing the tree and committer
 metadata. Commit messages and author dates therefore do not establish safety or
 the actual time of the push.
 
+The account owner subsequently reported revoking credentials on 21–22 October.
+The replacement above predates that containment. Discovering it on 29 October
+does not demonstrate new unauthorized access after revocation: already-committed
+payloads remain in repositories until source cleanup is performed.
+
 The replacement added an obfuscated root `api.js`, changed the root build script
 to execute it, reinjected the ESLint config, and added ignore entries for
 auto-push artifacts. The four feature/fix branch heads were also affected. These
@@ -67,8 +72,10 @@ credential-level root cause can be claimed.
 The local checks found no active repository hooks, Git command overrides,
 cron entries, or exact payload indicators in the inspected editor extensions
 and startup items. This was a bounded check, not a clean-device certification.
-The unexplained writer must be identified and its access revoked; branch
-protection and file checks alone do not remove account-level access.
+The exact credential or application behind the original pushes remains
+unattributed. Verify prior credential containment from a trusted device and
+investigate any newer unexplained activity separately; branch protection and
+file checks alone do not remove account-level access.
 
 ## Integrity gate
 
