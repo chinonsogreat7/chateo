@@ -1,4 +1,6 @@
 import { Injectable, Optional } from '@nestjs/common';
+import type { MessageCollectionFilter } from './messages.repository';
+import { visibleHistoryWhere } from './message-visibility';
 import { ConfigService } from '@nestjs/config';
 import { enqueueMessagePush } from '../push/push-outbox';
 import { MediaPurpose, MediaStatus, MessageKind, Prisma } from '@prisma/client';
@@ -65,6 +67,7 @@ interface AttachmentMetadata {
 }
 
 const messageSelect = {
+  links: true,
   id: true,
   conversationId: true,
   senderId: true,
@@ -203,6 +206,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
     cursor: MessagePageCursor | null,
     take: number,
     query?: string,
+    filter?: MessageCollectionFilter,
   ): Promise<ListMessagesResult> {
     const normalizedConversationId = conversationId.toLowerCase();
     const normalizedUserId = userId.toLowerCase();
@@ -226,6 +230,21 @@ export class PrismaMessagesRepository extends MessagesRepository {
         const messages = await transaction.message.findMany({
           where: {
             conversationId: normalizedConversationId,
+            ...(filter ? { deletedAt: null } : {}),
+            ...(filter?.collection === 'media'
+              ? {
+                  kind: filter.kind
+                    ? (filter.kind.toUpperCase() as MessageKind)
+                    : { not: MessageKind.TEXT },
+                  attachments: { some: {} },
+                }
+              : {}),
+            ...(filter?.collection === 'links'
+              ? { links: { isEmpty: false } }
+              : {}),
+            ...(filter?.collection === 'starred'
+              ? { stars: { some: { userId: normalizedUserId } } }
+              : {}),
             ...(query === undefined
               ? {}
               : {
@@ -236,19 +255,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
                   },
                 }),
             AND: [
-              ...(membership.clearedAt && membership.clearedThroughMessageId
-                ? [
-                    {
-                      OR: [
-                        { createdAt: { gt: membership.clearedAt } },
-                        {
-                          createdAt: membership.clearedAt,
-                          id: { gt: membership.clearedThroughMessageId },
-                        },
-                      ],
-                    },
-                  ]
-                : []),
+              visibleHistoryWhere(membership),
               ...(cursor
                 ? [
                     {
@@ -297,7 +304,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
           where: {
             id: messageId,
             conversationId,
-            ...this.visibleHistoryWhere(membership),
+            ...visibleHistoryWhere(membership),
           },
           select: messageSelect,
         });
@@ -351,7 +358,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
               where: {
                 id: input.messageId,
                 conversationId: input.conversationId,
-                ...this.visibleHistoryWhere(actor),
+                ...visibleHistoryWhere(actor),
               },
               select: messageSelect,
             });
@@ -462,23 +469,6 @@ export class PrismaMessagesRepository extends MessagesRepository {
           throw error;
       }
     }
-  }
-
-  private visibleHistoryWhere(membership: {
-    clearedAt: Date | null;
-    clearedThroughMessageId: string | null;
-  }): Prisma.MessageWhereInput {
-    return membership.clearedAt && membership.clearedThroughMessageId
-      ? {
-          OR: [
-            { createdAt: { gt: membership.clearedAt } },
-            {
-              createdAt: membership.clearedAt,
-              id: { gt: membership.clearedThroughMessageId },
-            },
-          ],
-        }
-      : {};
   }
 
   async markRead(
@@ -734,7 +724,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
           id: input.replyToMessageId,
           conversationId: input.conversationId,
           deletedAt: null,
-          ...this.visibleHistoryWhere(sender),
+          ...visibleHistoryWhere(sender),
         },
         select: { id: true },
       });
@@ -938,6 +928,7 @@ export class PrismaMessagesRepository extends MessagesRepository {
       senderId: message.senderId,
       kind: message.kind,
       text: message.deletedAt ? null : message.text,
+      links: message.deletedAt ? [] : message.links,
       attachments: message.deletedAt
         ? []
         : message.attachments.map((attachment) =>

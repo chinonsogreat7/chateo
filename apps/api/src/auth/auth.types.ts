@@ -1,9 +1,6 @@
 export type AuthDevicePlatform = 'IOS' | 'ANDROID' | 'WEB' | 'UNKNOWN';
 export type AuthSessionRevocationReason =
-  | 'ROTATED'
-  | 'LOGOUT'
-  | 'REUSE_DETECTED'
-  | 'ADMIN';
+  'ROTATED' | 'LOGOUT' | 'REUSE_DETECTED' | 'ADMIN';
 
 export interface AuthUserRecord {
   id: string;
@@ -11,6 +8,10 @@ export interface AuthUserRecord {
   phoneVerifiedAt: Date;
   displayName: string | null;
   avatarUrl: string | null;
+  bio: string | null;
+  sharePhoneNumber: boolean;
+  shareLastSeen: boolean;
+  lastSeenAt: Date | null;
   profileCompletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -89,6 +90,9 @@ export interface CompleteVerificationResult {
 
 export interface UpdateProfileInput {
   displayName?: string;
+  bio?: string;
+  sharePhoneNumber?: boolean;
+  shareLastSeen?: boolean;
 }
 
 export interface RequestMetadata {

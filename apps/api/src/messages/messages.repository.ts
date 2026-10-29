@@ -39,6 +39,7 @@ export abstract class MessagesRepository {
     cursor: MessagePageCursor | null,
     take: number,
     query?: string,
+    filter?: MessageCollectionFilter,
   ): Promise<ListMessagesResult>;
 
   abstract getForMember(
@@ -66,4 +67,9 @@ export abstract class MessagesRepository {
     userId: string,
     now: Date,
   ): Promise<ClearConversationMessagesResult>;
+}
+
+export interface MessageCollectionFilter {
+  collection: 'media' | 'links' | 'starred';
+  kind?: 'image' | 'audio' | 'video' | 'document';
 }

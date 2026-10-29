@@ -62,6 +62,84 @@ describe('Prisma direct-conversation concurrency', () => {
     eventsPublisher,
   );
 
+  it('lets current members read group details while only owners/admins can change the description', async () => {
+    const group = await conversationsService.createGroup(USER_ONE_ID, {
+      name: 'Classroom details',
+      description: '  Learning together  ',
+      participantIds: [USER_TWO_ID, USER_THREE_ID],
+    });
+    try {
+      expect(
+        await conversationsService.get(USER_TWO_ID, group.id),
+      ).toMatchObject({
+        type: 'group',
+        name: 'Classroom details',
+        description: 'Learning together',
+        createdById: USER_ONE_ID,
+        createdAt: NOW.toISOString(),
+        memberCount: 3,
+        role: 'member',
+        participants: expect.arrayContaining([
+          expect.objectContaining({ id: USER_ONE_ID, role: 'owner' }),
+        ]),
+      });
+      await expect(
+        conversationsService.get(INCOMPLETE_USER_ID, group.id),
+      ).rejects.toMatchObject({ status: 404 });
+      await expect(
+        conversationsService.updateGroup(USER_THREE_ID, group.id, {
+          description: 'Not allowed',
+        }),
+      ).rejects.toMatchObject({ status: 403 });
+      await conversationsService.updateGroupMemberRole(
+        USER_ONE_ID,
+        group.id,
+        USER_TWO_ID,
+        { role: 'admin' },
+      );
+      await conversationsService.updateGroup(USER_TWO_ID, group.id, {
+        description: '  Admin updated  ',
+      });
+      expect(
+        await conversationsService.get(USER_THREE_ID, group.id),
+      ).toMatchObject({ description: 'Admin updated' });
+      expect(
+        await repository.updateGroup({
+          conversationId: group.id,
+          actorId: USER_TWO_ID,
+          description: 'Admin updated',
+          now: NOW,
+        }),
+      ).toMatchObject({ status: 'updated', changed: false });
+      await conversationsService.removeGroupMember(
+        USER_ONE_ID,
+        group.id,
+        USER_THREE_ID,
+      );
+      await expect(
+        conversationsService.get(USER_THREE_ID, group.id),
+      ).rejects.toMatchObject({ status: 404 });
+      await conversationsService.transferGroupOwnership(USER_ONE_ID, group.id, {
+        newOwnerId: USER_TWO_ID,
+      });
+      expect(
+        await conversationsService.get(USER_TWO_ID, group.id),
+      ).toMatchObject({
+        createdById: USER_ONE_ID,
+        memberCount: 2,
+        role: 'owner',
+      });
+      await conversationsService.updateGroup(USER_TWO_ID, group.id, {
+        description: null,
+      });
+      expect(
+        await conversationsService.get(USER_ONE_ID, group.id),
+      ).toMatchObject({ description: null });
+    } finally {
+      await prisma.conversation.deleteMany({ where: { id: group.id } });
+    }
+  });
+
   beforeEach(() => {
     clock.set(NOW);
   });

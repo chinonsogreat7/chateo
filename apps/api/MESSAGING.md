@@ -8,6 +8,9 @@ For the full authorize → transfer → verify → send walkthrough across all m
 types, including avatars, client examples and retries, start with
 [MEDIA_UPLOADS.md](MEDIA_UPLOADS.md).
 
+Shared media and links, private message stars, participant profiles and
+last-seen sharing are documented in [CHAT_DETAILS.md](CHAT_DETAILS.md).
+
 ## Deployment
 
 Apply `20260909100000_add_advanced_messages` before running the new API build.

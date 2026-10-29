@@ -5,29 +5,25 @@ interface MessageAttachmentRecordBase {
   url: string;
 }
 
-export interface ImageMessageAttachmentRecord
-  extends MessageAttachmentRecordBase {
+export interface ImageMessageAttachmentRecord extends MessageAttachmentRecordBase {
   type: 'image';
   width: number;
   height: number;
 }
 
-export interface AudioMessageAttachmentRecord
-  extends MessageAttachmentRecordBase {
+export interface AudioMessageAttachmentRecord extends MessageAttachmentRecordBase {
   type: 'audio';
   durationMs: number;
 }
 
-export interface VideoMessageAttachmentRecord
-  extends MessageAttachmentRecordBase {
+export interface VideoMessageAttachmentRecord extends MessageAttachmentRecordBase {
   type: 'video';
   width: number;
   height: number;
   durationMs: number;
 }
 
-export interface DocumentMessageAttachmentRecord
-  extends MessageAttachmentRecordBase {
+export interface DocumentMessageAttachmentRecord extends MessageAttachmentRecordBase {
   type: 'document';
   filename: string;
 }
@@ -39,6 +35,7 @@ export type MessageAttachmentRecord =
   | DocumentMessageAttachmentRecord;
 
 export interface MessageRecord {
+  links?: string[];
   id: string;
   conversationId: string;
   clientMessageId: string;
@@ -107,8 +104,7 @@ export type MutateMessageResult =
     };
 
 export type GetMessageResult =
-  | { status: 'found'; message: MessageRecord }
-  | { status: 'message-not-found' };
+  { status: 'found'; message: MessageRecord } | { status: 'message-not-found' };
 
 /** @deprecated Use SendMessageResult. Kept for repository test doubles. */
 export type SendTextMessageResult = SendMessageResult;

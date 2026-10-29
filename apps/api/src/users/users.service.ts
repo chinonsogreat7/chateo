@@ -19,7 +19,12 @@ export class UsersService {
     userId: string,
     input: UpdateProfileDto,
   ): Promise<UserResponseDto> {
-    if (input.displayName === undefined) {
+    if (
+      input.displayName === undefined &&
+      input.bio === undefined &&
+      input.sharePhoneNumber === undefined &&
+      input.shareLastSeen === undefined
+    ) {
       throw new ApiException(
         HttpStatus.BAD_REQUEST,
         'PROFILE_UPDATE_EMPTY',
@@ -31,6 +36,9 @@ export class UsersService {
       userId,
       {
         displayName: input.displayName,
+        bio: input.bio,
+        sharePhoneNumber: input.sharePhoneNumber,
+        shareLastSeen: input.shareLastSeen,
       },
       new Date(),
     );
@@ -44,6 +52,10 @@ export class UsersService {
       phoneNumber: user.phoneNumber,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
+      bio: user.bio,
+      sharePhoneNumber: user.sharePhoneNumber,
+      shareLastSeen: user.shareLastSeen,
+      lastSeenAt: user.lastSeenAt?.toISOString() ?? null,
       profileComplete: user.profileCompletedAt !== null,
       createdAt: user.createdAt.toISOString(),
     };

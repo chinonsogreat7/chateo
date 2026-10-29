@@ -57,15 +57,21 @@ function createService() {
     },
   );
   const now = jest.fn().mockReturnValue(NOW);
+  const recordLastSeen = jest.fn().mockResolvedValue(undefined);
   const service = new ChatStateService(
     {
       findAccessibleConversation,
       findGroupParticipantIds,
     } as unknown as RealtimeConversationsRepository,
-    { findActiveSessionIds, isSessionActive } as unknown as AuthRepository,
+    {
+      findActiveSessionIds,
+      isSessionActive,
+      recordLastSeen,
+    } as unknown as AuthRepository,
     { now } as unknown as Clock,
   );
   return {
+    recordLastSeen,
     findAccessibleConversation,
     findGroupParticipantIds,
     findActiveSessionIds,
@@ -85,6 +91,36 @@ async function subscribe(
 }
 
 describe('ChatStateService', () => {
+  it('does not delay socket teardown when last-seen persistence stalls', async () => {
+    jest.useFakeTimers();
+    const { service, recordLastSeen } = createService();
+    const client = socket('slow-last-seen', USER_ONE_ID);
+    service.register(client);
+    recordLastSeen.mockImplementation(() => new Promise<void>(() => undefined));
+    let disconnected = false;
+    void service.disconnect(client, false).then(() => {
+      disconnected = true;
+    });
+    await jest.advanceTimersByTimeAsync(1);
+    expect(disconnected).toBe(true);
+    service.onModuleDestroy();
+  });
+  it('records authenticated connections and refreshes active observations, excluding expired sessions', async () => {
+    jest.useFakeTimers();
+    const { service, recordLastSeen, now } = createService();
+    const client = socket('last-seen', USER_ONE_ID);
+    service.register(client);
+    expect(recordLastSeen).toHaveBeenCalledWith([USER_ONE_ID], NOW);
+    const later = new Date(NOW.getTime() + 30_000);
+    now.mockReturnValue(later);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(recordLastSeen).toHaveBeenCalledWith([USER_ONE_ID], later);
+    recordLastSeen.mockClear();
+    now.mockReturnValue(new Date(NOW.getTime() + 90_000));
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(recordLastSeen).not.toHaveBeenCalled();
+    service.onModuleDestroy();
+  });
   afterEach(() => {
     jest.useRealTimers();
   });

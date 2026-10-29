@@ -77,6 +77,10 @@ function user(
     phoneVerifiedAt: new Date(createdAt),
     displayName,
     avatarUrl: null,
+    bio: null,
+    sharePhoneNumber: false,
+    shareLastSeen: false,
+    lastSeenAt: null,
     profileCompletedAt: new Date(createdAt),
     createdAt: new Date(createdAt),
     updatedAt: new Date(createdAt),
@@ -242,7 +246,7 @@ describe('Discovery and direct conversations API (e2e, in memory)', () => {
       }),
     );
     app.useGlobalFilters(new ApiExceptionFilter());
-    await app.init();
+    await app.listen(0, '127.0.0.1');
   });
 
   afterEach(async () => {

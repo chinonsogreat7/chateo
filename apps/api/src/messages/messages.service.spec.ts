@@ -154,6 +154,7 @@ describe('MessagesService', () => {
         text: '  Hello!  ',
       }),
     ).resolves.toEqual({
+      links: [],
       id: MESSAGE_ID,
       conversationId: CONVERSATION_ID,
       clientMessageId: CLIENT_MESSAGE_ID,
@@ -223,6 +224,7 @@ describe('MessagesService', () => {
         attachmentMediaIds: [ATTACHMENT_ID.toUpperCase()],
       }),
     ).resolves.toEqual({
+      links: [],
       id: MESSAGE_ID,
       conversationId: CONVERSATION_ID,
       clientMessageId: CLIENT_MESSAGE_ID,
@@ -276,6 +278,7 @@ describe('MessagesService', () => {
         attachmentMediaIds: [ATTACHMENT_ID],
       }),
     ).resolves.toEqual({
+      links: [],
       id: MESSAGE_ID,
       conversationId: CONVERSATION_ID,
       clientMessageId: CLIENT_MESSAGE_ID,

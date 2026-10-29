@@ -276,6 +276,7 @@ describe('OpenAPI request examples', () => {
       schemaName: 'CreateGroupConversationDto',
       payload: {
         name: 'Study Group',
+        description: 'React Native classroom discussions and resources.',
         participantIds: [GROUP_PARTICIPANT_ID, SECOND_PARTICIPANT_ID],
       },
     },
@@ -283,7 +284,11 @@ describe('OpenAPI request examples', () => {
       method: 'patch',
       path: '/v1/conversations/{conversationId}',
       schemaName: 'UpdateGroupConversationDto',
-      payload: { name: 'Project Team', avatarMediaId: null },
+      payload: {
+        name: 'Project Team',
+        description: 'Our project discussions and resources.',
+        avatarMediaId: null,
+      },
     },
     {
       method: 'put',

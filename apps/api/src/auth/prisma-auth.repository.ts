@@ -32,6 +32,10 @@ function mapUser(user: User): AuthUserRecord {
     phoneVerifiedAt: user.phoneVerifiedAt,
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
+    bio: user.bio,
+    sharePhoneNumber: user.sharePhoneNumber,
+    shareLastSeen: user.shareLastSeen,
+    lastSeenAt: user.lastSeenAt,
     profileCompletedAt: user.profileCompletedAt,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -419,6 +423,18 @@ export class PrismaAuthRepository extends AuthRepository {
     return user ? mapUser(user) : null;
   }
 
+  async recordLastSeen(userIds: string[], now: Date): Promise<void> {
+    if (userIds.length === 0) return;
+    // Conditional update prevents slow/out-of-order writes from moving time backwards.
+    await this.prisma.user.updateMany({
+      where: {
+        id: { in: [...new Set(userIds)] },
+        OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: now } }],
+      },
+      data: { lastSeenAt: now },
+    });
+  }
+
   async updateUserProfile(
     id: string,
     input: UpdateProfileInput,
@@ -431,6 +447,11 @@ export class PrismaAuthRepository extends AuthRepository {
     if (!existing) return null;
 
     const data: Prisma.UserUpdateInput = {};
+    if (input.bio !== undefined) data.bio = input.bio || null;
+    if (input.sharePhoneNumber !== undefined)
+      data.sharePhoneNumber = input.sharePhoneNumber;
+    if (input.shareLastSeen !== undefined)
+      data.shareLastSeen = input.shareLastSeen;
     if (input.displayName !== undefined) {
       data.displayName = input.displayName;
       if (existing.profileCompletedAt === null) data.profileCompletedAt = now;

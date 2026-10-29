@@ -123,6 +123,9 @@ export class ConversationsService {
     const result = await this.repository.createGroup({
       creatorId: normalizedCreatorId,
       name: input.name.trim(),
+      ...(input.description === undefined
+        ? {}
+        : { description: input.description?.trim() || null }),
       avatarMediaId: input.avatarMediaId?.toLowerCase() ?? null,
       participantIds,
       now: this.clock.now(),
@@ -156,7 +159,11 @@ export class ConversationsService {
     conversationId: string,
     input: UpdateGroupConversationDto,
   ): Promise<GroupConversationResponseDto> {
-    if (input.name === undefined && input.avatarMediaId === undefined) {
+    if (
+      input.name === undefined &&
+      input.avatarMediaId === undefined &&
+      input.description === undefined
+    ) {
       throw new ApiException(
         HttpStatus.BAD_REQUEST,
         'CONVERSATION_GROUP_UPDATE_EMPTY',
@@ -170,6 +177,9 @@ export class ConversationsService {
       conversationId: conversationId.toLowerCase(),
       actorId: normalizedActorId,
       ...(input.name === undefined ? {} : { name: input.name.trim() }),
+      ...(input.description === undefined
+        ? {}
+        : { description: input.description?.trim() || null }),
       ...(input.avatarMediaId === undefined
         ? {}
         : { avatarMediaId: input.avatarMediaId?.toLowerCase() ?? null }),
@@ -195,6 +205,7 @@ export class ConversationsService {
         actorId: normalizedActorId,
         recipientIds: result.eventRecipientIds,
         name: result.conversation.name,
+        description: result.conversation.description,
         avatarUrl: result.conversation.avatarUrl,
         occurredAt: now,
       });
@@ -715,11 +726,7 @@ export class ConversationsService {
             id: latestMessage.id,
             senderId: latestMessage.senderId,
             kind: latestMessage.kind.toLowerCase() as
-              | 'text'
-              | 'image'
-              | 'audio'
-              | 'video'
-              | 'document',
+              'text' | 'image' | 'audio' | 'video' | 'document',
             preview: this.messagePreview(latestMessage),
             createdAt: latestMessage.createdAt.toISOString(),
           }
@@ -742,6 +749,9 @@ export class ConversationsService {
       ...common,
       type: 'group',
       name: record.name,
+      description: record.description,
+      createdById: record.createdById,
+      memberCount: record.participants.length,
       avatarUrl: record.avatarUrl,
       participants: record.participants.map((participant) => ({
         id: participant.id,

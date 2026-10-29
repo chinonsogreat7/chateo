@@ -20,6 +20,10 @@ The Figma file currently shows four code boxes. Development/course mode defaults
 
 ## Endpoints
 
+For profiles, opt-in phone/last-seen sharing, shared media/links and private
+starred messages, see [CHAT_DETAILS.md](CHAT_DETAILS.md) for the endpoint map,
+examples, access rules, pagination and deployment steps.
+
 | Method   | Path                                                             | Auth   | Purpose                                                      |
 | -------- | ---------------------------------------------------------------- | ------ | ------------------------------------------------------------ |
 | `GET`    | `/v1/health`                                                     | Public | Liveness check                                               |
@@ -543,17 +547,27 @@ Group lifecycle permissions are:
 
 | Action                                               | Allowed roles |
 | ---------------------------------------------------- | ------------- |
-| Edit the name/avatar or add members                  | Owner, admin  |
+| Read group details                                   | Owner, admin, member |
+| Edit the name/description/avatar or add members       | Owner, admin  |
 | Remove an ordinary member                            | Owner, admin  |
 | Remove an admin                                      | Owner         |
 | Promote/demote admins, transfer ownership, or delete | Owner         |
 | Leave                                                | Admin, member |
 
 Edit metadata with `PATCH /v1/conversations/:conversationId`. At least one of
-`name` or `avatarMediaId` is required; send `avatarMediaId: null` to remove the avatar.
-Group creation also accepts optional `avatarMediaId`. Both endpoints reject
+`name`, `description`, or `avatarMediaId` is required; send `avatarMediaId: null`
+to remove the avatar. Descriptions are trimmed and limited to 500 characters;
+send `description: null` or an empty string to clear one. Group creation also
+accepts optional `description` and `avatarMediaId`. Both endpoints reject
 arbitrary `avatarUrl` inputs; responses and socket payloads still return
 `avatarUrl`, including existing legacy group photos.
+
+Any current member can use `GET /v1/conversations/:conversationId` for group
+details: name, photo, description, original `createdById`, `createdAt`,
+`memberCount`, participant names/photos/roles, and their own role/settings.
+Removed members and outsiders receive 404. Ownership transfers preserve the
+original creator ID. For the full group-info screen flow, see
+[CHAT_DETAILS.md](CHAT_DETAILS.md#group-information-screen).
 
 ### Verified group photos
 
@@ -968,7 +982,8 @@ Group lifecycle writes are also REST-authoritative. The server publishes
 `conversation.member.removed`, `conversation.member.role.updated`,
 `conversation.owner.transferred`, and `conversation.deleted`. Each contains
 `conversationId`, `actorId`, and `occurredAt`, plus the IDs or metadata relevant
-to the change. Clients should refetch conversation detail after a lifecycle
+to the change. The metadata event includes `name`, `avatarUrl`, and `description`.
+Clients should refetch conversation detail after a lifecycle
 event; a removed member or deleted-group recipient should remove the chat when
 that fetch returns `CONVERSATION_NOT_FOUND`. After `conversation.members.added`,
 existing presence subscribers receive a `presence.changed` snapshot for each

@@ -29,6 +29,7 @@ interface GroupChangedEventRecordBase {
 export type GroupChangedEventRecord =
   | (GroupChangedEventRecordBase & {
       kind: 'metadata-updated';
+      description: string | null;
       name: string;
       avatarUrl: string | null;
     })

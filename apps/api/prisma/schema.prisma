@@ -70,6 +70,10 @@ model User {
   phoneNumber                  String               @unique @map("phone_number") @db.VarChar(16)
   phoneVerifiedAt              DateTime             @map("phone_verified_at") @db.Timestamptz(3)
   displayName                  String?              @map("display_name") @db.VarChar(80)
+  bio                          String?              @db.VarChar(160)
+  sharePhoneNumber             Boolean              @default(false) @map("share_phone_number")
+  shareLastSeen                Boolean              @default(false) @map("share_last_seen")
+  lastSeenAt                   DateTime?            @map("last_seen_at") @db.Timestamptz(3)
   avatarUrl                    String?              @map("avatar_url") @db.Text
   avatarMediaId                String?              @unique @map("avatar_media_id") @db.Uuid
   profileCompletedAt           DateTime?            @map("profile_completed_at") @db.Timestamptz(3)
@@ -84,6 +88,7 @@ model User {
   groupsCreated                Conversation[]       @relation("GroupCreator")
   messagesSent                 Message[]
   messageReactions             MessageReaction[]
+  messageStars                 MessageStar[]
   blocksInitiated              UserBlock[]          @relation("Blocker")
   blocksReceived               UserBlock[]          @relation("Blocked")
   pushDevices                  PushDevice[]
@@ -138,6 +143,7 @@ model Conversation {
   directUserOneId String?              @map("direct_user_one_id") @db.Uuid
   directUserTwoId String?              @map("direct_user_two_id") @db.Uuid
   name            String?              @db.VarChar(100)
+  description     String?              @db.VarChar(500)
   avatarUrl       String?              @map("avatar_url") @db.Text
   avatarMediaId   String?              @map("avatar_media_id") @db.Uuid
   createdById     String?              @map("created_by_id") @db.Uuid
@@ -208,6 +214,7 @@ model Message {
   clientMessageId   String              @map("client_message_id") @db.Uuid
   kind              MessageKind         @default(TEXT)
   text              String?             @db.VarChar(4000)
+  links             String[]            @default([])
   sendFingerprint   String?             @map("send_fingerprint") @db.VarChar(64)
   replyToMessageId  String?             @map("reply_to_message_id") @db.Uuid
   editedAt          DateTime?           @map("edited_at") @db.Timestamptz(3)
@@ -221,6 +228,7 @@ model Message {
   replyTo           Message?            @relation("MessageReplies", fields: [replyToMessageId, conversationId], references: [id, conversationId], onDelete: NoAction, onUpdate: NoAction)
   replies           Message[]           @relation("MessageReplies")
   reactions         MessageReaction[]
+  stars             MessageStar[]
   pushNotifications PushNotification[]
 
   @@unique([senderId, clientMessageId])
@@ -241,6 +249,18 @@ model MessageReaction {
   @@id([messageId, userId])
   @@index([userId])
   @@map("message_reactions")
+}
+
+model MessageStar {
+  messageId String   @map("message_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  starredAt DateTime @default(now()) @map("starred_at") @db.Timestamptz(3)
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@index([userId, messageId])
+  @@map("message_stars")
 }
 
 model PushDevice {

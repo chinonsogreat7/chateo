@@ -107,6 +107,7 @@ export class ConversationsController {
         summary: 'Start a named group with registered users',
         value: {
           name: 'Study Group',
+          description: 'React Native classroom discussions and resources.',
           participantIds: [
             '7d444840-9dc0-41d1-b245-5ffdce74fad2',
             '8e555951-aed1-42e2-8346-6aadece85be3',
@@ -144,8 +145,12 @@ export class ConversationsController {
     },
     examples: {
       default: {
-        summary: 'Rename a group and remove its avatar',
-        value: { name: 'Project Team', avatarMediaId: null },
+        summary: 'Update group details and remove its avatar',
+        value: {
+          name: 'Project Team',
+          description: 'Our project discussions and resources.',
+          avatarMediaId: null,
+        },
       },
     },
   })
@@ -508,7 +513,11 @@ export class ConversationsController {
   }
 
   @Get(':conversationId')
-  @ApiOperation({ summary: 'Get a conversation by ID' })
+  @ApiOperation({
+    summary: 'Get conversation details as a current member',
+    description:
+      'Group responses include name, photo, description, original creator ID, creation date, current member count, participant names/photos/roles and your role/settings. Any current member may read; only owners/admins may edit group metadata. Use the shared-media/shared-links routes for galleries and the participant-profile route for opt-in personal details.',
+  })
   @ApiOkResponse({ schema: conversationResponseSchema })
   @ApiNotFoundResponse({
     description: 'The conversation is missing or the user is not a member.',

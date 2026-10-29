@@ -99,6 +99,12 @@ export class MessageReactionResponseDto {
   DocumentMessageAttachmentResponseDto,
 )
 export class MessageResponseDto {
+  @ApiProperty({
+    type: [String],
+    description:
+      'Up to 20 distinct HTTP(S) links in the text/caption. Best-effort extraction; no previews or network fetching.',
+  })
+  links!: string[];
   @ApiProperty({ format: 'uuid' })
   id!: string;
 

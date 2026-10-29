@@ -29,6 +29,7 @@ export function messageResponse(message: MessageRecord): MessageResponseDto {
     senderId: message.senderId,
     kind: message.kind.toLowerCase() as MessageResponseDto['kind'],
     text: deleted ? null : message.text,
+    links: deleted ? [] : (message.links ?? []),
     attachments: deleted ? [] : message.attachments,
     createdAt: message.createdAt.toISOString(),
     replyToMessageId: deleted ? null : (message.replyToMessageId ?? null),

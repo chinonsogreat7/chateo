@@ -134,6 +134,24 @@ export class DirectConversationResponseDto extends ConversationResponseBaseDto {
 }
 
 export class GroupConversationResponseDto extends ConversationResponseBaseDto {
+  @ApiProperty({ type: String, nullable: true, maxLength: 500 })
+  description!: string | null;
+
+  @ApiProperty({
+    format: 'uuid',
+    description:
+      'Original group creator. Ownership transfers do not change this ID; the creator may no longer be a member.',
+  })
+  createdById!: string;
+
+  @ApiProperty({
+    type: 'integer',
+    minimum: 1,
+    maximum: 100,
+    description: 'Number of current participants, including the owner.',
+  })
+  memberCount!: number;
+
   @ApiProperty({ enum: ['group'], example: 'group' })
   type!: 'group';
 
@@ -158,8 +176,7 @@ export class GroupConversationResponseDto extends ConversationResponseBaseDto {
 }
 
 export type ConversationResponseDto =
-  | DirectConversationResponseDto
-  | GroupConversationResponseDto;
+  DirectConversationResponseDto | GroupConversationResponseDto;
 
 export const conversationResponseSchema = {
   oneOf: [

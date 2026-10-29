@@ -9,9 +9,26 @@ import {
   IsString,
   IsUUID,
   Length,
+  MaxLength,
 } from 'class-validator';
 
 export class CreateGroupConversationDto {
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    maxLength: 500,
+    description:
+      'An optional group description visible to all current members.',
+    example: 'React Native classroom discussions and resources.',
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @MaxLength(500)
+  description?: string | null;
+
   @ApiProperty({
     example: 'Study Group',
     minLength: 1,

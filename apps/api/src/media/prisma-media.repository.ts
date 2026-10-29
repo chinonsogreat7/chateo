@@ -54,6 +54,10 @@ const mediaProfileUserSelect = {
   displayName: true,
   avatarUrl: true,
   profileCompletedAt: true,
+  bio: true,
+  sharePhoneNumber: true,
+  shareLastSeen: true,
+  lastSeenAt: true,
   createdAt: true,
 } satisfies Prisma.UserSelect;
 

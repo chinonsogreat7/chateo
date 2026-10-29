@@ -318,6 +318,7 @@ function toGroupChangedNotification(event: GroupChangedEventRecord): {
         payload: {
           ...common,
           name: event.name,
+          description: event.description,
           avatarUrl: event.avatarUrl,
         },
       };

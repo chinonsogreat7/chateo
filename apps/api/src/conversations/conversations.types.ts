@@ -6,8 +6,7 @@ export interface ConversationParticipantRecord {
 
 export type ConversationMemberRoleRecord = 'OWNER' | 'ADMIN' | 'MEMBER';
 
-export interface GroupConversationParticipantRecord
-  extends ConversationParticipantRecord {
+export interface GroupConversationParticipantRecord extends ConversationParticipantRecord {
   role: ConversationMemberRoleRecord;
 }
 
@@ -49,6 +48,8 @@ export interface DirectConversationRecord extends ConversationRecordBase {
 }
 
 export interface GroupConversationRecord extends ConversationRecordBase {
+  description: string | null;
+  createdById: string;
   type: 'GROUP';
   otherParticipant?: never;
   name: string;
@@ -58,8 +59,7 @@ export interface GroupConversationRecord extends ConversationRecordBase {
 }
 
 export type ConversationRecord =
-  | DirectConversationRecord
-  | GroupConversationRecord;
+  DirectConversationRecord | GroupConversationRecord;
 
 export interface ConversationPageCursor {
   pinned: boolean;
@@ -73,6 +73,7 @@ export type CreateDirectConversationResult =
   | { status: 'participant-not-found' };
 
 export interface CreateGroupConversationInput {
+  description?: string | null;
   creatorId: string;
   name: string;
   avatarMediaId: string | null;
@@ -95,12 +96,12 @@ interface GroupMutationSuccessBase {
   eventRecipientIds: string[];
 }
 
-interface GroupMutationWithConversationSuccess
-  extends GroupMutationSuccessBase {
+interface GroupMutationWithConversationSuccess extends GroupMutationSuccessBase {
   conversation: GroupConversationRecord;
 }
 
 export interface UpdateGroupInput extends GroupMutationInputBase {
+  description?: string | null;
   name?: string;
   avatarMediaId?: string | null;
 }

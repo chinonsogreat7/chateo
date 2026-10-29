@@ -85,6 +85,8 @@ interface SeedGroupUser {
 }
 
 interface StoredGroup {
+  description: string | null;
+  createdById: string;
   id: string;
   name: string;
   avatarUrl: string | null;
@@ -138,6 +140,8 @@ class InMemoryGroupLifecycleRepository {
     this.group = {
       id: id.toLowerCase(),
       name: 'Socket Study Group',
+      description: null,
+      createdById: normalizedOwnerId,
       avatarUrl: null,
       avatarMediaId: null,
       members,
@@ -199,7 +203,11 @@ class InMemoryGroupLifecycleRepository {
       group.avatarMediaId = input.avatarMediaId ?? null;
       group.avatarUrl = avatar?.secureUrl ?? null;
     }
-    const changed = nameChanged || avatarChanged;
+    const descriptionChanged =
+      input.description !== undefined &&
+      input.description !== group.description;
+    if (descriptionChanged) group.description = input.description ?? null;
+    const changed = nameChanged || avatarChanged || descriptionChanged;
     if (changed) group.updatedAt = new Date(input.now);
     return {
       status: 'updated',
@@ -329,6 +337,14 @@ class InMemoryGroupLifecycleRepository {
       : null;
   }
 
+  async findForUser(
+    conversationId: string,
+    userId: string,
+  ): Promise<GroupConversationRecord | null> {
+    const group = this.groupForActor(conversationId, userId);
+    return group ? this.toConversation(group, userId.toLowerCase()) : null;
+  }
+
   private groupForActor(
     conversationId: string,
     actorId: string,
@@ -354,6 +370,8 @@ class InMemoryGroupLifecycleRepository {
       id: group.id,
       type: 'GROUP',
       name: group.name,
+      description: group.description,
+      createdById: group.createdById,
       avatarUrl: group.avatarUrl,
       participants: this.memberIds(group).map((memberId) => {
         const user = this.users.get(memberId);
@@ -397,6 +415,10 @@ function user(
     phoneVerifiedAt: new Date(createdAt),
     displayName,
     avatarUrl: null,
+    bio: null,
+    sharePhoneNumber: false,
+    shareLastSeen: false,
+    lastSeenAt: null,
     profileCompletedAt: new Date(createdAt),
     createdAt: new Date(createdAt),
     updatedAt: new Date(createdAt),
@@ -673,6 +695,7 @@ describe('Group lifecycle REST and realtime API (e2e, in memory)', () => {
       .set('Authorization', `Bearer ${aliceToken}`)
       .send({
         name: 'Realtime Project Team',
+        description: '  Practical React Native discussions  ',
         avatarMediaId: mediaId,
       })
       .expect(HttpStatus.OK);
@@ -685,10 +708,12 @@ describe('Group lifecycle REST and realtime API (e2e, in memory)', () => {
       id: GROUP_ID,
       type: 'group',
       name: 'Realtime Project Team',
+      description: 'Practical React Native discussions',
       avatarUrl: 'https://example.com/project-team.jpg',
       role: 'owner',
     });
     const expectedEvent: ConversationMetadataUpdatedEventPayload = {
+      description: 'Practical React Native discussions',
       conversationId: GROUP_ID,
       actorId: ALICE_ID,
       name: 'Realtime Project Team',
@@ -699,6 +724,25 @@ describe('Group lifecycle REST and realtime API (e2e, in memory)', () => {
       expect(events).toEqual([expectedEvent]);
     }
     expect(eventLists[3]).toEqual([]);
+    const details = await request(app.getHttpServer())
+      .get(`/v1/conversations/${GROUP_ID}`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .expect(HttpStatus.OK);
+    expect(details.body).toMatchObject({
+      description: 'Practical React Native discussions',
+      createdById: ALICE_ID,
+      memberCount: 3,
+      role: 'member',
+    });
+    await request(app.getHttpServer())
+      .get(`/v1/conversations/${GROUP_ID}`)
+      .set('Authorization', `Bearer ${daveToken}`)
+      .expect(HttpStatus.NOT_FOUND);
+    await request(app.getHttpServer())
+      .patch(`/v1/conversations/${GROUP_ID}`)
+      .set('Authorization', `Bearer ${bobToken}`)
+      .send({ description: 'Member edit' })
+      .expect(HttpStatus.FORBIDDEN);
   });
 
   it('sets and removes group photos idempotently and only broadcasts real changes', async () => {

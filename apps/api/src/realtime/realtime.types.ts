@@ -184,31 +184,27 @@ interface GroupChangedEventPayloadBase {
   occurredAt: string;
 }
 
-export interface ConversationMetadataUpdatedEventPayload
-  extends GroupChangedEventPayloadBase {
+export interface ConversationMetadataUpdatedEventPayload extends GroupChangedEventPayloadBase {
+  description: string | null;
   name: string;
   avatarUrl: string | null;
 }
 
-export interface ConversationMembersAddedEventPayload
-  extends GroupChangedEventPayloadBase {
+export interface ConversationMembersAddedEventPayload extends GroupChangedEventPayloadBase {
   memberIds: string[];
 }
 
-export interface ConversationMemberRemovedEventPayload
-  extends GroupChangedEventPayloadBase {
+export interface ConversationMemberRemovedEventPayload extends GroupChangedEventPayloadBase {
   memberId: string;
   reason: 'removed' | 'left';
 }
 
-export interface ConversationMemberRoleUpdatedEventPayload
-  extends GroupChangedEventPayloadBase {
+export interface ConversationMemberRoleUpdatedEventPayload extends GroupChangedEventPayloadBase {
   memberId: string;
   role: 'admin' | 'member';
 }
 
-export interface ConversationOwnerTransferredEventPayload
-  extends GroupChangedEventPayloadBase {
+export interface ConversationOwnerTransferredEventPayload extends GroupChangedEventPayloadBase {
   previousOwnerId: string;
   newOwnerId: string;
 }
@@ -260,15 +256,13 @@ interface MessageCreatedAttachmentPayloadBase {
   url: string;
 }
 
-export interface MessageCreatedImageAttachmentPayload
-  extends MessageCreatedAttachmentPayloadBase {
+export interface MessageCreatedImageAttachmentPayload extends MessageCreatedAttachmentPayloadBase {
   type: 'image';
   width: number;
   height: number;
 }
 
-export interface MessageCreatedAudioAttachmentPayload
-  extends MessageCreatedAttachmentPayloadBase {
+export interface MessageCreatedAudioAttachmentPayload extends MessageCreatedAttachmentPayloadBase {
   type: 'audio';
   durationMs: number;
 }

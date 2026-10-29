@@ -181,7 +181,7 @@ describe('Push device API (real validation/authentication/repository, in-memory 
       }),
     );
     app.useGlobalFilters(new ApiExceptionFilter());
-    await app.init();
+    await app.listen(0, '127.0.0.1');
     token = await module
       .get(JwtService)
       .signAsync({ sub: USER, sid: SESSION, profileComplete: true });

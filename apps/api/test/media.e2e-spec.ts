@@ -630,7 +630,9 @@ describe('Media API (e2e, in memory)', () => {
       }),
     );
     app.useGlobalFilters(new ApiExceptionFilter());
-    await app.init();
+    // Keep one listener for this test so keep-alive clients cannot reuse a
+    // connection to a server Supertest has just closed between requests.
+    await app.listen(0, '127.0.0.1');
 
     const challengeResponse = await request(app.getHttpServer())
       .post('/v1/auth/otp/request')
@@ -646,6 +648,10 @@ describe('Media API (e2e, in memory)', () => {
     accessToken = auth.accessToken;
     userId = auth.user.id;
     mediaRepository.seedUser({
+      bio: null,
+      sharePhoneNumber: false,
+      shareLastSeen: false,
+      lastSeenAt: null,
       id: userId,
       phoneNumber: auth.user.phoneNumber,
       displayName: auth.user.displayName,

@@ -19,9 +19,11 @@ and the project rubric in this workspace.
 - Per-user archive, timed mute, pin, favorite, and non-destructive clear-history controls, plus idempotent user blocking
 - Dedicated archive, favorite-list, pin/unpin, and paginated archived-chat APIs for both direct chats and groups
 - Complete group lifecycle APIs for metadata, members, admins, ownership, leaving, and deletion
+- Member-visible group details with a description, original creator, creation date and current member count
 - Verified group photos with owner/admin-only assignment and removal, plus realtime metadata updates
 - Persistent, idempotent text, image, audio, video, and document messages with cursor-paginated history
 - Replies, reactions, sender-only editing/deletion, message search, and versioned socket updates
+- Participant bios, opt-in phone/last-seen sharing, shared-media/shared-link collections, and private starred messages
 - Idempotent signed uploads for avatars and all supported attachment kinds, including bounded document-content verification
 - Per-user unread counts, durable delivery/read receipts, and latest-message chat-list previews
 - Authenticated Socket.IO conversation, message, receipt, presence, and typing events on the `/chat` namespace
@@ -42,6 +44,9 @@ configurable grace period. Both workers are opt-in; see
 For the mobile integration and classroom walkthrough, see the
 [end-to-end media upload guide](apps/api/MEDIA_UPLOADS.md): authorization,
 Cloudinary transfer, verification, chat/avatar assignment, and retry handling.
+
+For contact details, privacy switches, galleries, links and private message
+bookmarks, see the [chat details integration guide](apps/api/CHAT_DETAILS.md).
 
 Archive changes are idempotent and affect only the signed-in member. Dedicated
 archive routes coexist with the legacy conversation-list `archived=true` query

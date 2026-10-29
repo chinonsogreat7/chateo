@@ -43,6 +43,8 @@ function groupConversation(
     id: CONVERSATION_ID,
     type: 'GROUP',
     name: 'Study Group',
+    description: null,
+    createdById: USER_ID,
     avatarUrl: null,
     participants: [
       {
@@ -320,6 +322,9 @@ describe('ConversationsService', () => {
       id: CONVERSATION_ID,
       type: 'group',
       name: 'Study Group',
+      description: null,
+      createdById: USER_ID,
+      memberCount: 2,
       avatarUrl: 'https://example.com/groups/study.jpg',
       participants: [
         {
@@ -407,6 +412,7 @@ describe('ConversationsService', () => {
     const { repository, eventsPublisher, service } = createService();
     const updated = groupConversation({
       name: 'Project Team',
+      description: 'Course resources',
       avatarUrl: 'https://example.com/groups/project.jpg',
     });
     repository.updateGroup.mockResolvedValue({
@@ -418,6 +424,7 @@ describe('ConversationsService', () => {
 
     const response = await service.updateGroup(USER_ID, CONVERSATION_ID, {
       name: '  Project Team  ',
+      description: '  Course resources  ',
       avatarMediaId: '550E8400-E29B-41D4-A716-446655440000',
     });
 
@@ -426,6 +433,7 @@ describe('ConversationsService', () => {
       actorId: USER_ID,
       name: 'Project Team',
       avatarMediaId: '550e8400-e29b-41d4-a716-446655440000',
+      description: 'Course resources',
       now: NOW,
     });
     expect(response).toMatchObject({
@@ -435,6 +443,7 @@ describe('ConversationsService', () => {
     });
     expect(eventsPublisher.publishGroupChanged).toHaveBeenCalledWith({
       kind: 'metadata-updated',
+      description: 'Course resources',
       conversationId: CONVERSATION_ID,
       actorId: USER_ID,
       recipientIds: [USER_ID, PARTICIPANT_ID],

@@ -1157,6 +1157,7 @@ describe('PrismaMessagesRepository', () => {
       where: {
         conversationId: CONVERSATION_ID,
         AND: [
+          {},
           {
             OR: [
               { createdAt: { lt: cursor.createdAt } },

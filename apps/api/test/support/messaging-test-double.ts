@@ -55,6 +55,7 @@ interface StoredDirectConversation extends StoredConversationBase {
 }
 
 interface StoredGroupConversation extends StoredConversationBase {
+  createdById: string;
   type: 'GROUP';
   name: string;
   avatarUrl: string | null;
@@ -262,6 +263,7 @@ export class InMemoryMessagingRepository {
       id: normalizedId,
       type: 'GROUP',
       memberIds: normalizedMemberIds,
+      createdById: normalizedOwnerId,
       name,
       avatarUrl,
       rolesByMemberId: new Map(
@@ -1282,6 +1284,8 @@ export class InMemoryMessagingRepository {
         ...base,
         type: 'GROUP',
         name: conversation.name,
+        description: null,
+        createdById: conversation.createdById,
         avatarUrl: conversation.avatarUrl,
         participants,
         role,

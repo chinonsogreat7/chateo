@@ -13,6 +13,24 @@ export class UserResponseDto {
   @ApiPropertyOptional({ nullable: true, format: 'uri' })
   avatarUrl!: string | null;
 
+  @ApiProperty({ type: String, nullable: true, maxLength: 160 })
+  bio!: string | null;
+
+  @ApiProperty({ default: false })
+  sharePhoneNumber!: boolean;
+
+  @ApiProperty({ default: false })
+  shareLastSeen!: boolean;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    format: 'date-time',
+    description:
+      'Last authenticated socket observation, approximately every 30 seconds while connected. Null until observed.',
+  })
+  lastSeenAt!: string | null;
+
   @ApiProperty()
   profileComplete!: boolean;
 

@@ -232,6 +232,7 @@ describe('RealtimeConversationEventsPublisher', () => {
 
     await publisher.publishGroupChanged({
       kind: 'metadata-updated',
+      description: null,
       conversationId: CONVERSATION_ID,
       actorId: USER_ONE_ID,
       recipientIds: [USER_ONE_ID],
@@ -281,6 +282,7 @@ describe('RealtimeConversationEventsPublisher', () => {
     {
       record: {
         kind: 'metadata-updated',
+        description: null,
         conversationId: CONVERSATION_ID,
         actorId: USER_TWO_ID,
         recipientIds: [USER_ONE_ID],
@@ -289,7 +291,11 @@ describe('RealtimeConversationEventsPublisher', () => {
         avatarUrl: null,
       },
       socketEvent: CONVERSATION_METADATA_UPDATED_EVENT,
-      expectedPayload: { name: 'Project Team', avatarUrl: null },
+      expectedPayload: {
+        name: 'Project Team',
+        avatarUrl: null,
+        description: null,
+      },
       refreshesAccess: false,
     },
     {

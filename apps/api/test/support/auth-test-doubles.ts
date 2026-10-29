@@ -260,6 +260,10 @@ export class InMemoryAuthRepository extends AuthRepository {
         phoneVerifiedAt: copyDate(now),
         displayName: null,
         avatarUrl: null,
+        bio: null,
+        sharePhoneNumber: false,
+        shareLastSeen: false,
+        lastSeenAt: null,
         profileCompletedAt: null,
         createdAt: copyDate(now),
         updatedAt: copyDate(now),
@@ -351,9 +355,9 @@ export class InMemoryAuthRepository extends AuthRepository {
     const session = this.sessions.get(sessionId);
     return Boolean(
       session &&
-        session.userId === userId &&
-        !session.revokedAt &&
-        session.expiresAt.getTime() > now.getTime(),
+      session.userId === userId &&
+      !session.revokedAt &&
+      session.expiresAt.getTime() > now.getTime(),
     );
   }
 
@@ -383,12 +387,26 @@ export class InMemoryAuthRepository extends AuthRepository {
     const user = this.users.get(id);
     if (!user) return null;
 
+    if (input.bio !== undefined) user.bio = input.bio || null;
+    if (input.sharePhoneNumber !== undefined)
+      user.sharePhoneNumber = input.sharePhoneNumber;
+    if (input.shareLastSeen !== undefined)
+      user.shareLastSeen = input.shareLastSeen;
+
     if (input.displayName !== undefined) {
       user.displayName = input.displayName;
       if (!user.profileCompletedAt) user.profileCompletedAt = copyDate(now);
     }
     user.updatedAt = copyDate(now);
     return copyUser(user);
+  }
+
+  override async recordLastSeen(userIds: string[], now: Date): Promise<void> {
+    for (const id of userIds) {
+      const user = this.users.get(id);
+      if (user && (!user.lastSeenAt || user.lastSeenAt < now))
+        user.lastSeenAt = copyDate(now);
+    }
   }
 
   private createSessionRecord(

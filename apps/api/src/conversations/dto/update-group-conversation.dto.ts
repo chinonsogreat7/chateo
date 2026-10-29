@@ -1,8 +1,32 @@
 import { Transform } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsUUID, Length, ValidateIf } from 'class-validator';
+import {
+  IsString,
+  IsUUID,
+  Length,
+  MaxLength,
+  ValidateIf,
+} from 'class-validator';
 
 export class UpdateGroupConversationDto {
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    maxLength: 500,
+    description:
+      'Group description. Owners/admins may edit; send null or an empty string to clear.',
+    example: 'React Native classroom discussions and resources.',
+  })
+  @ValidateIf(
+    (_object, value: unknown) => value !== undefined && value !== null,
+  )
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @MaxLength(500)
+  description?: string | null;
+
   @ApiPropertyOptional({
     example: 'Project Team',
     minLength: 1,

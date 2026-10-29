@@ -998,6 +998,10 @@ describe('MediaService', () => {
       user: {
         id: USER_ID,
         phoneNumber: '+2348012345678',
+        bio: null,
+        sharePhoneNumber: false,
+        shareLastSeen: false,
+        lastSeenAt: null,
         displayName: 'Ada',
         avatarUrl: 'https://res.cloudinary.com/demo/image/upload/avatar.jpg',
         profileCompletedAt: NOW,
@@ -1008,6 +1012,10 @@ describe('MediaService', () => {
     await expect(service.setProfileAvatar(USER_ID, MEDIA_ID)).resolves.toEqual({
       id: USER_ID,
       phoneNumber: '+2348012345678',
+      bio: null,
+      sharePhoneNumber: false,
+      shareLastSeen: false,
+      lastSeenAt: null,
       displayName: 'Ada',
       avatarUrl: 'https://res.cloudinary.com/demo/image/upload/avatar.jpg',
       profileComplete: true,
@@ -1041,6 +1049,10 @@ describe('MediaService', () => {
   it('clears an avatar idempotently and reports a missing signed-in user', async () => {
     const first = createService();
     first.repository.clearProfileAvatar.mockResolvedValue({
+      bio: null,
+      sharePhoneNumber: false,
+      shareLastSeen: false,
+      lastSeenAt: null,
       id: USER_ID,
       phoneNumber: '+2348012345678',
       displayName: 'Ada',

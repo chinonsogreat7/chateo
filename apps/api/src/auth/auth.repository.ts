@@ -18,6 +18,7 @@ export interface AuthSessionIdentity {
 }
 
 export abstract class AuthRepository {
+  abstract recordLastSeen(userIds: string[], now: Date): Promise<void>;
   abstract getLatestOtpChallenge(
     phoneNumber: string,
   ): Promise<OtpChallengeRecord | null>;

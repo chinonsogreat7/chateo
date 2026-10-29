@@ -4,6 +4,7 @@ import { Clock } from '../auth/providers/clock';
 import { ApiException } from '../common/errors/api.exception';
 import { MessageEventsPublisher } from './message-events.publisher';
 import { MessagesRepository } from './messages.repository';
+import type { MessageCollectionFilter } from './messages.repository';
 import { messageResponse } from './message-mapping';
 import type { EditMessageDto } from './dto/message-actions.dto';
 import type {
@@ -98,9 +99,20 @@ export class MessagesService {
     limit: number,
     encodedCursor?: string,
     query?: string,
+    filter?: MessageCollectionFilter,
   ): Promise<MessageHistoryResponseDto> {
-    const scope =
-      query === undefined
+    const scope = filter
+      ? createHash('sha256')
+          .update(
+            JSON.stringify([
+              userId.toLowerCase(),
+              conversationId.toLowerCase(),
+              filter.collection,
+              filter.kind ?? null,
+            ]),
+          )
+          .digest('hex')
+      : query === undefined
         ? undefined
         : createHash('sha256')
             .update(JSON.stringify([conversationId.toLowerCase(), query]))
@@ -109,12 +121,17 @@ export class MessagesService {
       encodedCursor === undefined
         ? null
         : this.decodeCursor(encodedCursor, scope);
+    const options: [query?: string, filter?: MessageCollectionFilter] = filter
+      ? [query, filter]
+      : query === undefined
+        ? []
+        : [query];
     const result = await this.repository.listForMember(
       conversationId.toLowerCase(),
       userId.toLowerCase(),
       cursor,
       limit + 1,
-      ...(query === undefined ? [] : [query]),
+      ...options,
     );
     if (result.status === 'conversation-not-found') {
       throw this.conversationNotFoundException();

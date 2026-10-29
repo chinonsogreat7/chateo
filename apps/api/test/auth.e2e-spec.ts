@@ -135,7 +135,9 @@ describe('Authentication API (e2e, in memory)', () => {
       }),
     );
     app.useGlobalFilters(new ApiExceptionFilter());
-    await app.init();
+    // Keep one listener for this test so keep-alive clients cannot reuse a
+    // connection to a server Supertest has just closed between requests.
+    await app.listen(0, '127.0.0.1');
   });
 
   afterEach(async () => {

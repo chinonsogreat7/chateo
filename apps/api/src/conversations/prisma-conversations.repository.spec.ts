@@ -81,6 +81,7 @@ function rawGroupConversation() {
     directUserOneId: null,
     directUserTwoId: null,
     name: 'Study Group',
+    description: null,
     avatarMediaId: AVATAR_ID as string | null,
     avatarUrl: 'https://example.com/groups/study.jpg',
     createdById: USER_ID,

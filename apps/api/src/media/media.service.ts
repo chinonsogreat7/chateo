@@ -811,6 +811,10 @@ export class MediaService {
     return {
       id: user.id,
       phoneNumber: user.phoneNumber,
+      bio: user.bio,
+      sharePhoneNumber: user.sharePhoneNumber,
+      shareLastSeen: user.shareLastSeen,
+      lastSeenAt: user.lastSeenAt?.toISOString() ?? null,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
       profileComplete: user.profileCompletedAt !== null,

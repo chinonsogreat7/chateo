@@ -257,6 +257,7 @@ export class PrismaConversationsRepository extends ConversationsRepository {
               data: {
                 type: ConversationType.GROUP,
                 name: input.name,
+                description: input.description ?? null,
                 avatarMediaId: avatar?.id ?? null,
                 avatarUrl: avatar?.secureUrl ?? null,
                 createdById: input.creatorId,
@@ -349,7 +350,10 @@ export class PrismaConversationsRepository extends ConversationsRepository {
           normalizedInput.avatarMediaId !== undefined &&
           ((avatar?.id ?? null) !== conversation.avatarMediaId ||
             (avatar?.secureUrl ?? null) !== conversation.avatarUrl);
-        const changed = nameChanged || avatarChanged;
+        const descriptionChanged =
+          normalizedInput.description !== undefined &&
+          normalizedInput.description !== conversation.description;
+        const changed = nameChanged || avatarChanged || descriptionChanged;
         const eventRecipientIds = this.memberIds(conversation);
         if (!changed) {
           return {
@@ -367,6 +371,9 @@ export class PrismaConversationsRepository extends ConversationsRepository {
           where: { id: normalizedInput.conversationId },
           data: {
             ...(nameChanged ? { name: normalizedInput.name } : {}),
+            ...(descriptionChanged
+              ? { description: normalizedInput.description }
+              : {}),
             ...(avatarChanged
               ? {
                   avatarMediaId: avatar?.id ?? null,
@@ -1220,13 +1227,15 @@ export class PrismaConversationsRepository extends ConversationsRepository {
       };
     }
 
-    if (!conversation.name) {
-      throw new Error('Group conversation is missing its name.');
+    if (!conversation.name || !conversation.createdById) {
+      throw new Error('Group conversation is missing its name or creator.');
     }
     return {
       ...common,
       type: 'GROUP',
       name: conversation.name,
+      description: conversation.description,
+      createdById: conversation.createdById,
       avatarUrl: conversation.avatarUrl,
       participants: conversation.members.map((member) => ({
         id: member.user.id,

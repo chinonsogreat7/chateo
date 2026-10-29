@@ -391,6 +391,10 @@ export class AuthService {
       phoneNumber: user.phoneNumber,
       displayName: user.displayName,
       avatarUrl: user.avatarUrl,
+      bio: user.bio,
+      sharePhoneNumber: user.sharePhoneNumber,
+      shareLastSeen: user.shareLastSeen,
+      lastSeenAt: user.lastSeenAt?.toISOString() ?? null,
       profileComplete: user.profileCompletedAt !== null,
       createdAt: user.createdAt.toISOString(),
     };

@@ -127,6 +127,10 @@ export interface SignedFileUpload {
 }
 
 export interface MediaProfileUserRecord {
+  bio: string | null;
+  sharePhoneNumber: boolean;
+  shareLastSeen: boolean;
+  lastSeenAt: Date | null;
   id: string;
   phoneNumber: string;
   displayName: string | null;

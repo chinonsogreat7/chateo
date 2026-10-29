@@ -1,4 +1,4 @@
-import { Injectable, type OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import type { Socket } from 'socket.io';
 import { AuthRepository } from '../auth/auth.repository';
 import { Clock } from '../auth/providers/clock';
@@ -67,6 +67,7 @@ const UUID_PATTERN =
 
 @Injectable()
 export class ChatStateService implements OnModuleDestroy {
+  private readonly logger = new Logger(ChatStateService.name);
   private readonly clients = new Map<string, ClientState>();
   private readonly localSockets = new Map<string, AuthenticatedChatSocket>();
   private readonly onlineSocketIdsByUser = new Map<string, Set<string>>();
@@ -119,6 +120,7 @@ export class ChatStateService implements OnModuleDestroy {
     socketIds.add(client.id);
     this.onlineSocketIdsByUser.set(client.data.userId, socketIds);
     this.localSockets.set(client.id, client);
+    void this.recordLastSeen([client.data.userId], this.clock.now());
     if (!wasOnline && !pendingOffline) {
       void this.emitUserPresenceToSubscribers(
         client.data.userId,
@@ -155,7 +157,7 @@ export class ChatStateService implements OnModuleDestroy {
     const candidates = [...this.clients.entries()].filter(([, state]) =>
       Boolean(
         state.subscriptions.has(normalizedConversationId) ||
-          state.typing.has(normalizedConversationId),
+        state.typing.has(normalizedConversationId),
       ),
     );
     let suppliedParticipantIds: string[];
@@ -423,6 +425,9 @@ export class ChatStateService implements OnModuleDestroy {
 
     this.clients.delete(client.id);
     this.localSockets.delete(client.id);
+    const disconnectedAt = this.clock.now();
+    // Persistence is best effort: a slow database must not hold up teardown.
+    void this.recordAuthenticatedDisconnect(client, disconnectedAt);
     const socketIds = this.onlineSocketIdsByUser.get(client.data.userId);
     socketIds?.delete(client.id);
     if (socketIds?.size === 0) {
@@ -674,14 +679,56 @@ export class ChatStateService implements OnModuleDestroy {
   }
 
   private async sweepInvalidSessions(): Promise<void> {
+    const observedAt = this.clock.now();
+    const activeUserIds = new Set<string>();
     await Promise.all(
-      [...this.localSockets.values()].map((socket) =>
-        this.pruneIfInvalid(socket),
-      ),
+      [...this.localSockets.values()].map(async (socket) => {
+        if (await this.pruneIfInvalid(socket))
+          activeUserIds.add(socket.data.userId);
+      }),
     );
+    const userIds = [...activeUserIds];
+    for (let offset = 0; offset < userIds.length; offset += 100) {
+      await this.recordLastSeen(
+        userIds.slice(offset, offset + 100),
+        observedAt,
+      );
+    }
   }
 
-  private async pruneIfInvalid(socket: AuthenticatedChatSocket): Promise<void> {
+  private async recordLastSeen(userIds: string[], now: Date): Promise<void> {
+    try {
+      await this.authRepository.recordLastSeen(userIds, now);
+    } catch {
+      this.logger.warn(
+        'Could not persist last-seen observations; the next active socket sweep will retry.',
+      );
+    }
+  }
+
+  private async recordAuthenticatedDisconnect(
+    client: AuthenticatedChatSocket,
+    now: Date,
+  ): Promise<void> {
+    if (client.data.tokenExpiresAt <= now.getTime()) return;
+    try {
+      if (
+        await this.authRepository.isSessionActive(
+          client.data.sessionId,
+          client.data.userId,
+          now,
+        )
+      ) {
+        await this.recordLastSeen([client.data.userId], now);
+      }
+    } catch {
+      // Failed session validation must not advance an unverified timestamp.
+    }
+  }
+
+  private async pruneIfInvalid(
+    socket: AuthenticatedChatSocket,
+  ): Promise<boolean> {
     const now = this.clock.now();
     let active = socket.data.tokenExpiresAt > now.getTime();
     if (active) {
@@ -695,10 +742,11 @@ export class ChatStateService implements OnModuleDestroy {
         active = false;
       }
     }
-    if (active) return;
+    if (active) return this.localSockets.get(socket.id) === socket;
 
     await this.disconnect(socket, false);
     socket.disconnect(true);
+    return false;
   }
 
   private findLocalSocket(
