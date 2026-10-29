@@ -355,9 +355,9 @@ export class InMemoryAuthRepository extends AuthRepository {
     const session = this.sessions.get(sessionId);
     return Boolean(
       session &&
-      session.userId === userId &&
-      !session.revokedAt &&
-      session.expiresAt.getTime() > now.getTime(),
+        session.userId === userId &&
+        !session.revokedAt &&
+        session.expiresAt.getTime() > now.getTime(),
     );
   }
 

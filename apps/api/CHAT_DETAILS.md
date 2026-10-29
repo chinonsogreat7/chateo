@@ -8,19 +8,19 @@ direct and group conversations. Every request requires
 
 All paths below start with `/v1`.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/me` | Your profile, bio and privacy preferences |
-| `PATCH` | `/me` | Change your name, bio or sharing preferences |
-| `GET` | `/conversations/:conversationId` | Read group details, including description, creator, members and roles |
-| `PATCH` | `/conversations/:conversationId` | Owners/admins update group name, description or photo |
-| `GET` | `/conversations/:conversationId/participants/:userId` | Read a current participant's profile |
-| `GET` | `/conversations/:conversationId/shared-media` | Paginated messages with attachments |
-| `GET` | `/conversations/:conversationId/shared-links` | Paginated messages containing HTTP(S) links |
-| `GET` | `/conversations/:conversationId/starred-messages` | Your starred messages in this chat |
-| `GET` | `/conversations/:conversationId/messages/:messageId/star` | Your star state for one message |
-| `PUT` | `/conversations/:conversationId/messages/:messageId/star` | Star a message for yourself |
-| `DELETE` | `/conversations/:conversationId/messages/:messageId/star` | Remove your star |
+| Method   | Path                                                      | Purpose                                                               |
+| -------- | --------------------------------------------------------- | --------------------------------------------------------------------- |
+| `GET`    | `/me`                                                     | Your profile, bio and privacy preferences                             |
+| `PATCH`  | `/me`                                                     | Change your name, bio or sharing preferences                          |
+| `GET`    | `/conversations/:conversationId`                          | Read group details, including description, creator, members and roles |
+| `PATCH`  | `/conversations/:conversationId`                          | Owners/admins update group name, description or photo                 |
+| `GET`    | `/conversations/:conversationId/participants/:userId`     | Read a current participant's profile                                  |
+| `GET`    | `/conversations/:conversationId/shared-media`             | Paginated messages with attachments                                   |
+| `GET`    | `/conversations/:conversationId/shared-links`             | Paginated messages containing HTTP(S) links                           |
+| `GET`    | `/conversations/:conversationId/starred-messages`         | Your starred messages in this chat                                    |
+| `GET`    | `/conversations/:conversationId/messages/:messageId/star` | Your star state for one message                                       |
+| `PUT`    | `/conversations/:conversationId/messages/:messageId/star` | Star a message for yourself                                           |
+| `DELETE` | `/conversations/:conversationId/messages/:messageId/star` | Remove your star                                                      |
 
 `GET /conversations/:conversationId` continues to return a conversation summary.
 For a direct chat, take `otherParticipant.id` from that response and use the

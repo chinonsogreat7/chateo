@@ -545,14 +545,14 @@ and typing APIs work with group conversation IDs.
 
 Group lifecycle permissions are:
 
-| Action                                               | Allowed roles |
-| ---------------------------------------------------- | ------------- |
+| Action                                               | Allowed roles        |
+| ---------------------------------------------------- | -------------------- |
 | Read group details                                   | Owner, admin, member |
-| Edit the name/description/avatar or add members       | Owner, admin  |
-| Remove an ordinary member                            | Owner, admin  |
-| Remove an admin                                      | Owner         |
-| Promote/demote admins, transfer ownership, or delete | Owner         |
-| Leave                                                | Admin, member |
+| Edit the name/description/avatar or add members      | Owner, admin         |
+| Remove an ordinary member                            | Owner, admin         |
+| Remove an admin                                      | Owner                |
+| Promote/demote admins, transfer ownership, or delete | Owner                |
+| Leave                                                | Admin, member        |
 
 Edit metadata with `PATCH /v1/conversations/:conversationId`. At least one of
 `name`, `description`, or `avatarMediaId` is required; send `avatarMediaId: null`

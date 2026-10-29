@@ -3,5 +3,8 @@
   "apps/api/jest.config.js": "f898c5484660f5260aa8beae49c4c6ea41e54914dd35cee99195ae772957e3df",
   "apps/api/test/jest-e2e.config.js": "c190fc787b8abe70acb9ed0f33b18e9a8e9a85673430774d88c1cc79defe8970",
   "apps/api/test/jest-integration.config.js": "9134d4fc00257638b6b6ebb7ed45994e3efdbb93d2f3e950b8405c0e171c90d6",
-  "apps/api/prisma.config.ts": "9d3dd18fd7eec734c0abe5337578328977559fe37989ec92293e066b651116ad"
+  "apps/api/prisma.config.ts": "9d3dd18fd7eec734c0abe5337578328977559fe37989ec92293e066b651116ad",
+  "package.json": "bc369ec2e60577ff63124d81ce4aa980517771fda6ea2104893783f818e88d74",
+  "apps/api/package.json": "00d24e65687ba749203e6717f8d622b8189f144bbfbf2cc759de4a40a3152705",
+  ".github/workflows/api-ci.yml": "756985f90a6aa9bfedc88614a856d39b07741db86c4fd24773e0cb8324f22d28"
 }

@@ -157,7 +157,7 @@ export class ChatStateService implements OnModuleDestroy {
     const candidates = [...this.clients.entries()].filter(([, state]) =>
       Boolean(
         state.subscriptions.has(normalizedConversationId) ||
-        state.typing.has(normalizedConversationId),
+          state.typing.has(normalizedConversationId),
       ),
     );
     let suppliedParticipantIds: string[];

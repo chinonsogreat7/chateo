@@ -10,9 +10,11 @@ export class ParticipantProfileResponseDto {
   @ApiProperty({ format: 'uuid' }) id!: string;
   @ApiProperty({ type: String, nullable: true }) displayName!: string | null;
   @ApiProperty({ type: String, nullable: true, format: 'uri' }) avatarUrl!:
-    string | null;
+    | string
+    | null;
   @ApiProperty({ type: String, nullable: true, maxLength: 160 }) bio!:
-    string | null;
+    | string
+    | null;
   @ApiProperty({
     type: String,
     nullable: true,

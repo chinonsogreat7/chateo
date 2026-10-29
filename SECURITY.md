@@ -26,6 +26,50 @@ the account `chinonsogreat7`; this does not identify the person, device, app, or
 credential that performed the pushes. The downloaded next-stage payload was not
 retrieved, so its full behavior and any data access/exfiltration remain unknown.
 
+## October 2026 recurrence
+
+On 29 October, inspection of GitHub's push events confirmed that remote `main`
+was replaced on 21 October at 04:25:37 UTC (05:25:37 Africa/Lagos). The clean
+`9a1de1235fce6f26c00374f2eda5804fab6b3272` was replaced by
+`f086789962968f17a8a6593bff2158fde42f38e8`. The replacement kept the original
+parents, author timestamp, and subject while changing the tree and committer
+metadata. Commit messages and author dates therefore do not establish safety or
+the actual time of the push.
+
+The replacement added an obfuscated root `api.js`, changed the root build script
+to execute it, reinjected the ESLint config, and added ignore entries for
+auto-push artifacts. The four feature/fix branch heads were also affected. These
+objects were inspected as data, never checked out or executed during this
+investigation. Repair `946745ba77d2c33bdedb2202455bb21123b06941` restored the
+verified main tree with a normal fast-forward push while retaining evidence in
+Git history.
+
+The four other affected branch heads were repaired without force-pushing:
+`bc0e1a89feeb211f6b7285b2d00623c14204965f` for discovery and
+`0eef4e7fbe55e4115b18c80729bb8fb692b8c19e` for message replies, realtime,
+and the CI/docs branch. Each restores the exact verified `ddeb918` tree;
+the only tree differences being removed were the four injected paths above.
+
+The [21 October CI run](https://github.com/chinonsogreat7/chateo/actions/runs/39543972900)
+failed at the tooling integrity gate. Dependency installation, lint, tests and
+build were skipped. This establishes that this CI job stopped before those
+execution paths; it does not establish the state of Render, other runners,
+developer machines, or previously built artifacts.
+
+At investigation time, all five branches were unprotected, there were no
+repository rulesets, no other collaborators, no deploy keys, and no webhooks.
+Workflow permissions were read-only and checkout did not persist credentials.
+GitHub attributed the push to `chinonsogreat7`, but that attribution cannot
+identify the token, authorized app, device, or human behind it. The account's
+personal security log and credential inventory still need review before a
+credential-level root cause can be claimed.
+
+The local checks found no active repository hooks, Git command overrides,
+cron entries, or exact payload indicators in the inspected editor extensions
+and startup items. This was a bounded check, not a clean-device certification.
+The unexplained writer must be identified and its access revoked; branch
+protection and file checks alone do not remove account-level access.
+
 ## Integrity gate
 
 Before installing dependencies or loading tooling, run:
@@ -35,7 +79,8 @@ node scripts/verify-tooling.mjs
 node --test scripts/verify-tooling.test.mjs
 ```
 
-The checker uses only Node built-ins. It reads five protected executable configs
+The checker uses only Node built-ins. It reads eight protected files: five
+executable configs, both package manifests, and the CI workflow. It reads them
 as bytes and compares their SHA-256 digests against `scripts/tooling-integrity.json`;
 it never imports or evaluates those configs. Missing/changed files, symlinks and
 invalid manifest entries fail closed. The separate required-file list prevents
@@ -43,8 +88,9 @@ removing a manifest entry from silently opting a config out of verification.
 The protected paths use LF line endings through `.gitattributes` so fresh
 Windows checkouts verify the same bytes as CI.
 
-CI runs the gate before `npm ci`; both root and API `npm run lint` run it before
-ESLint. CI checkout no longer persists its Git credential. Run the gate explicitly
+CI runs the gate before `npm ci`; both root and API `npm run lint` and
+`npm run build` run it before their tooling. CI checkout no longer persists its
+Git credential. Run the gate explicitly
 before direct `npx eslint`, editor lint integrations, or other tooling: those
 entry points can bypass npm lifecycle scripts. It does not scan dependencies,
 all source files, newly added tooling files, or other machines.

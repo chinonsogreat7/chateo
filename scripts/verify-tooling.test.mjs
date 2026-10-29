@@ -52,6 +52,23 @@ test("rejects a changed config with no known malware signature", (t) => {
   assert.equal(integrityFailures(root, manifest).length, 1);
 });
 
+for (const path of [
+  "package.json",
+  "apps/api/package.json",
+  ".github/workflows/api-ci.yml",
+]) {
+  test(`rejects unreviewed execution changes in ${path}`, (t) => {
+    const { root, manifest } = fixture(t);
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), "unreviewed execution command\n");
+    assert.ok(
+      integrityFailures(root, manifest).some((failure) =>
+        failure.startsWith(`${path}:`),
+      ),
+    );
+  });
+}
+
 test("removing a manifest entry cannot bypass verification", (t) => {
   const { root, manifest } = fixture(t);
   delete manifest[protectedFiles[0]];

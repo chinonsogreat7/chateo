@@ -176,7 +176,8 @@ export class GroupConversationResponseDto extends ConversationResponseBaseDto {
 }
 
 export type ConversationResponseDto =
-  DirectConversationResponseDto | GroupConversationResponseDto;
+  | DirectConversationResponseDto
+  | GroupConversationResponseDto;
 
 export const conversationResponseSchema = {
   oneOf: [

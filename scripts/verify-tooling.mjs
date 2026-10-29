@@ -10,6 +10,9 @@ export const protectedFiles = Object.freeze([
   "apps/api/test/jest-e2e.config.js",
   "apps/api/test/jest-integration.config.js",
   "apps/api/prisma.config.ts",
+  "package.json",
+  "apps/api/package.json",
+  ".github/workflows/api-ci.yml",
 ]);
 
 export function integrityFailures(root, manifest) {

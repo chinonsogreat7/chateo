@@ -1,6 +1,9 @@
 export type AuthDevicePlatform = 'IOS' | 'ANDROID' | 'WEB' | 'UNKNOWN';
 export type AuthSessionRevocationReason =
-  'ROTATED' | 'LOGOUT' | 'REUSE_DETECTED' | 'ADMIN';
+  | 'ROTATED'
+  | 'LOGOUT'
+  | 'REUSE_DETECTED'
+  | 'ADMIN';
 
 export interface AuthUserRecord {
   id: string;

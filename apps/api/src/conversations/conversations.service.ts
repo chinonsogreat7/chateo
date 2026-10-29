@@ -726,7 +726,11 @@ export class ConversationsService {
             id: latestMessage.id,
             senderId: latestMessage.senderId,
             kind: latestMessage.kind.toLowerCase() as
-              'text' | 'image' | 'audio' | 'video' | 'document',
+              | 'text'
+              | 'image'
+              | 'audio'
+              | 'video'
+              | 'document',
             preview: this.messagePreview(latestMessage),
             createdAt: latestMessage.createdAt.toISOString(),
           }
